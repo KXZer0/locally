@@ -1,0 +1,228 @@
+@font-face {
+    font-family: "Inter";
+    src: url("/static/fonts/inter-latin-400-normal.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Inter";
+    src: url("/static/fonts/inter-latin-500-normal.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Inter";
+    src: url("/static/fonts/inter-latin-600-normal.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "JetBrains Mono";
+    src: url("/static/fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "JetBrains Mono";
+    src: url("/static/fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+}
+
+:root {
+    --bg: #0A0A0A;
+    --bg-raised: #121212;
+    --bg-sunken: #070707;
+    --bg-overlay: #161616;
+    --chrome: rgb(10 10 10 / 0.86);
+
+    --ink: #FFFFFF;
+    --ink-2: rgb(255 255 255 / 0.62);
+    --ink-3: rgb(255 255 255 / 0.40);
+    --ink-4: rgb(255 255 255 / 0.26);
+
+    --line: rgb(255 255 255 / 0.10);
+    --line-soft: rgb(255 255 255 / 0.06);
+    --line-strong: rgb(255 255 255 / 0.20);
+    --fill: rgb(255 255 255 / 0.04);
+    --fill-hover: rgb(255 255 255 / 0.08);
+    --fill-active: rgb(255 255 255 / 0.12);
+
+    --solid: #FFFFFF;
+    --solid-hover: rgb(255 255 255 / 0.88);
+    --on-solid: #0A0A0A;
+    --alarm: #C4544A;
+    --alarm-dim: rgb(196 84 74 / 0.16);
+
+    --ui: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+
+    --fs-xs: 11px;
+    --fs-sm: 13px;
+    --fs-base: 15px;
+    --fs-md: 16px;
+    --fs-lg: 20px;
+    --fs-xl: 28px;
+    --fs-2xl: 36px;
+
+    --sp-1: 4px;
+    --sp-2: 8px;
+    --sp-3: 12px;
+    --sp-4: 16px;
+    --sp-5: 24px;
+    --sp-6: 32px;
+    --sp-7: 48px;
+    --sp-8: 72px;
+
+    --rail-open: 260px;
+    --rail: var(--rail-open);
+    /* Sized to sit in the same strip as the OS caption buttons. In an installed
+       window that strip is measured, not guessed -- 02-shell.css overrides this
+       with env(titlebar-area-height) under display-mode: window-controls-overlay,
+       so the app header and the minimise/close buttons are the same row. 40px is
+       the fallback for a browser tab, where no such strip exists. */
+    --header: 40px;
+    /* Controls that live inside --header. Kept below it on purpose: the strip is
+       sized by the OS, and anything in it has to fit whatever that turns out to
+       be. --row stays the size for controls in the body of the app.
+
+       The reference is the OS caption buttons sitting in the same strip: on
+       Windows 11 that is a 32px box carrying a ~10px glyph. Anything the page
+       draws in this row -- the rail toggle, the Commands button, the brand mark
+       across the divider -- is sized against that, not against --row. A 28px box
+       with a 16px glyph was reading as a body control that had wandered into the
+       title bar, and the brand mark next to it read as a third size again. */
+    --row-chrome: 26px;
+    /* Glyph inside a --row-chrome control, and the brand mark, which is the one
+       piece of artwork in this strip. Both stay under the caption glyphs' box so
+       the row reads as one band of chrome. */
+    --icon-chrome: 14px;
+    --brand-mark-size: 20px;
+    --measure: 720px;
+    --row: 36px;
+    --control: 40px;
+
+    --radius-pill: 999px;
+    --radius-composer: 24px;
+    --radius-bubble: 18px;
+    --radius-card: 16px;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --radius-xs: 6px;
+
+    --ease-out: cubic-bezier(0.16, 1, 0.30, 1);
+    --ease-std: cubic-bezier(0.40, 0, 0.20, 1);
+    --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+    --dur-instant: 100ms;
+    --dur-fast: 150ms;
+    --dur-base: 200ms;
+    --dur-slow: 280ms;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    min-width: 320px;
+    color: var(--ink);
+    background: var(--bg);
+    font-family: var(--ui);
+    font-size: var(--fs-base);
+    line-height: 1.5;
+}
+
+button,
+input,
+textarea,
+select {
+    color: inherit;
+    font: inherit;
+}
+
+button {
+    -webkit-tap-highlight-color: transparent;
+}
+
+h1,
+h2,
+h3,
+p {
+    margin-block-start: 0;
+}
+
+h1,
+h2,
+h3 {
+    color: var(--ink);
+    font-weight: 600;
+    text-wrap: balance;
+}
+
+h1,
+h2 {
+    font-size: var(--fs-xl);
+    line-height: 1.15;
+    letter-spacing: -0.018em;
+}
+
+h3 {
+    font-size: var(--fs-lg);
+    line-height: 1.3;
+    letter-spacing: -0.011em;
+}
+
+.mono {
+    font-family: var(--mono);
+}
+
+.eyebrow,
+.mono.eyebrow {
+    font-size: var(--fs-xs);
+    line-height: 1.4;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.sr-only {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: calc(var(--sp-1) / -4) !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+}
+
+.ic {
+    width: 16px;
+    height: 16px;
+    display: block;
+    flex: 0 0 auto;
+    pointer-events: none;
+}
+
+[hidden] {
+    display: none !important;
+}
+
+:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+}

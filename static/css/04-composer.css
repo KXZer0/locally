@@ -1,0 +1,345 @@
+/* Composer -----------------------------------------------------------------
+   Two rows inside one box: the draft, then the controls. They used to share a
+   row, with the icons pinned to its bottom edge, and that is what made typing
+   past the first line feel wrong -- the flex row re-solved every control's
+   position against a container whose height was changing under it, so the
+   cluster shifted at every wrap and the box grew by whatever a 1.5x line-height
+   happened to round to.
+
+   Split, nothing but text moves. The controls sit in their own fixed-height row
+   at the bottom of the box; the draft grows above them. And the draft's metrics
+   are integers on purpose -- 16px text on a 24px line, 8px of padding above and
+   below -- so one line is exactly 40px, every further line adds exactly 24, and
+   the cap lands on a line boundary rather than mid-glyph. Fractional line boxes
+   are the other half of why growth looked jittery. */
+
+/* No outline around the draft. Earlier sheets (style.css, assistant.css) each
+   give this card a 1px border and assistant.css adds a focus ring on top; this
+   file loads last, so the removal belongs here rather than as three edits that
+   drift apart. The card is still findable -- it keeps --surface-raised against
+   the canvas, and shape without a stroke is the same way the thread and the
+   sidebar already read. */
+.composer-inner {
+    padding: var(--sp-2);
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--radius-composer);
+    border: 0;
+}
+
+/* The focus answer moves from the stroke to the surface: with the border gone
+   there is nothing to brighten, and a ring would put back the outline this
+   just removed. Lifting the fill keeps the "the interface answered" beat that
+   the border used to carry, in the one channel monochrome still has. */
+.composer-inner:focus-within {
+    border: 0;
+    box-shadow: none;
+    /* --fill-hover is a translucent white, so it has to be LAYERED over the
+       surface rather than replacing it -- assigning it alone would drop the
+       card's fill and let the canvas show through. The doubled gradient is
+       the standard way to tint a background with an existing overlay token
+       without inventing a second colour. */
+    background: linear-gradient(var(--fill-hover), var(--fill-hover)),
+                var(--surface-raised);
+}
+
+.composer-row {
+    display: block;
+    padding-inline: var(--sp-1);
+}
+
+.composer #message-input {
+    width: 100%;
+    display: block;
+    /* 24 line + 8 + 8 padding. Keep these three in step with INPUT_LINE /
+       INPUT_PAD in app.js, which sizes the box from the same arithmetic. */
+    min-height: 40px;
+    max-height: 184px;
+    padding: var(--sp-2);
+    font-size: var(--fs-md);
+    line-height: 24px;
+    /* app.js flips this to auto only once the draft is taller than the cap, so a
+       short draft never shows a scroll gutter it cannot use. */
+    overflow-y: hidden;
+}
+
+/* .composer-inner already answers focus by brightening its own border
+   (:focus-within, in style.css/assistant.css) -- that ring around the whole
+   card IS the focus indicator. The browser's default :focus-visible outline
+   on the textarea underneath duplicated that as a second, tighter rounded
+   rectangle nested inside the first card's rounded corners: two containers
+   announcing the same state. #message-input:focus wasn't enough to stop it --
+   :focus and :focus-visible are different pseudo-classes, and a text field
+   gets the latter on essentially any focus, mouse or keyboard. Kill it here
+   instead, at a specificity (id + pseudo-class) that wins regardless of sheet
+   order, and let the card's own ring carry the whole signal. */
+#message-input:focus-visible {
+    outline: none;
+}
+
+/* One fixed-height row, always --row tall whatever the draft is doing. */
+.composer-actions {
+    margin-top: var(--sp-1);
+    min-height: var(--row);
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+}
+
+.composer .iconbtn,
+.composer .context-meter,
+.composer #send-btn.send-icon {
+    width: var(--row);
+    height: var(--row);
+    min-width: var(--row);
+    flex: 0 0 var(--row);
+}
+
+.composer-trailing {
+    margin-left: auto;
+    align-items: center;
+    gap: var(--sp-1);
+}
+
+/* Below the box --------------------------------------------------------------
+   The model you are about to answer with, as a line of text under the input.
+   No card, no border, no pill -- the only shape in the row is the chevron, and
+   the only state is the ink lifting on hover. Indented to --sp-3 so it lines up
+   with the text you typed rather than with the box's outer edge. */
+
+.composer-footer {
+    padding: var(--sp-2) var(--sp-3) 0;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+}
+
+.composer-footer .context-model-picker {
+    position: relative;
+    z-index: 40;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+}
+
+.composer-footer .context-model-trigger {
+    width: auto;
+    min-height: 0;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    color: var(--ink-3);
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    font-size: var(--fs-xs);
+    line-height: 1.4;
+    transition: color var(--dur-fast) var(--ease-out);
+}
+
+.composer-footer .context-model-trigger:hover,
+.composer-footer .context-model-trigger:focus-visible,
+.composer-footer .context-model-trigger[aria-expanded="true"] {
+    color: var(--ink);
+}
+
+/* The "MODEL" eyebrow was a label on a field. Here the value is the label. */
+.composer-footer .context-model-copy {
+    min-width: 0;
+    display: block;
+}
+
+.composer-footer .context-model-copy small {
+    display: none;
+}
+
+.composer-footer .context-model-copy strong {
+    display: block;
+    overflow: hidden;
+    color: inherit;
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    line-height: 1.4;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.composer-footer .context-model-route {
+    color: var(--ink-4);
+    font-size: var(--fs-xs);
+}
+
+.composer-footer .context-model-trigger > .ic {
+    width: 12px;
+    height: 12px;
+    opacity: 0.8;
+}
+
+/* Opens upward: there is nothing below it but the window edge. */
+.composer-footer .context-model-menu {
+    top: auto;
+    bottom: calc(100% + var(--sp-2));
+    left: 0;
+    right: auto;
+    width: max(240px, 100%);
+    max-height: min(320px, 44vh);
+}
+
+/* Context ring ------------------------------------------------------------
+   A ring and nothing else. It previously carried a filled disc, a border and a
+   3px core dot inside a 24px circle -- four rings of chrome to say one number.
+   The stats moved to a hover panel, because you need the fraction constantly
+   and the token counts about twice a session. */
+
+.context-meter-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.composer .context-meter {
+    position: relative;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    color: var(--ink-3);
+    background: transparent;
+    border: 0;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: color var(--dur-fast) var(--ease-out),
+                background-color var(--dur-fast) var(--ease-out);
+}
+
+.composer .context-meter:hover,
+.composer .context-meter:focus-visible {
+    color: var(--ink-2);
+    background: var(--fill);
+}
+
+.context-ring {
+    width: 22px;
+    height: 22px;
+    overflow: visible;
+    /* 12 o'clock start, clockwise fill -- the direction a gauge is read. */
+    transform: rotate(-90deg);
+}
+
+.context-ring circle {
+    fill: none;
+    stroke-width: 2;
+}
+
+.context-ring-track {
+    stroke: var(--line);
+}
+
+.context-ring-value {
+    stroke: var(--ink-2);
+    stroke-linecap: round;
+    stroke-dasharray: 100;
+    stroke-dashoffset: 100;
+    transition: stroke-dashoffset var(--dur-base) var(--ease-out),
+                stroke var(--dur-base) var(--ease-out);
+}
+
+.composer .context-meter[data-context="warning"] .context-ring-value {
+    stroke: var(--ink);
+}
+
+.composer .context-meter[data-context="critical"] .context-ring-value {
+    stroke: var(--alarm);
+}
+
+/* No reading available: the ring says so by going quiet rather than by
+   sitting at a confident 0%. */
+.composer .context-meter.down {
+    opacity: 0.4;
+}
+
+/* Hover panel. Positioned from the ring's right edge so it never crosses the
+   window edge on a narrow window, and it is the numbers only -- controls stay
+   in the sidebar panel that owns them. */
+.context-tip {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + var(--sp-2));
+    z-index: 80;
+    width: 232px;
+    padding: var(--sp-3);
+    display: grid;
+    gap: var(--sp-2);
+    color: var(--ink-2);
+    background: var(--bg-overlay);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: 0 14px 34px rgb(0 0 0 / 0.55);
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(4px);
+    pointer-events: none;
+    transition: opacity var(--dur-fast) var(--ease-out),
+                transform var(--dur-fast) var(--ease-out),
+                visibility var(--dur-fast);
+}
+
+.context-meter-wrap:hover > .context-tip,
+.context-meter-wrap:focus-within > .context-tip {
+    visibility: visible;
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.context-tip-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    color: var(--ink);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+}
+
+.context-tip-head .mono {
+    color: var(--ink-2);
+    font-size: var(--fs-xs);
+    font-weight: 500;
+}
+
+.context-tip-rows {
+    margin: 0;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: var(--sp-1) var(--sp-3);
+    font-size: var(--fs-xs);
+}
+
+.context-tip-rows dt {
+    color: var(--ink-3);
+}
+
+.context-tip-rows dd {
+    margin: 0;
+    color: var(--ink);
+    text-align: right;
+}
+
+.context-tip-note {
+    margin: 0;
+    color: var(--ink-3);
+    font-size: var(--fs-xs);
+    line-height: 1.4;
+}
+
+.context-tip-note:empty {
+    display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .context-tip {
+        transition: none;
+        transform: none;
+    }
+}

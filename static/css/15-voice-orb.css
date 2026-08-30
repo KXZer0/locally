@@ -1,0 +1,155 @@
+/* ==========================================================================
+   15-voice-orb.css  -  The voice orb and its states
+   --------------------------------------------------------------------------
+   LAYER 1, part 6/14.  Split out of the old style.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The orb itself: .orb, .orb-core, .orb-ring, .orb-ring-2
+     - The gooey silhouette (.orb-goo) and @keyframes goo-travel / churn
+     - Every per-state rule -- idle / listening / transcribing / thinking /
+       speaking -- which is what makes the orb readable without a label
+     - .voice-state and .voice-caption, the two lines directly under it
+
+   NOT IN THIS FILE:
+     - The rest of the Voice tab -- transcript, controls, tuning, meter:
+       19-voice-tab.css
+     - Speaker enrolment and verification -- 20-speaker.css
+     - The orb's reduced-motion degradation -- 17-responsive.css
+   ========================================================================== */
+
+/* --- Voice --- */
+.voice-panel { align-items: center; justify-content: center; }
+.voice-stage {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+    padding: var(--sp-5);
+    text-align: center;
+    max-width: 560px;
+}
+.orb {
+    position: relative;
+    width: 220px; height: 220px;
+    display: grid;
+    place-items: center;
+}
+/* The orb was a coloured glass ball lit from 35%/30% with a 60px coloured
+   glow. Monochrome, the same states have to come from fill and scale instead:
+   the core is a disc that brightens as the turn moves from listening to
+   speaking, and the rings are hairlines. */
+.orb-core {
+    width: 120px; height: 120px;
+    border-radius: 50%;
+    background: var(--fill-active);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+    transition:
+        background var(--dur-slow) var(--ease-std),
+        box-shadow var(--dur-slow) var(--ease-std),
+        transform var(--dur-fast) var(--ease-out);
+    grid-area: 1 / 1;
+}
+.orb-ring {
+    grid-area: 1 / 1;
+    width: 170px; height: 170px;
+    border-radius: 50%;
+    border: 1px solid var(--ink);
+    opacity: 0.16;
+}
+.orb-ring-2 { width: 210px; height: 210px; opacity: 0.07; }
+
+/* --- The gooey silhouette ---------------------------------------------
+   Blobs that separate from the body and are pulled back into it, merging
+   through a neck rather than overlapping. Everything here is beneath
+   .orb-core, so the crisp disc is what you actually read and this only
+   changes its edge — which is the whole trick: running a goo filter over
+   real UI destroys text and images, running it over a silhouette does not.
+
+   It stays still while idle. The iGPU may be prefilling a prompt, and a
+   filter chain that animates when nothing is happening is exactly the
+   always-on compositing cost this project keeps refusing elsewhere. */
+.orb-goo {
+    grid-area: 1 / 1;
+    width: 220px; height: 220px;
+    pointer-events: none;
+    color: var(--ink);
+}
+.orb-goo circle { fill: currentColor; }
+.orb-goo .goo-body { opacity: 0.14; }
+.orb-goo .goo-drop {
+    opacity: 0.14;
+    /* Rotation and travel are separate transforms on separate elements so
+       one animation can hold a bearing while the other breathes along it;
+       doing both on one element makes the drops orbit instead of pulse. */
+    transform-box: view-box;
+    transform-origin: 110px 110px;
+    transform: rotate(var(--bearing, 0deg)) translateY(0);
+}
+.orb-goo .goo-drop-1 { --bearing:  20deg; }
+.orb-goo .goo-drop-2 { --bearing: 145deg; }
+.orb-goo .goo-drop-3 { --bearing: 260deg; }
+
+@keyframes goo-travel {
+    0%, 100% { transform: rotate(var(--bearing)) translateY(-38px) scale(0.72); }
+    50%      { transform: rotate(var(--bearing)) translateY(-74px) scale(1); }
+}
+
+/* Only while something is actually happening. Each drop gets its own
+   duration rather than a delay, so they are never caught in lockstep. */
+.orb[data-state="listening"] .goo-drop,
+.orb[data-state="transcribing"] .goo-drop,
+.orb[data-state="thinking"] .goo-drop,
+.orb[data-state="speaking"] .goo-drop {
+    animation: goo-travel var(--goo-dur, 3.4s) var(--ease-in-out) infinite;
+}
+.orb[data-state="listening"] .goo-drop-1   { --goo-dur: 2.9s; }
+.orb[data-state="listening"] .goo-drop-2   { --goo-dur: 3.7s; }
+.orb[data-state="listening"] .goo-drop-3   { --goo-dur: 3.3s; }
+/* Speaking is the busiest state, so the drops travel fastest and the body
+   sits brighter — the same escalation the core already does by fill. */
+.orb[data-state="speaking"] .goo-drop-1    { --goo-dur: 1.5s; }
+.orb[data-state="speaking"] .goo-drop-2    { --goo-dur: 1.9s; }
+.orb[data-state="speaking"] .goo-drop-3    { --goo-dur: 1.7s; }
+.orb[data-state="speaking"] .goo-body,
+.orb[data-state="speaking"] .goo-drop { opacity: 0.24; }
+.orb[data-state="thinking"] .goo-drop-1    { --goo-dur: 2.2s; }
+.orb[data-state="thinking"] .goo-drop-2    { --goo-dur: 2.6s; }
+.orb[data-state="thinking"] .goo-drop-3    { --goo-dur: 2.4s; }
+
+.orb[data-state="listening"] .orb-core {
+    background: rgb(255 255 255 / 0.20);
+    box-shadow: inset 0 0 0 1px var(--ink);
+}
+.orb[data-state="speaking"] .orb-core {
+    background: var(--ink);
+    box-shadow: none;
+}
+
+.orb[data-state="idle"] .orb-core { animation: drift 7s var(--ease-in-out) infinite; }
+.orb[data-state="listening"] .orb-ring { animation: pulse 1.4s var(--ease-in-out) infinite; }
+.orb[data-state="thinking"] .orb-core { animation: churn 1.1s linear infinite; }
+.orb[data-state="speaking"] .orb-core { animation: pulse 0.7s var(--ease-in-out) infinite; }
+/* Transcribing had no rule at all, so the orb froze mid-turn — at exactly the
+   moment the user is wondering whether it heard them. */
+.orb[data-state="transcribing"] .orb-ring { animation: pulse 0.9s var(--ease-in-out) infinite; }
+.orb[data-state="transcribing"] .orb-core { animation: drift 2.2s var(--ease-in-out) infinite; }
+@keyframes churn {
+    0%   { transform: scale(1) rotate(0deg); }
+    50%  { transform: scale(0.94) rotate(180deg); }
+    100% { transform: scale(1) rotate(360deg); }
+}
+
+.voice-state {
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: var(--fs-sm);
+    color: var(--ink-3);
+}
+.orb[data-state="speaking"] ~ .voice-state,
+.orb[data-state="listening"] ~ .voice-state { color: var(--ink); }
+.voice-caption { font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+

@@ -1,0 +1,79 @@
+/* ==========================================================================
+   18-util-views.css  -  Individual utility views and their results
+   --------------------------------------------------------------------------
+   LAYER 1, part 9/14.  Split out of the old style.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The view switcher (.util-view) and its entering state
+     - Result widgets: .utility-preview, .image-result, .detection-list
+     - Per-view inputs: .threshold-row, .inline-fields, input[type=number]
+     - Search: .search-query, .search-results, .search-hit
+
+   NOT IN THIS FILE:
+     - The Util panel shell and dropzone -- 16-utilities.css
+     - Anything shared by more than one view; that belongs one file earlier
+   ========================================================================== */
+
+.util-view {
+    opacity: 1;
+    transition:
+        opacity var(--dur-instant) var(--ease-out),
+        display var(--dur-instant) allow-discrete;
+    transition-behavior: allow-discrete;
+}
+.util-view[hidden],
+.util-view.entering { opacity: 0; }
+.util-view[hidden] { display: none; }
+@starting-style {
+    .util-view:not([hidden]) { opacity: 0; }
+}
+.utility-preview {
+    display: block;
+    max-width: min(100%, 520px);
+    max-height: 300px;
+    object-fit: contain;
+    margin-top: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: repeating-conic-gradient(#1A1A1A 0 25%, #101010 0 50%) 0 / 18px 18px;
+}
+.utility-preview[hidden] { display: none; }
+.image-result { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border-soft); }
+.image-result[hidden] { display: none; }
+.image-result > img {
+    display: block;
+    max-width: min(100%, 680px);
+    max-height: 520px;
+    object-fit: contain;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: repeating-conic-gradient(#1A1A1A 0 25%, #101010 0 50%) 0 / 18px 18px;
+}
+.image-result > div { display: flex; align-items: center; gap: var(--sp-3); margin-top: 10px; }
+.result-meta { color: var(--text-faint); }
+.threshold-row { display: flex; align-items: center; gap: var(--sp-3); margin-top: 14px; color: var(--text-dim); font-size: var(--fs-sm); }
+.threshold-row input { width: 220px; }
+.inline-fields { display: flex; gap: 14px; margin-top: var(--sp-3); }
+.inline-fields label { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-dim); font-size: var(--fs-sm); }
+input[type="number"] {
+    width: 100px;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 7px 9px;
+}
+.detection-list { margin: var(--sp-3) 0 0 22px; color: var(--text-dim); font-size: var(--fs-sm); columns: 2; }
+.selected-files { margin-top: 10px; color: var(--text-dim); font-size: var(--fs-sm); }
+.search-query { display: flex; gap: var(--sp-2); margin-top: 18px; }
+.search-query[hidden] { display: none; }
+.search-query input { flex: 1; }
+.search-results { display: grid; gap: 9px; margin-top: var(--sp-4); }
+.search-hit { padding: var(--sp-3) 14px; border: 1px solid var(--border); border-left: 2px solid var(--device); border-radius: var(--radius-sm); }
+.search-hit header { display: flex; justify-content: space-between; gap: var(--sp-3); color: var(--text-faint); font: 10px var(--mono); }
+.search-hit p { margin-top: 7px; white-space: pre-wrap; color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.55; }
+

@@ -1,0 +1,70 @@
+/* ==========================================================================
+   46-window-controls.css  -  REVAMP LAYER: window controls overlay -- LAST
+   --------------------------------------------------------------------------
+   LAYER 2, part 17/17.  Split out of the old assistant.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The display-mode: window-controls-overlay block, which insets the chrome
+       by the caption-button rectangle Edge reports for an installed PWA
+
+     - MUST STAY LAST.  It sets padding on .topbar and so does 43-revamp-chrome
+       at identical specificity (0-1-0), so whichever comes last wins.  When
+       these rules sat earlier the revamp's padding silently replaced the
+       inset and the caption buttons overlapped Commands and Settings.
+
+   NOT IN THIS FILE:
+     - Any other .topbar padding rule, anywhere after this point
+   ========================================================================== */
+
+/* ============================================================================
+   Window controls overlay — MUST STAY LAST
+   ----------------------------------------------------------------------------
+   Edge exposes the Windows caption-button bounds when the installed PWA runs
+   with `window-controls-overlay`. The app then paints into the title bar, so
+   the chrome has to be inset by the reserved rectangle or the Commands and
+   Settings buttons sit underneath minimize/maximize/close.
+
+   This block lives at the end of the file on purpose. It sets padding on
+   `.topbar`, and so does the revamp layer above at identical specificity
+   (`.topbar`, 0-1-0) — whichever comes last wins. When these rules sat earlier
+   in the file the revamp's `padding: 0 var(--sp-4)` silently replaced the
+   inset and the caption buttons overlapped the controls again. Do not move
+   this above the revamp layer, and do not add another `.topbar` padding rule
+   after it.
+
+   The env() values update on their own when the window is restored, maximized,
+   or moved between displays with different scaling.
+   ========================================================================== */
+@media (display-mode: window-controls-overlay) {
+  :root {
+    --topbar-height: max(56px, env(titlebar-area-height, 56px));
+  }
+
+  .topbar {
+    padding-top: 0;
+    padding-bottom: 0;
+    padding-left: calc(env(titlebar-area-x, 0px) + var(--sp-4));
+    padding-right: calc(
+      100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)
+      + var(--sp-4)
+    );
+    -webkit-app-region: drag;
+  }
+
+  /* Anything interactive must opt out of the drag region, or the click is
+     swallowed by the title bar and the control simply stops working. */
+  .topbar button,
+  .topbar a,
+  .topbar input,
+  .topbar select,
+  .topbar kbd,
+  .topbar [role="button"],
+  .topbar [role="tablist"],
+  .topbar .device-rail {
+    -webkit-app-region: no-drag;
+  }
+}

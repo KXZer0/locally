@@ -1,0 +1,121 @@
+/* ==========================================================================
+   42-revamp-motion.css  -  REVAMP LAYER: motion primitives and the mark
+   --------------------------------------------------------------------------
+   LAYER 2, part 13/17.  Split out of the old assistant.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The revamp banner -- everything from here to the end of the 45-* file
+       supersedes a rule above it ON PURPOSE
+     - The entire motion vocabulary: @keyframes enter, @property --sweep,
+       @keyframes sweep, and the .enter-N stagger.  The stagger is by
+       DURATION, not delay, so nothing sits visibly waiting its turn
+     - The mark and its sweep -- the logo, the busy indicator and the product's
+       idea at once, driven by body[data-busy]
+
+   NOT IN THIS FILE:
+     - A fourth move.  The vocabulary is three: enter, a -2px hover lift, and
+       one sweep.  Adding to it is a redesign, not a change
+     - Backdrop blur on full-surface elements -- the iGPU may be inferring
+   ========================================================================== */
+
+/* ============================================================================
+   locally — 2026 revamp
+   ----------------------------------------------------------------------------
+   Everything below supersedes a rule above it on purpose. The palette is now
+   monochrome (see style.css :root), so the work here is the part colour used to
+   do: hierarchy from type and weight, separation from hairlines and air, and
+   state from fill and motion.
+
+   The motion vocabulary is deliberately small — one entrance, one lift, one
+   sweep — and every duration is under 300ms except the first paint.
+   ========================================================================== */
+
+/* --- Motion primitives ---------------------------------------------------- */
+
+/* Entrances travel and defocus at the same time. The blur is what stops a fade
+   from reading as a slow opacity ramp; it is 6px at most and clears well before
+   the eye settles on the text. */
+@keyframes enter {
+    from {
+        opacity: 0;
+        transform: translateY(var(--enter-y, 14px));
+        filter: blur(var(--enter-blur, 6px));
+    }
+    to { opacity: 1; transform: none; filter: blur(0); }
+}
+
+/* A light sweeping round a ring: "the machine is working". Used on the brand
+   mark while tokens stream, and nowhere else. */
+@property --sweep {
+    syntax: "<angle>";
+    initial-value: 0deg;
+    inherits: false;
+}
+@keyframes sweep { to { --sweep: 360deg; } }
+
+/* Stagger by duration, not delay: everything starts moving on the same frame
+   and arrives in order, so nothing sits visibly waiting its turn. */
+.enter   { animation: enter 620ms var(--ease-out) backwards; }
+.enter-2 { animation: enter 720ms var(--ease-out) backwards; }
+.enter-3 { animation: enter 820ms var(--ease-out) backwards; }
+.enter-4 { animation: enter 920ms var(--ease-out) backwards; }
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 1ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* --- The mark ------------------------------------------------------------- */
+
+.mark {
+    display: block;
+    width: 100%;
+    height: 100%;
+    color: inherit;
+    overflow: visible;
+}
+
+.brand-logo {
+    position: relative;
+    width: 26px;
+    height: 26px;
+    flex-basis: 26px;
+    color: var(--ink);
+}
+
+/* Signature: while the model is generating, a light travels round the outer
+   ring of the mark. The logo, the busy indicator, and the product's whole idea
+   — work happening on this machine — are then the same object. Built as a conic
+   gradient masked to a 1.5px band, so it costs one composited layer and no
+   full-surface blur. */
+.brand-logo::after {
+    content: "";
+    position: absolute;
+    inset: -4px;
+    padding: 1.5px;
+    border-radius: 50%;
+    background: conic-gradient(from var(--sweep),
+        transparent 0deg,
+        rgb(255 255 255 / 0.55) 55deg,
+        transparent 110deg);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+            mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+            mask-composite: exclude;
+    opacity: 0;
+    transition: opacity var(--dur-slow) var(--ease-std);
+    pointer-events: none;
+}
+body[data-busy="1"] .brand-logo::after {
+    opacity: 1;
+    animation: sweep 1.5s linear infinite;
+}
+

@@ -1,0 +1,67 @@
+# SearXNG settings for locally — private, local, JSON-enabled.
+#
+# Two things here are load-bearing:
+#   1. search.formats MUST include `json`, or /search?format=json returns 403.
+#      It is off by default and is the usual reason a local instance "doesn't
+#      work" with an API client.
+#   2. server.limiter must be false. The limiter is bot protection for a
+#      PUBLIC instance; on a loopback-only instance it only rate-limits you.
+
+use_default_settings: true
+
+general:
+  instance_name: "locally Search"
+  # No usage stats, no public metrics: this instance exists for one user.
+  enable_metrics: false
+
+server:
+  bind_address: "127.0.0.1"
+  port: 8080
+  # Loopback only, so this is not a shared secret in any meaningful sense.
+  secret_key: "locally-local-instance-not-public"
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+search:
+  # `json` is what locally's --search-url talks to.
+  formats:
+    - html
+    - json
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 12.0
+  pool_connections: 20
+  pool_maxsize: 10
+
+engines:
+  # Engine choice is the whole game for a self-hosted instance. Measured
+  # behaviour from a single IP: DuckDuckGo is reliable; Brave and Startpage
+  # suspend themselves once they trip automated-overuse limits; Google returns
+  # a page SearXNG often cannot extract results from.
+  #
+  # So: lean on the tolerant engines, and leave the aggressive ones off rather
+  # than have them fail a fraction of every query and slow the whole fan-out.
+  - name: duckduckgo
+    disabled: false
+  - name: wikipedia
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: wikidata
+    disabled: false
+
+  # Off by default — re-enable one at a time if you actually need it, and watch
+  # for CAPTCHA/429 in the SearXNG log before leaving it on.
+  - name: google
+    disabled: true
+  - name: bing
+    disabled: true
+  - name: brave
+    disabled: true
+  - name: startpage
+    disabled: true

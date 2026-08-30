@@ -1,0 +1,125 @@
+/* ==========================================================================
+   19-voice-tab.css  -  The Voice tab around the orb
+   --------------------------------------------------------------------------
+   LAYER 1, part 10/14.  Split out of the old style.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - .mic-status, and the transcript pair .voice-heard / .voice-reply
+       (including the karaoke .speaking span the playback queue drives)
+     - .voice-controls, .voice-timings, the model .swap-row and #code-dir
+     - The .ic icon sizing rule
+     - Voice tuning (.voice-tuning, .tune) and the live .mic-meter
+
+   NOT IN THIS FILE:
+     - The orb -- 15-voice-orb.css
+     - Speaker enrolment -- 20-speaker.css
+     - The voice restyle -- 35-voice-util.css
+   ========================================================================== */
+
+.mic-status {
+    padding: 2px 6px var(--sp-1);
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+}
+.mic-status.err { color: var(--error); }
+.mic-status[hidden] { display: none; }
+
+/* --- Voice mode --- */
+.voice-heard {
+    font-size: 15px;
+    color: var(--text);
+    max-width: 46ch;
+    line-height: 1.5;
+}
+.voice-heard::before {
+    content: "heard  ";
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-faint);
+}
+.voice-heard[hidden], .voice-reply[hidden] { display: none; }
+.voice-reply {
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--text);
+    max-width: 52ch;
+    max-height: 30vh;
+    overflow-y: auto;
+    text-align: left;
+    border-left: 2px solid var(--device);
+    padding-left: 14px;
+}
+/* Karaoke: text is revealed as each clip starts playing, and the sentence
+   currently coming out of the speakers is the one lit in the device colour.
+   Everything already said stays readable but recedes. */
+.voice-reply span {
+    color: var(--text-dim);
+    transition: color var(--dur-base) var(--ease-out);
+}
+.voice-reply span.speaking { color: var(--device); }
+.voice-controls { display: flex; align-items: center; gap: 10px; }
+.voice-timings {
+    font-size: var(--fs-xs);
+    color: var(--text-faint);
+    min-height: 1em;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+.voice-timings .stage { white-space: nowrap; }
+.voice-timings .stage b { color: var(--text-dim); font-weight: 500; }
+.voice-panel .checkline { font-size: var(--fs-sm); }
+
+.swap-row { display: flex; gap: var(--sp-2); align-items: center; }
+.swap-row select,
+.swap-row input[type="text"] { flex: 1; min-width: 0; }
+/* Paths are machine truth, like device names and timings. */
+#code-dir { font-family: var(--mono); font-size: var(--fs-sm); }
+
+/* --- Icons --- */
+.ic {
+    width: 17px; height: 17px;
+    display: block;
+    flex-shrink: 0;
+    pointer-events: none;
+}
+.btn .ic { width: 14px; height: 14px; display: inline-block; vertical-align: -2px; }
+.btn.ghost.small { display: inline-flex; align-items: center; gap: 6px; }
+
+/* --- Voice tuning --- */
+.voice-tuning {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(380px, 90vw);
+}
+.tune { display: flex; flex-direction: column; gap: var(--sp-1); text-align: left; }
+.tune .field-label { display: flex; justify-content: space-between; gap: 10px; }
+.mic-meter {
+    position: relative;
+    height: 6px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    overflow: hidden;
+}
+.mic-meter-fill {
+    height: 100%;
+    width: 100%;
+    transform: scaleX(0);
+    transform-origin: left center;
+    background: var(--text-faint);
+}
+/* There is no gate marker any more: the decision is a speech probability from
+   a model, not a level crossing, so drawing a line on a loudness bar would
+   describe something the VAD no longer does. The meter lights up while a turn
+   is actually being captured instead. */
+.mic-meter-fill.over { background: var(--device); }
+

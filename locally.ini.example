@@ -1,0 +1,12 @@
+# Optional locally config — copy to locally.ini (gitignored) to customize.
+# Runtime flags still win where both exist.
+
+[generation]
+# Default repetition penalty when the client doesn't send one.
+# 1.05 = locally default (safe for code generation).
+# 1.1  = Ollama's default; breaks thinking-model loops faster but is known
+#        to degrade code output. Consider it for chat-only setups on slow
+#        devices (iGPU), where a runaway <think> loop hurts the most.
+# Per-request client values (OpenAI frequency/presence_penalty, Ollama
+# repeat_penalty) always override this.
+repetition_penalty = 1.05

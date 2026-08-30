@@ -1,0 +1,131 @@
+/* ==========================================================================
+   35-voice-util.css  -  Voice stage and utility workspaces
+   --------------------------------------------------------------------------
+   LAYER 2, part 6/17.  Split out of the old assistant.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The voice stage and heading, and the compact overrides for the orb
+     - The voice tuning group -- sliders read as one labelled group, not two
+       loose rows
+     - The utility workspace surfaces.  Same rule as .voice-stage: a workspace
+       is where content lives, not a card, so it paints no background
+
+   NOT IN THIS FILE:
+     - The orb's own geometry and states -- 15-voice-orb.css
+     - Speaker enrolment -- 20-speaker.css
+   ========================================================================== */
+
+/* Voice ------------------------------------------------------------------- */
+.voice-panel { padding: 20px; }
+/* No surface. A layout container that paints a background and a border reads
+   as a box floating on the page; three of them nested reads as packaging. The
+   page background IS the surface here -- hierarchy comes from whitespace and
+   type, which is what makes ChatGPT/Claude feel unified rather than assembled. */
+.voice-stage {
+    width: min(620px, 100%);
+    max-height: calc(100vh - var(--topbar-height) - 40px);
+    padding: 22px 28px;
+    gap: var(--sp-4);
+    overflow-y: auto;
+    box-shadow: var(--shadow-md);
+}
+.voice-heading h2 { margin: 3px 0; font-size: 20px; letter-spacing: -0.03em; }
+.voice-heading p { color: var(--text-faint); font-size: var(--fs-sm); }
+.orb { width: 142px; height: 142px; }
+.orb-core { width: 78px; height: 78px; box-shadow: 0 0 40px -12px var(--device); }
+.orb-ring { width: 110px; height: 110px; }
+.orb-ring-2 { width: 138px; height: 138px; }
+.orb[data-state="idle"] .orb-core { animation: none; }
+.voice-state { margin-top: 0; font-size: var(--fs-xs); letter-spacing: 0.09em; }
+.voice-caption { font-size: var(--fs-sm); }
+/* Same rule as the chat thread: what you said is a distinct quoted object and
+   keeps a light surface; what the assistant said is the content and sits flat.
+   Voice and Chat are the same conversation, so they should not use two
+   different visual languages for the same two things. */
+.voice-heard {
+    padding: var(--sp-3) var(--sp-4);
+    background: var(--fill);
+    border-radius: var(--radius);
+    font-size: var(--fs-sm);
+}
+.voice-reply {
+    padding: 0;
+    background: none;
+    border-radius: 0;
+    font-size: var(--fs-base);
+    line-height: 1.6;
+}
+/* The state line is the voice tab's activity line — same role as .activity in
+   chat, so the two tabs report progress in one vocabulary. */
+.voice-state {
+    font-family: var(--mono);
+    color: var(--device);
+}
+.voice-controls { padding: 0; gap: var(--sp-2); }
+.voice-controls .btn { height: 34px; border-radius: var(--radius-sm); font-size: var(--fs-sm); }
+.voice-controls .btn:not(.stop):not(.ghost) { color: var(--on-solid); background: var(--solid); }
+/* A hairline rule separates the tuning block from the stage above it --
+   one line instead of a four-sided box. */
+.voice-tuning {
+    width: 100%;
+    padding: var(--sp-4) 0 0;
+    border-top: 1px solid var(--border-soft);
+}
+/* The heading was three stacked lines of chrome above the orb. The orb IS the
+   subject; an eyebrow, a title and a subtitle repeating what the tab already
+   says pushed it below the fold on a laptop. */
+.voice-heading .eyebrow { display: none; }
+.voice-heading h2 { margin: 0 0 var(--sp-1); font-size: var(--fs-xl); letter-spacing: -0.02em; }
+.voice-heading p { color: var(--text-faint); font-size: var(--fs-sm); }
+
+/* Sliders read as one labelled group, not two loose rows. */
+.voice-tuning .tune {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: var(--sp-1) var(--sp-3);
+    padding: var(--sp-2) 0;
+}
+.voice-tuning .tune > span:first-child {
+    font-family: var(--mono);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.09em;
+    color: var(--text-dim);
+}
+.voice-tuning .tune > input[type="range"] { grid-column: 1 / -1; }
+
+.voice-stage input[type="range"] { accent-color: var(--device); }
+
+/* Utility workspaces ------------------------------------------------------ */
+.util-panel { flex-direction: column; overflow: hidden; }
+.util-content { padding: 24px clamp(18px, 4vw, 42px) 34px; }
+.util-content > * { width: min(920px, 100%); margin-left: auto; margin-right: auto; }
+.util-heading { align-items: center; margin-bottom: 16px; }
+.util-heading h2 { margin: 0 0 3px; font-size: 22px; letter-spacing: -0.035em; }
+.util-heading p:not(.eyebrow) { font-size: var(--fs-sm); }
+.engine-switch { padding: 2px; background: #0E0E0E; border-radius: 8px; }
+.engine-option { height: 27px; padding: 0 9px; border-radius: 6px; font-size: var(--fs-xs); }
+.engine-option.active { background: var(--control-hover); box-shadow: var(--shadow-sm); }
+/* Same rule as .voice-stage: the workspace is where content lives, not a card.
+   The device-tinted border went with it -- provenance is already carried by the
+   engine switch and the readiness label, and a full amber outline around the
+   whole panel was the "stripe" that read as decoration. */
+.util-workspace {
+    min-height: 350px;
+    padding: 0;
+}
+.util-workspace-head { margin-bottom: 13px; }
+.util-workspace-head h3 { font-size: var(--fs-base); }
+.util-workspace-head p { font-size: var(--fs-sm); }
+.util-panel .btn:not(.ghost):not(.stop) { color: var(--on-solid); background: var(--device); }
+.util-dropzone { min-height: 158px; gap: 5px; background: #0E0E0E; border-radius: 9px; }
+.util-dropzone .ic { width: 23px; height: 23px; }
+.util-dropzone strong { font-size: var(--fs-xs); }
+.util-dropzone span { font-size: var(--fs-xs); }
+.util-actions { min-height: 40px; padding-top: 10px; }
+.util-file, #util-result-text { background: #0E0E0E; border-radius: 9px; }
+

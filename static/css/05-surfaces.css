@@ -1,0 +1,440 @@
+/* Checkpoint 4 Wave 2 placeholder: Agent 3 owns the remaining surface styles. */
+
+/* Update availability is status, not an interruption: no scrim, no modal, no
+   automatic install. It sits above the rail footer and disappears only when
+   the exact set of offered versions has been dismissed. */
+.update-notice {
+    position: fixed;
+    z-index: 70;
+    left: var(--sp-4);
+    bottom: var(--sp-4);
+    width: min(360px, calc(100vw - var(--sp-6)));
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-3);
+    padding: var(--sp-4);
+    color: var(--ink);
+    background: var(--bg-overlay);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-card);
+    box-shadow: 0 18px 48px rgb(0 0 0 / 0.44);
+}
+
+.update-copy {
+    display: grid;
+    gap: var(--sp-1);
+    min-width: 0;
+}
+
+.update-copy strong {
+    font-size: var(--fs-base);
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.update-copy span,
+.update-links {
+    color: var(--ink-2);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+}
+
+.update-links {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-3);
+}
+
+.update-links a {
+    color: var(--ink-2);
+    text-decoration: none;
+}
+
+.update-dismiss {
+    width: var(--row-chrome);
+    height: var(--row-chrome);
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    color: var(--ink-3);
+    background: transparent;
+    font: 500 var(--fs-lg)/1 var(--ui);
+    cursor: pointer;
+}
+
+.update-dismiss:focus-visible,
+.update-links a:focus-visible {
+    outline: 1px solid var(--ink);
+    outline-offset: 2px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .update-links a:hover { color: var(--ink); }
+    .update-dismiss:hover { color: var(--ink); background: var(--fill-hover); }
+}
+
+/* First-run setup ---------------------------------------------------------
+   A quiet, full-window decision surface: one task, one content column, no
+   nested app chrome. State changes are immediate; installation progress is
+   text and fill, not decorative motion. */
+.setup-shell {
+    position: fixed;
+    z-index: 120;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: var(--sp-5);
+    background: rgb(0 0 0 / 0.82);
+}
+
+.setup-dialog {
+    width: min(920px, 100%);
+    height: min(680px, calc(100vh - var(--sp-7)));
+    min-height: 520px;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow: hidden;
+    color: var(--ink);
+    background: var(--bg-raised);
+    border: 1px solid var(--line-strong);
+    border-radius: calc(var(--radius-card) + var(--sp-2));
+    box-shadow: 0 32px 90px rgb(0 0 0 / 0.58);
+}
+
+.setup-head {
+    min-height: 72px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--sp-4) var(--sp-5) 0;
+}
+
+.setup-mark {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    color: var(--ink);
+}
+
+.setup-mark .mark { width: 100%; height: 100%; }
+
+.setup-close {
+    width: var(--row);
+    height: var(--row);
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    color: var(--ink-3);
+    background: transparent;
+    font: 400 var(--fs-xl)/1 var(--ui);
+    cursor: pointer;
+}
+
+.setup-content {
+    width: min(760px, calc(100% - var(--sp-7)));
+    margin-inline: auto;
+    padding: var(--sp-3) 0 var(--sp-5);
+    overflow: auto;
+    scrollbar-gutter: stable;
+}
+
+.setup-content {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+}
+
+.setup-content::-webkit-scrollbar { width: 8px; }
+.setup-content::-webkit-scrollbar-track { background: transparent; }
+.setup-content::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: var(--radius-pill);
+    background: var(--line-strong);
+    background-clip: padding-box;
+}
+
+.setup-content > h2 {
+    margin: var(--sp-2) 0 var(--sp-2);
+    font-size: clamp(28px, 4vw, 42px);
+    letter-spacing: -0.03em;
+}
+
+.setup-lede {
+    max-width: 620px;
+    margin: 0 0 var(--sp-6);
+    color: var(--ink-2);
+    font-size: var(--fs-md);
+}
+
+.setup-stage { min-height: 260px; }
+
+.setup-hardware-grid,
+.setup-choice-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-3);
+}
+
+.setup-device-card,
+.setup-choice,
+.setup-toggle-row,
+.setup-review-row {
+    min-width: 0;
+    padding: var(--sp-4);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-card);
+    background: var(--fill);
+}
+
+.setup-device-card {
+    display: grid;
+    gap: var(--sp-1);
+}
+
+.setup-device-card strong,
+.setup-choice strong,
+.setup-toggle-copy strong,
+.setup-review-row strong {
+    font-size: var(--fs-base);
+    font-weight: 600;
+}
+
+.setup-device-card span,
+.setup-choice span,
+.setup-toggle-copy span,
+.setup-review-row span,
+.setup-note {
+    color: var(--ink-2);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
+}
+
+.setup-choice {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-2) var(--sp-3);
+    cursor: pointer;
+}
+
+.setup-choice input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.setup-choice strong,
+.setup-choice > span:not(.setup-choice-meta) { grid-column: 1; }
+
+.setup-choice-meta {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    font-family: var(--mono);
+    font-size: var(--fs-xs) !important;
+    white-space: nowrap;
+}
+
+.setup-choice:has(input:checked) {
+    border-color: var(--ink);
+    background: var(--fill-active);
+    box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.setup-choice:has(input:focus-visible) {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+}
+
+.setup-choice[data-installed="true"]::after {
+    content: "INSTALLED";
+    position: absolute;
+    right: var(--sp-3);
+    bottom: var(--sp-2);
+    color: var(--ink-3);
+    font: 500 9px/1 var(--mono);
+    letter-spacing: 0.07em;
+}
+
+.setup-section-title {
+    margin: var(--sp-5) 0 var(--sp-3);
+    color: var(--ink-3);
+    font: 500 var(--fs-xs)/1.4 var(--mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.setup-section-title:first-child { margin-top: 0; }
+
+.setup-toggle-list,
+.setup-review-list {
+    display: grid;
+    gap: var(--sp-2);
+}
+
+.setup-toggle-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--sp-4);
+    cursor: pointer;
+}
+
+.setup-toggle-copy { display: grid; gap: 2px; }
+
+.setup-toggle-row input {
+    flex: 0 0 auto;
+    margin: 0;
+    appearance: none;
+    cursor: pointer;
+}
+
+.setup-toggle-row input[type="radio"] {
+    width: 20px;
+    height: 20px;
+    border: 1px solid var(--line-strong);
+    border-radius: 50%;
+    background: transparent;
+}
+
+.setup-toggle-row input[type="radio"]:checked {
+    border-color: var(--ink);
+    box-shadow: inset 0 0 0 5px var(--bg-raised);
+    background: var(--ink);
+}
+
+.setup-toggle-row input[type="checkbox"] {
+    width: 42px;
+    height: 24px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-pill);
+    background:
+        radial-gradient(circle at 11px 50%, var(--ink-2) 0 7px, transparent 7.5px),
+        var(--fill-active);
+}
+
+.setup-toggle-row input[type="checkbox"]:checked {
+    border-color: var(--ink);
+    background:
+        radial-gradient(circle at 30px 50%, var(--on-solid) 0 7px, transparent 7.5px),
+        var(--solid);
+}
+
+.setup-toggle-row input:disabled { opacity: 0.56; cursor: default; }
+
+.setup-review-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--sp-4);
+}
+
+.setup-progress {
+    height: 3px;
+    margin-top: var(--sp-5);
+    overflow: hidden;
+    border-radius: var(--radius-pill);
+    background: var(--line);
+}
+
+.setup-progress-fill {
+    width: 0;
+    height: 100%;
+    background: var(--solid);
+    transition: width var(--dur-fast) var(--ease-out);
+}
+
+.setup-install-list {
+    display: grid;
+    gap: var(--sp-2);
+    margin-top: var(--sp-4);
+    color: var(--ink-2);
+    font: var(--fs-sm)/1.5 var(--mono);
+}
+
+.setup-install-item[data-state="installed"] { color: var(--ink); }
+.setup-install-item[data-state="error"] { color: var(--alarm); }
+
+.setup-footer {
+    min-height: 76px;
+    display: grid;
+    grid-template-columns: minmax(100px, 1fr) auto minmax(100px, 1fr);
+    align-items: center;
+    gap: var(--sp-4);
+    padding: var(--sp-3) var(--sp-5) var(--sp-4);
+    border-top: 1px solid var(--line-soft);
+}
+
+.setup-footer > .btn { justify-self: start; }
+
+.setup-footer-actions {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--sp-3);
+}
+
+.setup-status {
+    max-width: 260px;
+    overflow: hidden;
+    color: var(--ink-3);
+    font-size: var(--fs-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.setup-dots {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-2);
+}
+
+.setup-dot {
+    width: 7px;
+    height: 7px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--ink-4);
+    cursor: pointer;
+}
+
+.setup-dot[aria-selected="true"] {
+    width: 20px;
+    border-radius: var(--radius-pill);
+    background: var(--ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .setup-choice:hover,
+    .setup-toggle-row:hover { background: var(--fill-hover); }
+    .setup-close:hover { color: var(--ink); background: var(--fill-hover); }
+}
+
+@media (max-width: 680px) {
+    .setup-shell { padding: 0; }
+    .setup-dialog {
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        border: 0;
+        border-radius: 0;
+    }
+    .setup-content { width: calc(100% - var(--sp-6)); }
+    .setup-hardware-grid,
+    .setup-choice-grid { grid-template-columns: 1fr; }
+    .setup-footer {
+        grid-template-columns: auto 1fr auto;
+        padding-inline: var(--sp-4);
+    }
+    .setup-status { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .setup-progress-fill { transition: none; }
+}

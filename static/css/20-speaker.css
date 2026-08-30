@@ -1,0 +1,158 @@
+/* ==========================================================================
+   20-speaker.css  -  Speaker enrolment and verification
+   --------------------------------------------------------------------------
+   LAYER 1, part 11/14.  Split out of the old style.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The whole speaker block: .speaker, its head and badge, the enrolment
+       .speaker-progress bar, .speaker-actions and the live .speaker-rec-dot
+     - The verdict readout -- match / reject / abstain -- and .speaker-scores,
+       which shows the cosine because --speaker-threshold cannot be guessed
+       from outside and has to be read off real recordings
+
+   NOT IN THIS FILE:
+     - The VAD meter, which is a different question (19-voice-tab.css):
+       Silero says SOMEONE is talking, this says WHO
+   ========================================================================== */
+
+/* --- Speaker enrolment ---
+   Three profile states (none / learning / ready) and three verdicts (match /
+   reject / abstain) with no hue to spend on them. Both use the fill grammar
+   the device dots already established: solid = yes, ring = no, hollow = can't
+   tell. The numbers carry the rest, in the mono face, because a threshold is
+   only tunable if you can read the score it is being compared against. */
+.speaker {
+    width: min(380px, 90vw);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    text-align: left;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.speaker[hidden] { display: none; }
+.speaker-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+}
+.speaker-head-copy h3 { font-size: var(--fs-base); font-weight: 600; }
+.speaker-head-copy .field-hint { margin-top: 2px; }
+.speaker-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    font-family: var(--mono);
+    font-size: var(--fs-xs);
+    letter-spacing: var(--track-wide);
+    text-transform: uppercase;
+    color: var(--text-faint);
+}
+.speaker-badge-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+/* ready: solid.  learning: ring.  none: hollow hairline. */
+.speaker-badge[data-level="ready"] { color: var(--ink); }
+.speaker-badge[data-level="ready"] .speaker-badge-dot { background: var(--ink); }
+.speaker-badge[data-level="learning"] { color: var(--text-dim); }
+.speaker-badge[data-level="learning"] .speaker-badge-dot {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--ink);
+}
+.speaker-badge[data-level="none"] .speaker-badge-dot {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--ink-3);
+}
+/* Stale is a genuine fault — the profile cannot be used at all — so it is the
+   one place in this panel entitled to the alarm colour. */
+.speaker-badge[data-level="stale"] { color: var(--alarm); }
+.speaker-badge[data-level="stale"] .speaker-badge-dot { background: var(--alarm); }
+
+.speaker-progress {
+    height: 6px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    overflow: hidden;
+}
+.speaker-progress > i {
+    display: block;
+    height: 100%;
+    width: 100%;
+    transform: scaleX(0);
+    transform-origin: left center;
+    background: var(--text-faint);
+    transition: transform var(--dur-base) var(--ease-out);
+}
+.speaker-progress.full > i { background: var(--ink); }
+.speaker-figures { color: var(--text-dim); }
+
+.speaker-alert { color: var(--alarm); }
+.speaker-alert[hidden] { display: none; }
+
+.speaker-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.speaker-actions .btn { display: inline-flex; align-items: center; gap: 7px; }
+.speaker-actions .btn[hidden] { display: none; }
+/* A red dot means the microphone is live — the same meaning it has on the
+   chat mic button, and the only other hue this panel is allowed. */
+.speaker-rec-dot { width: 7px; height: 7px; border-radius: 50%; display: none; }
+.speaker-actions .btn.recording .speaker-rec-dot {
+    display: block;
+    background: var(--alarm);
+    animation: pulse 1s var(--ease-in-out) infinite;
+}
+
+.speaker-status { font-size: var(--fs-sm); color: var(--text-dim); }
+.speaker-status.err { color: var(--error); }
+.speaker-status[hidden] { display: none; }
+
+.speaker-verdict {
+    border-top: 1px solid var(--border-soft);
+    padding-top: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.speaker-verdict[hidden] { display: none; }
+.speaker-verdict-head { display: flex; align-items: center; gap: 7px; }
+.speaker-verdict-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.speaker-verdict-name {
+    font-family: var(--mono);
+    font-size: var(--fs-xs);
+    letter-spacing: var(--track-wide);
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+.speaker-verdict[data-verdict="match"] .speaker-verdict-dot { background: var(--ink); }
+.speaker-verdict[data-verdict="match"] .speaker-verdict-name { color: var(--ink); }
+.speaker-verdict[data-verdict="reject"] .speaker-verdict-dot {
+    background: transparent;
+    box-shadow: inset 0 0 0 2px var(--ink);
+}
+.speaker-verdict[data-verdict="abstain"] .speaker-verdict-dot {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--ink-3);
+}
+/* The score is the whole point of the test: it is what --speaker-threshold is
+   set from, so it is the largest thing in the panel. */
+.speaker-scores { display: flex; gap: 18px; flex-wrap: wrap; }
+.speaker-scores div { display: flex; flex-direction: column; gap: 1px; }
+.speaker-scores dt {
+    font-size: 10px;
+    letter-spacing: var(--track-wide);
+    text-transform: uppercase;
+    color: var(--text-faint);
+}
+.speaker-scores dd { font-size: var(--fs-lg); color: var(--ink); line-height: 1.2; }
+.speaker-scores div + div dd { font-size: var(--fs-base); color: var(--text-dim); }
+
+.speaker-model { font-size: var(--fs-xs); color: var(--text-faint); }
+.speaker-model[hidden] { display: none; }
+

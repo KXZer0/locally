@@ -1,0 +1,179 @@
+# Odysseus -> locally
+# =============================================================================
+# A Docker Compose override that points Odysseus at `locally` instead of at a
+# host Ollama. Drop it next to Odysseus's own docker-compose.yml as
+# `docker-compose.override.yml` (Compose picks that name up automatically), or
+# name it explicitly:
+#
+#   docker compose -f docker-compose.yml -f odysseus-compose.override.yml up -d
+#
+# Full setup notes, including the NPU tool budget and the Machine A / Machine B
+# split, are in docs/ODYSSEUS.md in the `locally` repo.
+#
+# -----------------------------------------------------------------------------
+# WHAT IS CONFIRMED, AND WHAT YOU SHOULD CHECK
+# -----------------------------------------------------------------------------
+# Confirmed against odysseus-dev/odysseus @ main:
+#   * the service is named `odysseus`
+#   * it publishes ${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000
+#   * it already defines extra_hosts: ["host.docker.internal:host-gateway"]
+#   * OLLAMA_BASE_URL is the OpenAI-compatible base URL knob, and its own
+#     documented Docker form is http://host.docker.internal:11434/v1 --
+#     i.e. THE /v1 SUFFIX IS REQUIRED
+#   * LLM_HOST defaults to `localhost`; LLM_HOSTS is a comma-separated list
+#     used for model DISCOVERY (hostnames/IPs only, no scheme, no port -- it
+#     scans common serve ports)
+#   * SEARXNG_INSTANCE defaults to http://localhost:8080 and Compose overrides
+#     it to http://searxng:8080 for in-network access
+#
+# NOT confirmed -- CHECK THIS ONE THING BEFORE YOU DEBUG ANYTHING ELSE:
+#   Odysseus's setup guide says model providers are configured in the SETTINGS
+#   UI after first login, not purely from .env. These env vars are best
+#   understood as pre-seeding the value Settings starts from. If the model list
+#   is still empty after `up -d`, open http://localhost:7000 -> Settings and
+#   add the endpoint there by hand. That is the authoritative place.
+# =============================================================================
+
+services:
+  odysseus:
+    environment:
+      # -----------------------------------------------------------------------
+      # THE ONE THAT MATTERS
+      # -----------------------------------------------------------------------
+      # `locally`'s OpenAI-compatible API. Three parts, each a way to get it
+      # wrong:
+      #
+      #   host.docker.internal  NOT localhost. Inside this container `localhost`
+      #                         is the container, which has no locally in it.
+      #                         This is the single most common failure.
+      #   :8000                 locally's --port (default 8000). NOT 11434 --
+      #                         that is locally's Ollama shim, and on the
+      #                         RTX 4070 box it is disabled outright so the
+      #                         real Ollama can own the port.
+      #   /v1                   Required. Odysseus's own documented form for a
+      #                         host Ollama is .../11434/v1, same rule.
+      #
+      # Note the asymmetry with locally's own --proxy-url, which takes the
+      # upstream ROOT (http://localhost:11434) because ProxySlot appends the
+      # /v1/... path itself. Different layers, different conventions.
+      OLLAMA_BASE_URL: "http://host.docker.internal:8000/v1"
+
+      # -----------------------------------------------------------------------
+      # MODEL DISCOVERY
+      # -----------------------------------------------------------------------
+      # LLM_HOST is a HOSTNAME, not a URL -- no scheme, no port. Odysseus scans
+      # common serve ports on it. Pointing it at the host makes locally
+      # discoverable without hardcoding a port.
+      LLM_HOST: "host.docker.internal"
+
+      # Comma-separated additional hosts. Uncomment to also discover the OTHER
+      # machine's locally over Tailscale -- e.g. reach Machine A's NPU utility
+      # models from the RTX 4070 box, which has no Intel silicon and therefore
+      # no utility slots at all (see docs/ODYSSEUS.md sec. 3).
+      # Hostnames only. Tailscale MagicDNS names work here.
+      # LLM_HOSTS: "machine-a.tailXXXX.ts.net"
+
+      # -----------------------------------------------------------------------
+      # EMBEDDINGS
+      # -----------------------------------------------------------------------
+      # Odysseus defaults this to http://{LLM_HOST}:11434/v1/embeddings -- an
+      # Ollama assumption. `locally` does NOT serve /v1/embeddings: its
+      # embedding model lives behind /v1/util/search and /v1/util/index, which
+      # is a different API with a different shape.
+      #
+      # So leave embeddings OFF locally. Two working options:
+      #
+      #   (a) FASTEMBED_MODEL -- Odysseus embeds in-process, no external
+      #       service, nothing to point anywhere. This is the simple answer and
+      #       the one to start with. Left commented because the correct model
+      #       name is version-specific; check Odysseus's .env.example.
+      #   # FASTEMBED_MODEL: "BAAI/bge-small-en-v1.5"
+      #
+      #   (b) A real Ollama on the host serving an embedding model:
+      #   # EMBEDDING_URL: "http://host.docker.internal:11434/v1/embeddings"
+      #   # EMBEDDING_MODEL: "nomic-embed-text"
+      #
+      # Do NOT set EMBEDDING_URL to locally's port 8000. It will 404 and the
+      # failure will look like a ChromaDB problem.
+
+      # -----------------------------------------------------------------------
+      # SEARCH
+      # -----------------------------------------------------------------------
+      # Odysseus's bundled SearXNG, reached by service name on the Compose
+      # network. Set explicitly because the .env.example default
+      # (http://localhost:8080) is the HOST's view, and from inside this
+      # container `localhost` is the container again.
+      #
+      # PORT CLASH: Odysseus publishes searxng on 127.0.0.1:8080, and
+      # `locally`'s own optional SearXNG defaults to 8080 too. On a machine
+      # running both, move locally's:
+      #     scripts\locally-launch.ps1 -SearxPort 8081
+      # Two SearXNG instances is fine. Two on one port is not.
+      SEARXNG_INSTANCE: "http://searxng:8080"
+
+      # -----------------------------------------------------------------------
+      # BINDING -- DO NOT LOOSEN THIS
+      # -----------------------------------------------------------------------
+      # Odysseus binds 127.0.0.1 by default and that default is correct: this
+      # stack holds your calendar, email and notes. Setting APP_BIND=0.0.0.0 to
+      # reach it from a phone publishes all of it to everyone on the subnet.
+      #
+      # Use Tailscale instead -- `tailscale serve --bg 7000` proxies your
+      # private tailnet address to 127.0.0.1:7000, so the loopback binding
+      # stays intact and nothing is exposed to the local network or the
+      # internet. It also terminates real HTTPS, which is what lets Odysseus
+      # install as a PWA on the phone (service workers need a secure context).
+      APP_BIND: "127.0.0.1"
+      APP_PORT: "7000"
+
+      # If you add a Tailscale hostname, Odysseus may need it here.
+      # UNVERIFIED: the exact format (comma-separated? scheme required?) was
+      # not confirmed -- check your version's .env.example.
+      # ALLOWED_ORIGINS: "https://machine-a.tailXXXX.ts.net"
+
+    # -------------------------------------------------------------------------
+    # LINUX HOST ACCESS
+    # -------------------------------------------------------------------------
+    # On Windows and macOS, Docker Desktop provides host.docker.internal for
+    # free. On Linux it does not exist without this mapping.
+    #
+    # Odysseus's upstream compose ALREADY defines this on the odysseus service,
+    # so this block is redundant -- repeated here deliberately, because it is
+    # the line you would otherwise go hunting for when the container cannot
+    # reach the host. Compose merges list values, so a duplicate entry is
+    # harmless.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+# =============================================================================
+# VERIFY, IN THIS ORDER
+# =============================================================================
+#
+#   1. locally answers on the HOST:
+#        curl -s http://127.0.0.1:8000/v1/models
+#      Note the exact "id" -- it is "<model-dir-name>@<DEVICE>", e.g.
+#      "Qwen3-8B-int4-cw-ov@NPU". locally accepts the bare name too. An
+#      UNRECOGNISED id does not error -- it falls through to default routing
+#      and answers from whatever slot is loaded, so a typo looks like success.
+#
+#   2. The CONTAINER can reach it:
+#        docker compose exec odysseus curl -sS http://host.docker.internal:8000/v1/models
+#      Fails while step 1 works? In order: Windows Firewall (Docker traffic
+#      arrives on the WSL/Hyper-V virtual adapter, which "private network"
+#      rules often miss), then confirm locally is on 0.0.0.0 not 127.0.0.1
+#      (it binds 0.0.0.0 with no flag to change it), then the port.
+#
+#   3. Odysseus lists the model:
+#        http://localhost:7000 -> Settings -> model providers
+#      Empty? Add http://host.docker.internal:8000/v1 by hand there. Settings
+#      is authoritative; these env vars only pre-seed it.
+#
+#   4. Tools work. If Odysseus's assistant tools are ignored on Machine A,
+#      watch locally's console for:
+#        tools ignored: N schemas render to X tokens, over the NPU's
+#        1200-token budget.
+#      Measured: an 8-tool assistant set is 735 tokens (9.0% of the NPU's 8192
+#      window) and is ACCEPTED. A 30-tool coding agent is 4,553 (55.6%) and is
+#      REFUSED -- the turn still answers, as plain chat. Trim tools in
+#      Odysseus, or trim them server-side with locally's --agent-tools.
+# =============================================================================

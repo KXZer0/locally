@@ -1,0 +1,165 @@
+/* ==========================================================================
+   22-memory-hud.css  -  The memory HUD
+   --------------------------------------------------------------------------
+   LAYER 1, part 13/14.  Split out of the old style.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The bottom-right HUD: .mem-hud, its pill, dot, bar, headline and the
+       expandable detail table
+     - The three states -- resident / offloading / critical -- and the
+       .mem-rows split between what we can audit (is-claim) and what we only
+       observed about the whole machine (is-real)
+     - Its own max-width 640px breakpoint
+
+   NOT IN THIS FILE:
+     - The composer's context ring, which reuses these class names but is a
+       different control -- 36-context-meter.css, which loads later and wins
+   ========================================================================== */
+
+/* --- Memory HUD ------------------------------------------------------------
+   Bottom-right, deliberately quiet: it is a status light, not a dashboard.
+   Colour carries the state (calm / warning / error) rather than the device,
+   because what it reports is about the machine, not about which engine
+   answered — the device rail already says that. */
+.mem-hud {
+    position: fixed;
+    right: var(--sp-4);
+    bottom: var(--sp-4);
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--sp-2);
+    max-width: min(380px, calc(100vw - var(--sp-6)));
+}
+/* Same pairing as every other hidden-capable class here: renderMemory() hides
+   the whole HUD when /v1/memory is unreachable, and without this it would sit
+   there showing the last reading as though it were current. */
+.mem-hud[hidden] { display: none; }
+
+.mem-hud-pill {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 6px 11px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-dim);
+    cursor: pointer;
+    font: inherit;
+    box-shadow: 0 4px 14px #0006;
+}
+
+/* A caret, so the pill reads as expandable rather than as a status readout you
+   happen to be able to click. Points up because the panel opens upward, and
+   flips when it is open. */
+.mem-hud-pill::after {
+    content: "";
+    width: 0;
+    height: 0;
+    margin-left: 1px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid currentColor;
+    opacity: .5;
+    transition: transform var(--dur-base) var(--ease-out);
+}
+.mem-hud-pill[aria-expanded="true"]::after { transform: rotate(180deg); }
+
+.mem-dot {
+    width: 8px; height: 8px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--success);
+}
+/* Offloading is a warning, not an error: the model still answers, just slower.
+   Critical means the OS is about to page, which is the cliff. */
+.mem-dot { background: transparent; box-shadow: inset 0 0 0 1px var(--ink-3); }
+.mem-hud[data-state="offloading"] .mem-dot {
+    background: var(--ink);
+    box-shadow: none;
+    animation: pulse 1.8s var(--ease-in-out) infinite;
+}
+.mem-hud[data-state="critical"] .mem-dot {
+    background: var(--alarm);
+    box-shadow: none;
+    animation: pulse 1s var(--ease-in-out) infinite;
+}
+.mem-hud[data-state="offloading"] .mem-hud-pill { border-color: var(--line-strong); }
+.mem-hud[data-state="critical"]   .mem-hud-pill { border-color: var(--alarm); }
+
+.mem-bar {
+    width: 54px; height: 5px;
+    flex: none;
+    border-radius: 3px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-soft);
+    overflow: hidden;
+}
+.mem-bar > i {
+    display: block;
+    height: 100%;
+    width: 100%;
+    transform: scaleX(0);
+    transform-origin: left center;
+    background: var(--text-faint);
+    transition: transform var(--dur-base) var(--ease-out);
+}
+.mem-hud[data-state="offloading"] .mem-bar > i { background: var(--ink); }
+.mem-hud[data-state="critical"]   .mem-bar > i { background: var(--error); }
+
+.mem-headline { font-size: var(--fs-sm); white-space: nowrap; }
+
+.mem-hud-detail {
+    width: 340px;
+    max-width: 100%;
+    padding: var(--sp-3) 13px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 10px 30px #0007;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    order: -1;              /* opens upward, above the pill */
+}
+/* `display: flex` above outranks the UA stylesheet's `[hidden] { display: none }`,
+   so without this the panel is stuck open and the toggle silently does nothing.
+   Any author `display` on an element that also uses the hidden attribute needs
+   this pairing. */
+.mem-hud-detail[hidden] { display: none; }
+
+.mem-message { font-size: 13px; color: var(--text); line-height: 1.45; }
+.mem-action {
+    font-size: var(--fs-sm);
+    color: var(--text-dim);
+    line-height: 1.45;
+    padding-left: 9px;
+    border-left: 2px solid var(--line-strong);
+}
+.mem-hud[data-state="critical"] .mem-action { border-left-color: var(--alarm); }
+
+.mem-rows { display: grid; grid-template-columns: 1fr auto; gap: 3px var(--sp-3); }
+.mem-rows dt { font-size: var(--fs-sm); color: var(--text-dim); }
+.mem-rows dd {
+    font-family: var(--mono);
+    font-size: var(--fs-sm);
+    color: var(--text);
+    text-align: right;
+}
+/* The row that exists to kill "I have 24 GB of VRAM": an integrated GPU's
+   advertised ceiling is a policy share of the same RAM everything else uses. */
+.mem-rows dd.is-claim { color: var(--text-faint); }
+.mem-rows dd.is-real  { color: var(--ink); }
+
+@media (max-width: 640px) {
+    .mem-hud { right: 10px; bottom: 76px; }
+    .mem-hud-detail { width: min(340px, calc(100vw - 20px)); }
+    .mem-bar { display: none; }
+}
+

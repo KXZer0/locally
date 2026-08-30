@@ -1,0 +1,76 @@
+/* Motion -------------------------------------------------------------------
+   Everything here is transform/opacity/colour, everything is interruptible, and
+   everything collapses under prefers-reduced-motion. The iGPU under this app may
+   be running inference while these play, so nothing composites a full surface. */
+
+/* --- Sidebar rail --------------------------------------------------------- */
+/* Per the checkpoint plan section 5.7: the panel slides, the grid track does
+   not. --rail flips to 0px in one frame and the main column reflows once, while
+   the sidebar translates out over it. Transitioning grid-template-columns
+   instead would relayout the entire page every frame for 280ms, which is the
+   wrong trade for a control that exists to get out of the way. */
+
+@media (prefers-reduced-motion: no-preference) {
+    body[data-mode] > .sidebar-tools {
+        transition: transform var(--dur-slow) var(--ease-drawer);
+    }
+}
+
+/* --- The assistant's mark ------------------------------------------------- */
+/* The mark is a three-lobed ring: r = a0 + a3*sin(3t) + a6*cos(6t). Both
+   harmonics have period 120 degrees, so the shape is its own image after a third
+   of a turn. That is what makes a seamless loop possible at all: the keyframe
+   runs 0 -> 120deg and the shape at the end is pixel-identical to the shape at
+   the start, so there is no snap back to zero and no seam to hide.
+
+   It turns at a CONSTANT rate. The previous cut eased through each third-turn
+   and pulsed the scale to 0.9 at the midpoint, which put an acceleration, a
+   deceleration and a size change into every 1.6s -- three events per loop, read
+   as a wobble rather than as work. It also stacked a second, counter-rotating
+   copy that swelled to 1.75x and faded; at any moment mid-stream that copy is a
+   visible second mark sitting behind the first, which is what it looked like.
+   Both are gone. What is left is what a spinner is: one shape, one steady turn,
+   plus a slow brightness breath on a deliberately non-harmonic period (2.4s vs
+   1.8s) so the pair never lands on the same frame twice in a row.
+
+   It runs only while that turn is generating. Motion here is state, not
+   decoration: a mark spinning next to a finished answer would be a lie about
+   what the machine is doing. */
+
+@keyframes mark-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(120deg); }
+}
+
+@keyframes mark-breathe {
+    0%,
+    100% { opacity: 0.5; }
+    50%  { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    /* The streaming turn is the last one in the thread, so no extra class has to
+       be threaded through the send path -- setGenerating already publishes
+       data-busy on <body> for exactly this kind of read. */
+    body[data-busy="1"] .thread > .message.assistant:last-child .msg-mark {
+        color: var(--ink);
+        animation: mark-breathe 1.8s var(--ease-std) infinite;
+    }
+
+    body[data-busy="1"] .thread > .message.assistant:last-child .msg-mark .mark {
+        animation: mark-spin 2.4s linear infinite;
+    }
+
+    /* Finished answers get one third-turn on hover. Same shape, same distance,
+       eased and once: it acknowledges the pointer without claiming to work. */
+    .message.assistant:hover .msg-mark .mark {
+        animation: mark-spin var(--dur-slow) var(--ease-out) 1;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    /* Still needs to say "working". Colour only, no rotation. */
+    body[data-busy="1"] .thread > .message.assistant:last-child .msg-mark {
+        color: var(--ink-2);
+    }
+}

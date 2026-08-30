@@ -1,0 +1,322 @@
+/* ==========================================================================
+   16-utilities.css  -  The Util tab: panel, engine switch, dropzone, results
+   --------------------------------------------------------------------------
+   LAYER 1, part 7/14.  Split out of the old style.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The Util panel shell, heading and the NPU/GPU .engine-switch
+     - The utility rail that lives INSIDE the Util panel (.util-nav)
+     - The workspace, dropzone, selected file, run/status and result blocks
+     - The full-window .drop-overlay
+
+   NOT IN THIS FILE:
+     - The individual utility views and their result widgets -- 18-util-views.css,
+       which loads after the responsive block and so overrides it
+     - The Util tab's responsive rules -- 17-responsive.css
+   ========================================================================== */
+
+/* --- Utilities --- */
+.util-panel {
+    /* The panel itself is the shell: rail on the left, scrolling content on
+       the right. The panel must NOT scroll as a whole, or the rail would
+       scroll away from the top bar it is supposed to hang off. */
+    flex-direction: row;
+    overflow: hidden;
+}
+.util-panel :focus-visible { outline-color: var(--device); }
+.util-content {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+    padding: 26px 30px 44px;
+}
+.util-content > * { width: min(900px, 100%); }
+.util-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--sp-5);
+    margin-bottom: 28px;
+}
+.util-heading h2 {
+    font-size: 25px;
+    line-height: 1.25;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    margin: var(--sp-1) 0 7px;
+}
+.util-heading p:not(.eyebrow) { color: var(--text-dim); font-size: 13px; }
+.eyebrow {
+    color: var(--text-faint);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+}
+.engine-switch {
+    display: flex;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    padding: 3px;
+    flex-shrink: 0;
+}
+.engine-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 31px;
+    padding: 0 13px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 100px;
+    color: var(--text-dim);
+    font: 500 var(--fs-xs) var(--mono);
+    cursor: pointer;
+    transition: transform var(--dur-instant) var(--ease-out);
+}
+.engine-option:active:not(:disabled) { transform: scale(0.98); }
+.engine-option.active {
+    background: var(--surface-raised);
+    border-color: var(--border);
+    color: var(--text);
+}
+.engine-option:disabled { opacity: 0.32; cursor: not-allowed; }
+.engine-dot { width: 7px; height: 7px; border-radius: 50%; }
+/* Same fill grammar as the brand mark: solid NPU, ring GPU. */
+.engine-option[data-util-engine="npu"] .engine-dot { background: var(--ink); }
+.engine-option[data-util-engine="gpu"] .engine-dot {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--ink);
+}
+.engine-option:not(.active) .engine-dot { opacity: 0.45; }
+
+.util-views { display: block; }
+/* --- Utilities: a rail INSIDE the Util panel only ---
+   The app's navigation is still the top tab bar (Chat / Voice / Util). This
+   rail is flush to the panel's left edge and full height, so its right border
+   picks up exactly where the top bar's bottom border stops — the two lines
+   read as one frame instead of a box floating in the content area. */
+.util-nav {
+    flex: 0 0 216px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 14px 10px;
+    overflow-y: auto;
+    background: var(--surface-sunken);
+    border-right: 1px solid var(--border);
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+}
+.util-nav-item {
+    width: 100%;
+    min-height: 34px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    background: none;
+    border: 0;
+    /* The active marker is an inset bar on the left edge; a border here would
+       shift the label by a pixel on every selection change. */
+    border-radius: var(--radius-sm);
+    text-align: left;
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    transition:
+        background var(--dur-instant) var(--ease-out),
+        color var(--dur-instant) var(--ease-out),
+        transform var(--dur-instant) var(--ease-out);
+}
+.util-nav-item:active { transform: scale(0.98); }
+.util-nav-item.active {
+    background: var(--surface-raised);
+    color: var(--text);
+    font-weight: 500;
+    box-shadow: inset 2px 0 var(--device);
+}
+/* The glyph carries the device colour on the active row, which is the same
+   provenance cue the rest of the app uses. */
+.util-nav-item.active .nav-glyph { color: var(--device); }
+.nav-glyph {
+    width: 17px;
+    flex: 0 0 17px;
+    text-align: center;
+    font: 500 var(--fs-sm) var(--mono);
+    color: var(--text-faint);
+}
+/* No surface, no device stripe. The workspace is where content lives, not a
+   card sitting on the page -- and the 2px device-coloured top border was the
+   amber stripe that read as decoration rather than information. Provenance is
+   already carried by the engine switch and the readiness label.
+
+   Note this rule had to change HERE as well as in assistant.css: dropping a
+   property from the winning sheet resurrects the losing sheet's value, which
+   is precisely why the two files need merging (task 4a). */
+.util-workspace {
+    min-height: 330px;
+    min-width: 0;
+    padding: 0;
+}
+.util-workspace-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 18px;
+    margin-bottom: 18px;
+}
+.util-workspace-head h3 { font-size: 17px; font-weight: 600; margin-bottom: 3px; }
+.util-workspace-head p { color: var(--text-dim); font-size: var(--fs-sm); }
+.util-availability { color: var(--device); white-space: nowrap; font-size: 10px; }
+.util-availability.err, .util-status.err { color: var(--error); }
+
+.util-dropzone {
+    width: 100%;
+    min-height: 190px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-2);
+    color: var(--text-dim);
+    background: var(--surface-sunken);
+    border: 1px dashed var(--text-faint);
+    border-radius: var(--radius-sm);
+    font-family: inherit;
+    cursor: pointer;
+    transition:
+        border-color var(--dur-fast) var(--ease-out),
+        background var(--dur-fast) var(--ease-out);
+}
+.util-dropzone:focus-visible {
+    border-color: var(--device);
+    background: color-mix(in srgb, var(--device) 5%, var(--surface-sunken));
+}
+.util-dropzone .ic { width: 29px; height: 29px; color: var(--device); margin-bottom: var(--sp-1); }
+.util-dropzone strong { color: var(--text); font-size: var(--fs-base); font-weight: 500; }
+.util-dropzone span { color: var(--text-faint); font-size: var(--fs-xs); }
+.util-dropzone[hidden] { display: none; }
+
+/* Hover is pointer-specific. Touch browsers synthesize hover on tap and would
+   otherwise leave controls looking selected after the interaction ended. */
+@media (hover: hover) and (pointer: fine) {
+    .tab:hover { color: var(--text); }
+    .iconbtn:hover { color: var(--text); border-color: var(--text-faint); }
+    .btn:hover { filter: brightness(1.08); }
+    .btn.ghost:hover { color: var(--text); border-color: var(--text-faint); }
+    .message pre:hover .copy-btn { opacity: 1; }
+    .copy-btn:hover { color: var(--text); }
+    .just-answer:hover { filter: brightness(1.1); }
+    .engine-option:hover:not(:disabled) { color: var(--text); }
+    .util-nav-item:hover { background: var(--surface-raised); color: var(--text); }
+    .util-dropzone:hover {
+        border-color: var(--device);
+        background: color-mix(in srgb, var(--device) 5%, var(--surface-sunken));
+    }
+    .msg-body a:hover { filter: brightness(1.15); }
+    .doc-chip .remove:hover { color: var(--text); }
+    .mem-hud-pill:hover { color: var(--text); border-color: var(--text-faint); }
+}
+
+.util-file {
+    min-height: 104px;
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 15px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+}
+.util-file[hidden] { display: none; }
+.util-file img {
+    width: 112px;
+    height: 82px;
+    display: block;
+    object-fit: contain;
+    background: #fff;
+    border-radius: 4px;
+}
+.util-file img[hidden] { display: none; }
+.util-file-icon {
+    width: 112px;
+    height: 82px;
+    display: grid;
+    place-items: center;
+    color: var(--device);
+    background: color-mix(in srgb, var(--device) 7%, var(--surface));
+    border: 1px solid color-mix(in srgb, var(--device) 45%, var(--border));
+    border-radius: 4px;
+    font-size: var(--fs-sm);
+    letter-spacing: 0.08em;
+}
+.util-file-icon[hidden] { display: none; }
+.util-file strong { display: block; font-size: 13px; overflow-wrap: anywhere; }
+.util-file span { display: block; margin-top: var(--sp-1); color: var(--text-faint); }
+.util-actions { min-height: 48px; display: flex; align-items: center; gap: var(--sp-3); padding-top: 14px; }
+.util-run { background: var(--device); display: inline-flex; align-items: center; gap: 7px; }
+.util-status { color: var(--text-faint); font-size: 10px; }
+
+.util-result {
+    margin-top: var(--sp-2);
+    border-top: 1px solid var(--border);
+    padding-top: 18px;
+}
+.util-result[hidden] { display: none; }
+.util-result-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); }
+.util-result-head > div:first-child { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap; }
+.util-result-meta { color: var(--device); font-size: 10px; }
+.util-result-tools { display: flex; gap: 6px; }
+.util-result-tools .iconbtn { height: 29px; min-width: 29px; }
+#util-result-text {
+    max-height: 300px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin: 10px 0 14px;
+    padding: 14px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-soft);
+    border-left: 2px solid var(--device);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font: var(--fs-sm)/1.65 var(--mono);
+}
+.util-ask { display: flex; gap: var(--sp-2); }
+.util-ask input { flex: 1; min-width: 0; }
+.util-ask .btn { background: var(--device); }
+.util-result .field-hint { margin-top: 7px; }
+.util-format-note {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-soft);
+    color: var(--text-faint);
+    font-size: var(--fs-xs);
+    line-height: 1.55;
+}
+.util-format-note b { color: var(--text-dim); font-weight: 500; }
+
+/* --- Drop overlay --- */
+.drop-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgb(255 255 255 / 0.05);
+    border: 1px dashed var(--line-strong);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    font-size: 17px;
+    color: var(--ink);
+    backdrop-filter: blur(2px);
+}
+.drop-overlay.active { display: flex; }
+

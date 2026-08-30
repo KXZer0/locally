@@ -1,0 +1,119 @@
+/* ==========================================================================
+   39-activity-think.css  -  Activity line and the think disclosure
+   --------------------------------------------------------------------------
+   LAYER 2, part 10/17.  Split out of the old assistant.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - .stage-label and the second, winning pass at .activity -- only the icon
+       breathes, because the label is read, not watched
+     - The think block as a DISCLOSURE line rather than a container.  The
+       0fr -> 1fr grid-template-rows trick is the one way to animate 'to the
+       height of the content'; do not replace it with a max-height guess
+     - Its own prefers-reduced-motion block
+
+   NOT IN THIS FILE:
+     - The first pass at these, in 33-messages.css, which this beats
+   ========================================================================== */
+
+.stage-label {
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+    font-family: var(--mono);
+}
+
+/* Activity — thinking / searching / reading / writing -----------------------
+   Each state gets its own icon so the shape tells you what is happening before
+   you read the word, which is the thing Claude and ChatGPT get right and a
+   bare dot does not. No box: an in-progress state is a line of the answer, not
+   a panel above it. */
+.activity {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+}
+.activity > .ic { width: 15px; height: 15px; color: var(--device); flex: none; }
+/* Only the icon breathes. The label is read, not watched. */
+.activity.busy > .ic { animation: pulse 1.6s var(--ease-in-out) infinite; }
+.activity > .activity-label { color: var(--text-dim); }
+
+/* Thinking: a disclosure line, not a container. Claude shows "Thought for 4s"
+   as one quiet row you can open; the old version was a bordered card with
+   "(click to expand)" spelled out, which made reasoning look like a feature. */
+.think-block {
+    margin: 0 0 var(--sp-4);
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+}
+.think-header {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: 0;
+    color: var(--text-faint);
+    font-family: var(--ui);
+    font-size: var(--fs-sm);
+    letter-spacing: 0;
+    text-transform: none;
+    cursor: pointer;
+    user-select: none;
+}
+.think-header:hover { color: var(--text-dim); }
+.think-header > .ic { width: 14px; height: 14px; flex: none; }
+.think-header .think-toggle { color: var(--text-faint); font-size: var(--fs-xs); }
+/* Disclosure. grid-template-rows 0fr -> 1fr is the one way to animate "to the
+   height of the content" without measuring it in JS, which is what a
+   max-height guess gets wrong on a block that is still growing. It is a layout
+   animation, which this project otherwise avoids — justified here because the
+   alternative is a hard jump, and it runs on one element for ~200ms rather
+   than every frame of a stream. */
+.think-block .think-body {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows var(--dur-base) var(--ease-out),
+                opacity var(--dur-fast) var(--ease-out);
+    opacity: 1;
+}
+.think-block.collapsed .think-body {
+    grid-template-rows: 0fr;
+    opacity: 0;
+}
+.think-block .think-scroll {
+    min-height: 0;                 /* required, or the 0fr row still shows */
+    overflow: hidden;
+    margin-top: var(--sp-2);
+    padding-left: var(--sp-3);
+    border-left: 1px solid var(--border);
+    color: var(--text-faint);
+    white-space: pre-wrap;
+}
+/* While the model is still thinking, keep the newest line in view and cap the
+   height, so a long chain scrolls in place instead of pushing the composer off
+   the screen. */
+.think-block.streaming .think-scroll {
+    max-height: 190px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+}
+.think-header > .chev {
+    width: 13px; height: 13px;
+    color: var(--text-faint);
+    transition: transform var(--dur-fast) var(--ease-out);
+}
+.think-block:not(.collapsed) .think-header > .chev { transform: rotate(90deg); }
+
+@media (prefers-reduced-motion: reduce) {
+    .think-block .think-body { transition: opacity var(--dur-fast) var(--ease-out); }
+    .think-header > .chev { transition: none; }
+}
+

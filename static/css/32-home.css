@@ -1,0 +1,132 @@
+/* ==========================================================================
+   32-home.css  -  The assistant home screen
+   --------------------------------------------------------------------------
+   LAYER 2, part 3/17.  Split out of the old assistant.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The welcome block: .assistant-welcome, .welcome-mark, .welcome-copy
+     - The .quick-actions grid
+     - The .engine-overview -- the per-device cards on the home screen
+
+   NOT IN THIS FILE:
+     - The revamped type and spacing for all of the above -- 44-revamp-home.css,
+       which loads later and wins
+   ========================================================================== */
+
+/* Assistant home and chat ------------------------------------------------- */
+.chat { padding: 24px clamp(18px, 4vw, 52px) 6px; scroll-padding-bottom: 92px; }
+.thread { max-width: 760px; }
+.empty-state {
+    width: min(700px, 100%);
+    max-width: none;
+    margin: clamp(42px, 10vh, 96px) auto 0;
+    text-align: center;
+}
+.assistant-welcome { display: block; margin: 0 0 22px; }
+.welcome-mark {
+    width: 44px;
+    height: 44px;
+    margin: 0 auto 14px;
+    display: grid;
+    place-items: center;
+    position: relative;
+    background: var(--control);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+}
+.welcome-mark img { width: 30px; height: 30px; border-radius: 8px; }
+.welcome-mark span {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    width: 7px;
+    height: 7px;
+    border: 1px solid var(--bg-overlay);
+    border-radius: 50%;
+    background: var(--success);
+}
+.welcome-mark span.offline { background: var(--text-faint); }
+.welcome-copy .eyebrow { color: var(--text-faint); font-size: var(--fs-xs); letter-spacing: 0.12em; }
+.empty-state .welcome-copy h2 {
+    margin: 5px 0 6px;
+    color: var(--text);
+    font-size: clamp(25px, 4vw, 31px);
+    line-height: 1.1;
+    font-weight: 600;
+    letter-spacing: -0.04em;
+}
+.welcome-copy p { max-width: 510px; margin: 0 auto; color: var(--text-dim); font-size: var(--fs-sm); line-height: 1.55; }
+.quick-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+}
+.quick-action {
+    min-width: 0;
+    min-height: 52px;
+    padding: 9px 11px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--text);
+    background: var(--control);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    font-family: var(--ui);
+    text-align: left;
+    cursor: pointer;
+    transition: background-color 100ms ease, border-color 100ms ease, transform 100ms var(--ease-out);
+}
+.quick-action .ic {
+    width: 26px;
+    height: 26px;
+    flex: 0 0 26px;
+    padding: 5px;
+    color: var(--ink-2);
+    background: var(--fill);
+    border: 1px solid var(--border-soft);
+    border-radius: 7px;
+}
+.quick-action span { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.quick-action strong { font-size: var(--fs-xs); font-weight: 500; }
+.quick-action small { overflow: hidden; color: var(--text-faint); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+.engine-overview {
+    margin-top: 12px;
+    padding: 9px 10px;
+    background: rgb(0 0 0 / 0.16);
+    border: 1px solid var(--border-soft);
+    border-radius: 9px;
+    text-align: left;
+}
+.engine-overview-head { display: flex; justify-content: space-between; margin-bottom: 6px; color: var(--text-faint); font-size: var(--fs-xs); }
+.engine-overview-head .mono { color: var(--success); font-size: var(--fs-xs); }
+.engine-overview .empty-devices { display: flex; flex-direction: row; gap: 5px; margin: 0; }
+.engine-overview .empty-device {
+    min-width: 0;
+    flex: 1 1 0;
+    padding: 5px 7px;
+    display: flex;
+    gap: 5px;
+    background: transparent;
+    border: 0;
+    border-left: 1px solid var(--device);
+    border-radius: 0;
+    font-size: var(--fs-xs);
+}
+.engine-overview .ed-dev { min-width: 0; font-size: var(--fs-xs); }
+.engine-overview .ed-model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.engine-overview .ed-note { display: none; }
+
+/* Messages are not cards. The assistant's reply is the page's main content, so
+   it sits directly on the background with rhythm doing the separating -- a box
+   around prose adds a frame nobody needs to see. The user's turn keeps a light
+   surface because it IS a distinct object: a short quoted thing you said,
+   which the eye should be able to skip.
+
+   Only the machine-output blocks stay boxed (code, tables, math), because there
+   the frame carries meaning: this is output, not prose. */

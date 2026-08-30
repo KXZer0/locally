@@ -1,0 +1,53 @@
+name: Model Watch
+
+# Polls Hugging Face (OpenVINO + upstream Qwen) for new locally-relevant models
+# and opens a GitHub Issue when something shows up. State lives in
+# scripts/seen_models.json, committed back so you're never re-pinged.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"   # Mondays 07:00 UTC
+  workflow_dispatch:        # manual "Run workflow" button
+
+permissions:
+  contents: write           # commit the updated snapshot
+  issues: write             # open the notification issue
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Scan for new models
+        id: scan
+        run: python scripts/model_watch.py
+
+      - name: Ensure label exists
+        if: steps.scan.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh label create model-watch --color BFD4F2 --description "New model notifications" 2>/dev/null || true
+
+      - name: Open issue
+        if: steps.scan.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "$(cat scripts/.watch_title)" \
+            --body-file scripts/.watch_body.md \
+            --label model-watch
+
+      - name: Commit updated snapshot
+        if: steps.scan.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add scripts/seen_models.json
+          git diff --cached --quiet || git commit -m "model-watch: update seen snapshot"
+          git push

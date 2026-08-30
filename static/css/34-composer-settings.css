@@ -1,0 +1,162 @@
+/* ==========================================================================
+   34-composer-settings.css  -  Composer and the compact settings drawer
+   --------------------------------------------------------------------------
+   LAYER 2, part 5/17.  Split out of the old assistant.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The composer: .composer-inner, its focus ring, trailing controls and the
+       circular #send-btn
+     - The compact settings drawer: heading, body, groups, disclosures, rows
+       and the toggles inside it
+
+   NOT IN THIS FILE:
+     - The .switch control itself -- 38-switch.css
+     - The composer's final borderless treatment -- 04-composer.css (layer 3)
+   ========================================================================== */
+
+.composer {
+    z-index: 10;
+    padding: 7px clamp(18px, 4vw, 52px) 13px;
+    background: linear-gradient(to bottom, transparent, var(--surface) 38%);
+}
+/* The input needs an edge -- it is a target you click into -- but it does not
+   need a floating card. Dropped the 42px shadow and the backdrop blur: a blur
+   is a full-surface composite every frame, which on a machine that may be
+   running inference on the same iGPU is not free. */
+.composer-inner {
+    max-width: 760px;
+    padding: 7px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: none;
+    transition: border-color var(--dur-instant) var(--ease-out);
+}
+.composer-inner:focus-within { border-color: var(--line-strong); }
+.composer-row { align-items: center; gap: 5px; }
+#message-input { min-width: 72px; min-height: 32px; padding: 5px 7px; font-size: var(--fs-sm); }
+.composer .iconbtn {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 50%;
+}
+.composer-trailing {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+}
+#send-btn.send-icon {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    color: var(--on-solid);
+    background: var(--solid);
+    border: 0;
+    border-radius: 50%;
+    box-shadow: none;
+    transition: transform var(--dur-instant) var(--ease-out),
+                background-color var(--dur-instant) var(--ease-out);
+}
+#send-btn.send-icon .ic { width: 16px; height: 16px; }
+#send-btn.send-icon.stop { color: var(--text); background: rgb(255 255 255 / 0.11); }
+#send-btn.send-icon:active { transform: scale(0.94); }
+
+/* Compact settings -------------------------------------------------------- */
+.settings-panel {
+    position: fixed;
+    z-index: 90;
+    top: calc(var(--topbar-height) + 8px);
+    right: 10px;
+    left: auto;
+    bottom: auto;
+    width: min(500px, calc(100vw - 20px));
+    max-height: calc(100vh - var(--topbar-height) - 18px);
+    padding: 14px;
+    overflow-y: auto;
+    color: var(--text);
+    background: #171717;
+    border: 1px solid var(--line-strong);
+    border-radius: 13px;
+    box-shadow: var(--shadow-lg);
+    transform: none;
+    transition: none;
+}
+.settings-panel[hidden] { display: none; }
+.settings-panel.entering { opacity: 1; transform: none; }
+.settings-heading {
+    margin: 0 0 10px;
+    padding: 0 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border-soft);
+}
+.settings-heading .eyebrow, .settings-heading p { display: none; }
+.settings-heading h2 { margin: 0; font-size: 15px; line-height: 1.2; letter-spacing: -0.02em; }
+.settings-heading .iconbtn { height: 26px; min-width: 26px; border-radius: 6px; font-size: 17px; }
+.settings-body { display: flex; flex-direction: column; gap: 7px; }
+.settings-group,
+.settings-disclosure {
+    padding: 10px;
+    background: rgb(0 0 0 / 0.14);
+    border: 1px solid var(--border-soft);
+    border-radius: 9px;
+}
+.settings-group-title { margin-bottom: 7px; color: var(--text-dim); font-size: var(--fs-sm); font-weight: 600; }
+.settings-panel .swap-row { gap: 5px; }
+.settings-panel select,
+.settings-panel textarea,
+.settings-panel input[type="text"] {
+    min-height: 30px;
+    padding: 5px 8px;
+    background: #141414;
+    border-color: var(--border);
+    border-radius: 7px;
+    font-size: var(--fs-xs);
+}
+.settings-panel textarea { min-height: 78px; }
+.settings-panel .swap-row .iconbtn { height: 30px; min-width: 30px; }
+.field-hint.compact { margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: var(--fs-sm); color: var(--text-dim); }
+.settings-toggle { justify-content: space-between; margin-top: 7px; }
+.settings-toggle > span { display: flex; flex-direction: column; gap: 1px; }
+.settings-toggle b { color: var(--text); font-size: var(--fs-sm); font-weight: 500; }
+.settings-toggle small { color: var(--text-faint); font-size: var(--fs-xs); }
+.settings-toggle input { order: 2; }
+.settings-panel input[type="range"] { width: 100%; height: 16px; accent-color: var(--ink); }
+.settings-panel input[type="checkbox"] { accent-color: var(--ink); }
+.settings-disclosure { padding: 0; }
+.settings-disclosure summary {
+    min-height: 44px;
+    padding: 7px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    list-style: none;
+    cursor: pointer;
+}
+.settings-disclosure summary::-webkit-details-marker { display: none; }
+.settings-disclosure summary > span { display: flex; flex-direction: column; gap: 1px; }
+.settings-disclosure summary b { color: var(--text); font-size: var(--fs-sm); font-weight: 500; }
+.settings-disclosure summary small { color: var(--text-faint); font-size: var(--fs-xs); }
+.settings-disclosure summary > .ic { width: 14px; height: 14px; color: var(--text-faint); transition: transform 120ms var(--ease-out); }
+.settings-disclosure[open] summary > .ic { transform: rotate(90deg); }
+.settings-disclosure-content { padding: 0 10px 10px; border-top: 1px solid var(--border-soft); }
+.settings-disclosure-content .field-label { margin-top: 9px; }
+.settings-inline-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-faint); font-size: var(--fs-xs); }
+.settings-panel .btn:not(.ghost) { color: var(--on-solid); background: var(--solid); }
+

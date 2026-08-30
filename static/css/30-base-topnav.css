@@ -1,0 +1,183 @@
+/* ==========================================================================
+   30-base-topnav.css  -  Layout tokens, body grid, top navigation
+   --------------------------------------------------------------------------
+   LAYER 2, part 1/17.  Split out of the old assistant.css.
+
+   Load order is the design.  Three stylesheet layers override each other in
+   this order (templates/index.html is the manifest):
+
+     LAYER 1  10-*.css .. 23-*.css   the device-coded UI      (was style.css)
+     LAYER 2  30-*.css .. 46-*.css   compact UI + 2026 revamp (was assistant.css)
+     LAYER 3  01-*.css .. 08-*.css   the design system, loaded LAST
+
+   The 01-08 band keeps its old numbers because static/js/app.js,
+   static/js/shell.js and scripts/build_mark.py name those files in comments.
+   So a LOW number does NOT mean early here: 01-08 win the cascade.
+
+   Within a layer, filename order IS load order.  Rules were moved, never
+   rewritten, so a part's position in its layer is load-bearing: do not
+   reorder the <link> tags and do not move a rule between files.
+
+   IN THIS FILE:
+     - The layout-only :root.  Every colour, radius, shadow and duration comes
+       from layer 1 -- this sheet used to redeclare the whole palette a few
+       points bluer and the bluer one won.  Do not put colour back here
+     - The body grid and its util-mode variant, and .sr-only
+     - The compact top bar, tabs, device rail, .sidebar-action and palette kbd
+
+   NOT IN THIS FILE:
+     - Colour tokens of any kind
+     - The 2026 revamp's top bar, which loads later and wins -- 43-revamp-chrome.css
+   ========================================================================== */
+
+/* locally compact assistant UI ---------------------------------------------
+   Neutral dark chrome, dense controls, and device colour only where it carries
+   meaning. Large backdrop blurs are intentionally avoided: the iGPU may also
+   be running inference, so the interface cannot treat compositing as free. */
+
+:root {
+    /* Layout only. Every colour, radius, shadow and duration now comes from
+       style.css — this sheet used to redeclare the whole palette a few points
+       bluer, so the two fought and the bluer one won. */
+    --tool-sidebar: 200px;
+    --topbar-height: 56px;
+}
+
+body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: var(--topbar-height) minmax(0, 1fr);
+    overflow: hidden;
+    background: var(--surface);
+    font-size: var(--fs-base);
+    line-height: 1.5;
+}
+
+body[data-mode="util"] {
+    grid-template-columns: var(--tool-sidebar) minmax(0, 1fr);
+}
+
+button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.sr-only {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+}
+
+/* Compact top navigation -------------------------------------------------- */
+.topbar {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    z-index: 30;
+    height: var(--topbar-height);
+    min-width: 0;
+    padding: 0 12px;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 14px;
+    overflow: visible;
+    background: var(--chrome);
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 1px rgb(0 0 0 / 0.28);
+    backdrop-filter: blur(12px) saturate(120%);
+    -webkit-backdrop-filter: blur(12px) saturate(120%);
+}
+
+.brand { min-width: 132px; gap: 8px; padding: 0; }
+.brand-logo { width: 28px; height: 28px; flex-basis: 28px; }
+.brand-logo > img { border-radius: 7px; box-shadow: none; }
+.brand-mark { width: 8px; height: 8px; right: -2px; bottom: -2px; border-color: var(--bg-overlay); box-shadow: 0 0 6px var(--device); }
+.brand h1 { font-size: var(--fs-base); line-height: 1.2; letter-spacing: -0.018em; }
+.brand-copy { display: flex; flex-direction: column; }
+.brand-copy > span { margin-top: 1px; color: var(--text-faint); font-size: var(--fs-xs); line-height: 1.2; }
+
+.tabs {
+    height: 34px;
+    display: inline-flex;
+    flex-direction: row;
+    gap: 2px;
+    padding: 2px;
+    background: rgb(0 0 0 / 0.22);
+    border: 1px solid var(--border-soft);
+    border-radius: 9px;
+}
+.tab {
+    height: 28px;
+    min-width: 72px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--text-dim);
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    font: 500 12px/1 var(--ui);
+}
+.tab .ic { width: 14px; height: 14px; color: var(--text-faint); }
+.tab.active { color: var(--text); background: var(--fill-hover); box-shadow: var(--shadow-sm); }
+.tab.active .ic { color: var(--text); }
+
+.topbar-right {
+    min-width: 0;
+    margin-left: auto;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    border: 0;
+}
+.device-rail { min-width: 0; display: flex; flex-direction: row; gap: 5px; padding: 0; }
+.device-pill {
+    width: auto;
+    max-width: 210px;
+    min-height: 28px;
+    padding: 4px 8px;
+    gap: 6px;
+    overflow: hidden;
+    background: rgb(0 0 0 / 0.18);
+    border-color: var(--border-soft);
+    border-radius: 7px;
+    font-size: var(--fs-xs);
+}
+.device-pill > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.device-pill.down { opacity: 0.6; }
+
+.sidebar-action {
+    width: auto;
+    height: 30px;
+    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--text-dim);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    font: 500 11px/1 var(--ui);
+    cursor: pointer;
+    transition: color 100ms ease, background-color 100ms ease, transform 100ms var(--ease-out);
+}
+.sidebar-action .ic { width: 15px; height: 15px; }
+.sidebar-action kbd,
+.palette kbd {
+    padding: 1px 5px;
+    color: var(--text-faint);
+    background: rgb(0 0 0 / 0.2);
+    border: 1px solid var(--border-soft);
+    border-radius: 4px;
+    font: 9px/1.35 var(--mono);
+}
+

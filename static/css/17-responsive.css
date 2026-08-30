@@ -1,0 +1,110 @@
+/* ==========================================================================
+   17-responsive.css  -  Breakpoints and motion/transparency preferences
+   --------------------------------------------------------------------------
+   LAYER 1, part 8/14.  Split out of the old style.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The one width breakpoint the original sheet had: max-width 720px
+     - prefers-reduced-motion and prefers-reduced-transparency
+
+     - This block sits in the MIDDLE of the original file, not at the end, and
+       moving it would change the cascade: everything in 18-*.css onward is
+       written after it and beats it at equal specificity.  It stays here.
+
+   NOT IN THIS FILE:
+     - Later breakpoints -- 37-overlays.css carries the 780px and 520px ones
+     - New responsive rules; add them where their component lives unless they
+       genuinely have to lose to a later rule
+   ========================================================================== */
+
+/* --- Responsive --- */
+@media (max-width: 720px) {
+    .topbar { gap: 10px; padding: var(--sp-2) var(--sp-3); }
+    .brand h1 { display: none; }
+    .device-rail { display: none; }
+    .tab { padding: 5px 11px; }
+    .settings-grid { grid-template-columns: minmax(0, 1fr); gap: var(--sp-4); }
+    .chat { padding: var(--sp-4) var(--sp-3) var(--sp-2); }
+    .composer { padding: 6px var(--sp-3) var(--sp-3); }
+    .util-heading { align-items: flex-start; flex-direction: column; gap: 14px; }
+    /* No room for a 216px rail beside the workspace, so the panel stacks and
+       the rail becomes a scrollable strip under the top bar. Labels stay —
+       "3×" and "T" alone are unreadable as icons. */
+    .util-panel { flex-direction: column; }
+    .util-content { padding: 18px 14px var(--sp-6); }
+    .util-nav {
+        flex: 0 0 auto;
+        flex-direction: row;
+        gap: var(--sp-1);
+        padding: var(--sp-2) var(--sp-3);
+        overflow-x: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .util-nav-item { width: auto; flex: 0 0 auto; white-space: nowrap; }
+    .util-nav-item.active { box-shadow: inset 0 -2px var(--device); }
+    .detection-list { columns: 1; }
+    .inline-fields { flex-wrap: wrap; }
+    .util-workspace { padding: var(--sp-4); }
+    .util-workspace-head { flex-direction: column; gap: 6px; }
+    .util-file { grid-template-columns: 82px minmax(0, 1fr); }
+    .util-file img, .util-file-icon { width: 82px; height: 68px; }
+    .util-file .btn { grid-column: 1 / -1; width: 100%; justify-content: center; }
+    .util-ask { flex-direction: column; }
+    .orb { width: 170px; height: 170px; }
+    .orb-core { width: 96px; height: 96px; }
+    .orb-ring { width: 132px; height: 132px; }
+    .orb-ring-2 { width: 166px; height: 166px; }
+}
+
+/* The orb is the most motion-heavy element in the app — it degrades to a
+   static disc rather than disappearing, since its colour still carries
+   the device signal. */
+@media (prefers-reduced-motion: reduce) {
+    .orb[data-state] .orb-core,
+    .orb[data-state] .orb-ring { animation: none; }
+    /* The drops stop where they read as one shape with the body, rather
+       than frozen mid-detachment looking like a rendering fault. */
+    .orb[data-state] .goo-drop {
+        animation: none;
+        transform: rotate(var(--bearing)) translateY(-40px) scale(0.75);
+    }
+    .orb[data-state="listening"] .orb-ring,
+    .orb[data-state="speaking"] .orb-core { opacity: 0.85; }
+    .device-pill.busy .dot,
+    .iconbtn.recording,
+    .speaker-actions .btn.recording .speaker-rec-dot,
+    .empty-orb,
+    .typing-indicator,
+    .think-block.streaming .think-header::after { animation: none; }
+    .typing-indicator, .think-block.streaming .think-header::after { opacity: 0.8; }
+    .settings-panel,
+    .message,
+    .btn,
+    .iconbtn,
+    .tab,
+    .just-answer,
+    .mem-hud-pill,
+    .engine-option,
+    .util-nav-item { transform: none !important; }
+    .settings-panel {
+        transition:
+            opacity var(--dur-base) var(--ease-out),
+            display var(--dur-base) allow-discrete;
+    }
+    .message { transition: opacity var(--dur-instant) var(--ease-out); }
+    .brand-mark { transition: background var(--dur-base) var(--ease-out); }
+    .mic-meter-fill,
+    .speaker-progress > i,
+    .mem-bar > i { transition: none; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+    .drop-overlay { backdrop-filter: none; }
+    .palette-backdrop { background: rgb(0 0 0 / 0.82); }
+}
+

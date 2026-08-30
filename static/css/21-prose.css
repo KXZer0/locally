@@ -1,0 +1,167 @@
+/* ==========================================================================
+   21-prose.css  -  Markdown, math and attachments inside a message
+   --------------------------------------------------------------------------
+   LAYER 1, part 12/14.  Split out of the old style.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - Everything under .msg-body: paragraphs, headings, lists, task lists,
+       blockquotes, rules, links, tables, images
+     - The three stream nodes the painter writes into (.stream-think,
+       .stream-stable, .stream-tail)
+     - Math.  .msg-body math's font-family is LOAD-BEARING: growing sums and
+       stretching fences need a face with an OpenType MATH table, which Inter
+       does not have.  Do not fold it into the body font stack
+     - The .code-lang chip, .doc-chip and .msg-attachment
+
+   NOT IN THIS FILE:
+     - The code BLOCK itself (pre/code) -- 13-thread.css
+     - Message chrome: role, meta, actions
+   ========================================================================== */
+
+/* --- Markdown --- */
+.msg-body > :first-child { margin-top: 0; }
+.msg-body > :last-child { margin-bottom: 0; }
+
+/* The stream painter splits a streaming message into three nodes so it can
+   re-render only the part that changed. display:contents keeps them out of
+   layout entirely, so a streaming message is spaced like a finished one.
+   The two rules above would otherwise match a WRAPPER -- which has no box,
+   so the margin lands nowhere -- instead of the first/last real block, which
+   is what the pair below restores for the cases that actually occur:
+   content starting in `stable`, or in `tail` before any block has completed.
+   Anything left over lasts only until the stream ends and the canonical
+   renderMarkdown replaces all three nodes at once. */
+.stream-think, .stream-stable, .stream-tail { display: contents; }
+.msg-body > .stream-stable > :first-child,
+.msg-body > .stream-stable:empty + .stream-tail > :first-child { margin-top: 0; }
+.msg-body > .stream-tail > :last-child { margin-bottom: 0; }
+.msg-body p { margin: 0 0 10px; }
+.msg-body h2, .msg-body h3, .msg-body h4,
+.msg-body h5, .msg-body h6 {
+    margin: var(--sp-4) 0 var(--sp-2);
+    line-height: 1.3;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+.msg-body h2 { font-size: 18px; }
+.msg-body h3 { font-size: var(--fs-lg); }
+.msg-body h4, .msg-body h5, .msg-body h6 { font-size: var(--fs-base); color: var(--text-dim); }
+.msg-body ul, .msg-body ol { margin: 0 0 10px; padding-left: 22px; }
+.msg-body li { margin: 3px 0; }
+.msg-body li > ul, .msg-body li > ol { margin: 3px 0; }
+.msg-body blockquote {
+    margin: 0 0 10px;
+    padding: 2px 0 2px 14px;
+    border-left: 2px solid var(--border);
+    color: var(--text-dim);
+}
+.msg-body hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: var(--sp-4) 0;
+}
+.msg-body a {
+    color: var(--ink);
+    text-decoration: underline;
+    text-decoration-color: var(--ink-4);
+    text-underline-offset: 3px;
+    transition: text-decoration-color var(--dur-fast) var(--ease-std);
+}
+.msg-body a:hover { text-decoration-color: var(--ink); }
+.msg-body del { color: var(--text-faint); }
+.msg-body table {
+    border-collapse: collapse;
+    margin: 0 0 var(--sp-3);
+    font-size: 13px;
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+}
+.msg-body th, .msg-body td {
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    text-align: left;
+}
+.msg-body th { background: var(--surface-raised); font-weight: 600; }
+.msg-body img { display: block; max-width: 100%; margin: var(--sp-2) 0; border-radius: var(--sp-2); }
+.msg-body li.task { list-style: none; margin-left: -18px; }
+.msg-body li.task input { margin-right: 7px; accent-color: var(--ink); }
+
+/* Math. MathML is laid out by the browser; all we own is the box around it.
+   Display equations scroll on their own so a wide derivation can't widen the
+   thread. */
+/* The math font has to be a math font: growing ∑ and stretching a fence needs
+   the OpenType MATH table, which Inter doesn't have. Measured on this page —
+   ∑ 14px → 31px, ( 14px → 27px. The `math` generic resolves to whatever the
+   system ships (Cambria Math on Windows), so this stays a local lookup, no
+   webfont, in keeping with the self-hosted fonts in static/fonts/. */
+.msg-body math {
+    font-family: "Cambria Math", "Latin Modern Math", "STIX Two Math", math;
+    font-size: 1.05em;
+}
+.msg-body math[display="block"] {
+    display: block;
+    margin: var(--sp-3) 0;
+    padding: 2px 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+/* TeX we couldn't parse — shown as source rather than swallowed. */
+.msg-body .math-raw { color: var(--text-dim); border-bottom: 1px dotted var(--border); }
+.code-lang {
+    position: absolute;
+    top: 8px; left: 12px;
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+}
+.message pre:has(.code-lang) { padding-top: 26px; }
+
+/* --- Chat attachments: a document is text, so it shows as a chip --- */
+.doc-chip {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: var(--sp-2);
+    padding: 7px 10px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--device);
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+}
+.doc-chip[hidden] { display: none; }
+.doc-chip.err { border-left-color: var(--error); color: var(--error); }
+.doc-chip .ic { width: 15px; height: 15px; flex: 0 0 15px; }
+.doc-chip-name { color: var(--text); font-weight: 500; }
+.doc-chip-meta { margin-left: auto; color: var(--text-faint); font-size: var(--fs-xs); }
+.doc-chip .remove {
+    flex: 0 0 auto;
+    background: none;
+    border: 0;
+    color: var(--text-faint);
+    font-size: var(--fs-lg);
+    line-height: 1;
+    cursor: pointer;
+}
+/* The transcript shows which file a turn carried, not its whole contents —
+   a 40-page PDF pasted inline would bury the conversation. */
+.msg-attachment {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px var(--sp-2);
+    background: var(--surface-raised);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    color: var(--text-dim);
+    font-size: var(--fs-sm);
+}
+

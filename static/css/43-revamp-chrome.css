@@ -1,0 +1,84 @@
+/* ==========================================================================
+   43-revamp-chrome.css  -  REVAMP LAYER: top bar, tabs, sidebar action
+   --------------------------------------------------------------------------
+   LAYER 2, part 14/17.  Split out of the old assistant.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The winning .topbar, .brand, .tabs, .tab and .sidebar-action rules
+     - kbd
+
+   NOT IN THIS FILE:
+     - The window-controls-overlay inset, which MUST come after this and does,
+       in 46-window-controls.css.  This file sets .topbar padding at the same
+       specificity, so anything added after it here would break the inset
+   ========================================================================== */
+
+/* --- Top bar -------------------------------------------------------------- */
+
+.topbar {
+    gap: var(--sp-5);
+    padding: 0 var(--sp-4);
+    background: var(--chrome);
+    border-bottom: 1px solid var(--line-soft);
+}
+.brand { min-width: 0; gap: 10px; }
+.brand h1 {
+    font-size: var(--fs-lg);
+    font-weight: 600;
+    line-height: 1.1;
+    letter-spacing: var(--track-tight);
+}
+.brand-copy > span {
+    margin-top: 2px;
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.2;
+    letter-spacing: var(--track-wide);
+    text-transform: uppercase;
+    color: var(--ink-4);
+}
+
+.tabs {
+    gap: 2px;
+    padding: 3px;
+    background: var(--fill);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-pill);
+}
+.tab {
+    height: 30px;
+    padding: 0 var(--sp-4);
+    border-radius: var(--radius-pill);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    color: var(--ink-3);
+    transition: color var(--dur-fast) var(--ease-std),
+                background-color var(--dur-fast) var(--ease-std);
+}
+.tab.active {
+    color: var(--on-solid);
+    background: var(--solid);
+    box-shadow: none;
+}
+.tab.active .ic { color: var(--on-solid); }
+
+.sidebar-action {
+    border-radius: var(--radius-pill);
+    font-size: var(--fs-sm);
+    color: var(--ink-3);
+}
+kbd {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--ink-4);
+    background: var(--fill);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-xs);
+    padding: 1px 5px;
+}
+

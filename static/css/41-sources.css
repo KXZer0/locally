@@ -1,0 +1,115 @@
+/* ==========================================================================
+   41-sources.css  -  The sources drawer
+   --------------------------------------------------------------------------
+   LAYER 2, part 12/17.  Split out of the old assistant.css.
+
+   Layer order: 10-* (was style.css), then 30-* (was assistant.css), then
+   01-*..08-* which load LAST and win.  Full map in 10-tokens.css.
+   Within a layer, filename order is load order.  Do not reorder.
+
+   IN THIS FILE:
+     - The web-search sources panel: open state, head, count and list
+     - Source rows, favicons and the monogram fallback for a favicon that will
+       not load
+     - The min-width 1100px rule that gives the panel its own column, the
+       900px collapse, and .think-note
+
+   NOT IN THIS FILE:
+     - The web-search toggle in the composer -- 38-switch.css
+   ========================================================================== */
+
+/* Sources panel ------------------------------------------------------------ */
+.sources-panel {
+    position: fixed;
+    top: var(--topbar-height);
+    right: 0;
+    bottom: 0;
+    width: min(280px, 88vw);
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-raised);
+    border-left: 1px solid var(--border);
+    box-shadow: var(--shadow-lg);
+    transform: translateX(100%);
+    transition: transform var(--dur-base) var(--ease-drawer);
+}
+.sources-panel.open { transform: none; }
+
+/* When the panel is open and the window is wide enough, the app gives up the
+   width instead of the panel covering the answer you are reading. Below that
+   there is no room to share, so it overlays -- which is the honest fallback
+   rather than squeezing the thread to an unreadable column. */
+@media (min-width: 1100px) {
+    body.sources-open .panel,
+    body.sources-open .composer { padding-right: 288px; }
+}
+.sources-panel[hidden] { display: none; }
+.sources-head {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border-bottom: 1px solid var(--border-soft);
+}
+.sources-head h2 { flex: none; margin: 0; font-size: var(--fs-sm); font-weight: 600; }
+.sources-count { flex: 1; color: var(--text-faint); font-size: var(--fs-xs); }
+.sources-list { margin: 0; padding: var(--sp-1); list-style: none; overflow-y: auto; }
+.source-item > a {
+    display: flex;
+    gap: var(--sp-2);
+    padding: var(--sp-2);
+    border-radius: var(--radius-sm);
+    color: inherit;
+    text-decoration: none;
+}
+.source-item > a:hover { background: var(--control); }
+.source-favicon {
+    width: 16px; height: 16px;
+    flex: none;
+    margin-top: 2px;
+    border-radius: 4px;
+    background: var(--control);
+    object-fit: contain;
+}
+/* Monogram fallback: a site whose favicon will not load still gets a stable
+   mark rather than a broken-image box. */
+.source-mono {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; flex: none; margin-top: 2px;
+    border-radius: 4px;
+    background: var(--control);
+    color: var(--text-dim);
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+}
+.source-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.source-title {
+    font-size: var(--fs-xs);
+    line-height: 1.4;
+    color: var(--text);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.source-host { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+.source-item.snippet-only .source-favicon,
+.source-item.snippet-only .source-mono { opacity: 0.5; }
+.source-index { flex: none; color: var(--text-faint); font-family: var(--mono); font-size: var(--fs-xs); }
+
+@media (prefers-reduced-motion: reduce) {
+    .sources-panel { transition: none; }
+    .activity.busy > .ic { animation: none; opacity: 0.75; }
+}
+@media (max-width: 900px) {
+    .sources-panel { top: 0; }
+}
+
+/* Shown when a turn ended inside an unclosed <think>. The content below it is
+   the model's working, not an answer, and saying so is better than presenting
+   half-finished reasoning as if it were the reply. */
+.think-note {
+    margin-bottom: var(--sp-2);
+    color: var(--text-faint);
+    font-size: var(--fs-xs);
+    font-style: italic;
+}
+

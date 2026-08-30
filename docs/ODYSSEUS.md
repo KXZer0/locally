@@ -1,0 +1,585 @@
+# Running Odysseus against `locally`
+
+[Odysseus](https://github.com/odysseus-dev/odysseus) (AGPL-3.0) is the assistant
+layer: chat, agents, reminders, calendar, email, deep research. It has no
+inference engine of its own — it talks to one over HTTP.
+
+`locally` is the inference engine: Intel NPU/iGPU under OpenVINO, plus the
+utility studio (OCR, layout, upscale, matting, detect, embed/rerank search),
+voice, and the memory HUD. It speaks three protocols on the wire — an
+OpenAI-compatible API, an Ollama-compatible API, and the Anthropic Messages API.
+
+The split is clean and worth stating once: **Odysseus owns the assistant,
+`locally` owns the silicon.** Neither needs to know how the other works, and
+each machine runs its own pair.
+
+---
+
+## 1. Architecture
+
+One `locally` per machine. One Odysseus per machine. Odysseus talks to the
+`locally` on the same box, over the OpenAI-compatible base URL. Nothing crosses
+the network except your phone, and that goes over Tailscale (§6).
+
+```
+Machine A — Intel laptop (Core Ultra X7 358H)
+  ┌──────────────────────────────────────────────────────────┐
+  │  Odysseus (Docker Compose)      127.0.0.1:7000           │
+  │    ├── chromadb  127.0.0.1:8100                          │
+  │    ├── searxng   127.0.0.1:8080   ← port clash, see §5   │
+  │    └── ntfy      127.0.0.1:8091                          │
+  │            │                                             │
+  │            │  http://host.docker.internal:8000/v1        │
+  │            ▼                                             │
+  │  locally (native, venv)          0.0.0.0:8000           │
+  │    ├── chat slot   → NPU   (Qwen3-8B int4-cw)           │
+  │    └── util slots  → NPU + GPU (OCR, upscale, search)   │
+  └──────────────────────────────────────────────────────────┘
+
+Machine B — desktop, RTX 4070
+  ┌──────────────────────────────────────────────────────────┐
+  │  Odysseus (Docker Compose)      127.0.0.1:7000           │
+  │            │  http://host.docker.internal:8000/v1        │
+  │            ▼                                             │
+  │  locally --proxy-url http://localhost:11434  0.0.0.0:8000│
+  │            │                                             │
+  │            ▼                                             │
+  │  Ollama    127.0.0.1:11434  → CUDA → RTX 4070            │
+  └──────────────────────────────────────────────────────────┘
+```
+
+### Why Odysseus is a LINK in the sidebar, never an iframe
+
+`locally`'s sidebar can carry a link to Odysseus. It must not carry an iframe,
+and this is not a matter of taste — three separate mechanisms in Odysseus each
+break an embed independently:
+
+1. **HSTS.** Odysseus sends `Strict-Transport-Security`. A browser that has seen
+   that header will upgrade the embed to `https://`, which a plain local
+   deployment does not serve. The frame goes blank with no error you can catch.
+2. **Its own hostname.** Odysseus sets `ALLOWED_ORIGINS` and issues cookies
+   scoped to the host it thinks it is. Framed under `locally`'s origin, the login
+   cookie is third-party — modern browsers partition or drop it, so you are
+   logged out on every navigation inside the frame.
+3. **A service worker.** Odysseus registers one and is an installable PWA. A
+   service worker's scope is tied to its own origin and it expects to control a
+   top-level page; inside a frame it either fails to register or serves a
+   confusingly cached shell.
+
+Fighting all three buys you a worse version of a `target="_blank"` link. Take the
+link. On a phone, the PWA install is a *better* result than an embed would be.
+
+> **Status:** there is no `locally` flag today that configures a sidebar link
+> (verify with `grep -n add_argument locally.py` — nothing matches). Adding one
+> is a one-line edit to `templates/index.html`, deliberately out of scope for
+> this document.
+
+---
+
+## 2. Machine A — Intel laptop, native `locally` on the NPU
+
+`locally` runs natively here. There is no proxy and no Ollama.
+
+```powershell
+# From the repo root, with the venv active.
+.\scripts\locally-launch.ps1
+```
+
+That launcher already does the right thing for this setup: NPU chat model,
+Whisper on GPU, Kokoro TTS and Silero VAD on CPU, SearXNG on demand. For an
+always-on assistant you want two changes from its defaults:
+
+```powershell
+.\scripts\locally-launch.ps1 -IdleTimeout 0 -SearxPort 8081
+```
+
+- **`-IdleTimeout 0`** → passes `--idle-timeout 0`. An assistant is queried in
+  bursts all day; a 900-second idle unload means every burst after a quiet
+  stretch pays a cold model load inside the user's first message. `0` also
+  auto-enables `--prewarm`, so the prefix cache survives a restart.
+- **`-SearxPort 8081`** → moves `locally`'s SearXNG off 8080, which Odysseus's
+  bundled SearXNG already publishes on. See §5.
+
+Verify the slot came up on the NPU:
+
+```powershell
+curl.exe -s http://127.0.0.1:8000/health | ConvertFrom-Json |
+    Select-Object -ExpandProperty slots
+curl.exe -s http://127.0.0.1:8000/v1/models
+```
+
+### Utilities
+
+`--util-engines` defaults to `auto`, which loads a utility slot on **every Intel
+engine detected** — NPU and GPU both, here. Nothing to configure. OCR loads
+eagerly (~160 MB); everything else compiles on first use and idle-unloads.
+
+---
+
+## 3. Machine B — RTX 4070, `locally` in proxy mode
+
+`locally` is OpenVINO, and OpenVINO's GPU plugin is Intel-only —
+`detect_devices()` explicitly filters non-Intel GPUs out, because the plugin
+enumerates any OpenCL device but its kernels only run on Intel. So on this box
+`locally` cannot touch the 4070, and there is no point pretending otherwise.
+
+Instead, **Ollama drives the 4070 and `locally` proxies to it.** You still get
+one program, one URL, and one UI on both machines; the slot behind it just
+happens to be someone else's.
+
+```powershell
+# Start Ollama first (its own service or `ollama serve`), then:
+.\scripts\locally-proxy.ps1
+```
+
+That script (shipped alongside this doc) checks Ollama is reachable, picks the
+model, and starts:
+
+```
+python locally.py `
+    --proxy-url   http://localhost:11434 `
+    --proxy-model qwen3-coder:30b `
+    --port        8000 `
+    --ollama-port 0 `
+    --idle-timeout 0
+```
+
+The three proxy flags, exactly as they exist in `locally.py`:
+
+| Flag | Meaning |
+|---|---|
+| `--proxy-url URL` | Serve the primary slot from an OpenAI-compatible server instead of a local model. Replaces `--model-dir`/`--device` for chat. `--model-dir` is not required in this mode. |
+| `--proxy-model ID` | Model id to request upstream. **Optional** — omitted, the slot takes the first model the upstream advertises, which is what a single-model Ollama host means by "the model". |
+| `--proxy-key TOKEN` | Bearer token for the upstream, if it needs one. Ollama does not. |
+
+Two behaviours worth knowing, because they change how failures read:
+
+- **Loading a proxy slot is a real probe, not a config read.** `ProxySlot.load()`
+  hits the upstream's `/v1/models`; if you named a `--proxy-model` the upstream
+  does not serve, it refuses at startup and *lists what the upstream does offer*.
+  Then `warmup()` sends one real token through `/v1/chat/completions`, which
+  catches the failures a model listing cannot — a model listed but not loadable,
+  a wrong key on the completions route.
+- **`--ollama-port 0` is not optional here.** `locally` runs its own
+  Ollama-compatible shim on 11434 by default. On this machine the real Ollama
+  owns that port. `0` disables the shim; without it `locally` fails to bind and
+  warns, and you have two things claiming to be Ollama.
+
+### Tool calling still works on Machine B
+
+`_tools_supported()` returns true for `GPU`, `CPU`, and `REMOTE`. A proxy slot is
+`REMOTE`, deliberately: every reason to restrict tools is about hardware *this*
+process owns, and a proxy owns none of it. A 4070 running a 30B coder drives
+agent loops fine, and the relaying machine having no Intel GPU is irrelevant to
+that.
+
+### Utilities on Machine B: yes, on the CPU
+
+`--util-engines` accepts **`npu`, `gpu`, `cpu`, a comma-separated list, or
+`auto`**. Under `auto`, CPU is a *fallback* rather than an addition: it is taken
+only when no Intel accelerator is detected — which is exactly Machine B. A CPU
+slot alongside an NPU would spend real memory duplicating models that already
+have a faster home, so it is not created there.
+
+So on Machine B you need no flag at all. `auto` finds no NPU and no GPU, and
+loads the utility models on the CPU. Measured on a Core Ultra X7 358H:
+
+| Task | On CPU |
+|---|---|
+| OCR (`/v1/util/read`) | detect 164 ms · layout 280 ms · recognise 34 ms |
+| Upscale (`/v1/util/upscale`) | true **4.00×** (128×96 → 512×384), 3.8 s |
+
+Everything except `generate` is available — and image generation is disabled on
+every engine, not just this one.
+
+One deliberate difference: the CPU's `upscale` tier is the **GPU's** Swin2SR,
+not the NPU's OMZ model. What rules Swin2SR out on the NPU is the vpux compiler
+rejecting it, which says nothing about x86 — so the CPU gets the better model
+(true 4×, no input ceiling) even though it runs slower than the NPU's fixed 3×
+capped at 640×360.
+
+Expect CPU utilities to be slower than the NPU's, and to compete with whatever
+else that machine is doing. They are not slower in a way that matters for
+reading a document or cleaning up an image.
+
+---
+
+## 4. Pointing Odysseus at `locally`
+
+### Where the setting lives
+
+Model providers are configured **in Odysseus's Settings UI**, not primarily in
+`.env`. Odysseus's own setup guide is explicit: open `http://localhost:7000`, log
+in with the generated admin password, and configure the rest inside **Settings**.
+The compose override in `scripts/odysseus-compose.override.yml` pre-seeds the env
+vars so the Settings page starts from the right value, but Settings is the
+authoritative place.
+
+### The URL
+
+```
+http://host.docker.internal:8000/v1
+```
+
+Three things about that string, each of which is a way people get it wrong:
+
+1. **`host.docker.internal`, not `localhost`.** Inside a container, `localhost`
+   is the container. This is the single most common failure — see §7.
+2. **Port 8000** is `locally`'s OpenAI API (`--port`, default 8000). Not 11434,
+   unless you are deliberately using the Ollama shim (below).
+3. **The `/v1` suffix is required.** Odysseus's setup guide states this for
+   OpenAI-compatible endpoints, and its own Docker example for host Ollama is
+   `http://host.docker.internal:11434/v1`. `locally` serves
+   `/v1/models` and `/v1/chat/completions`, so the base is `.../v1`.
+
+`locally` binds `0.0.0.0` on both its ports (`app.run(host="0.0.0.0", ...)`, no
+flag to change it), which is *why* a container can reach it at all. A
+127.0.0.1-bound server would be invisible from Docker. It is also why §6 matters.
+
+### The model id must match what `/v1/models` advertises
+
+`locally` advertises models as **`<model_name>@<DEVICE>`**:
+
+```console
+$ curl -s http://127.0.0.1:8000/v1/models
+{"object":"list","data":[
+  {"id":"Qwen3-8B-int4-cw-ov@NPU","object":"model","owned_by":"local-npu"}
+]}
+```
+
+The `model_name` is the **model directory's name** — the directory name is
+authoritative throughout `locally`; renaming the folder renames the model. On a
+proxy slot the device is `REMOTE`, so you get e.g. `qwen3-coder:30b@REMOTE`.
+
+`_route_request()` matches a requested model against **either** `model@DEVICE`
+**or** the bare `model_name`. Both work. Anything else falls through to default
+routing rather than erroring — see §7 for why that silence is a trap.
+
+Note the two protocols disagree on purpose:
+
+| Endpoint | Advertised id |
+|---|---|
+| `GET /v1/models` (port 8000) | `Qwen3-8B-int4-cw-ov@NPU` |
+| `GET /api/tags` (port 11434) | `Qwen3-8B-int4-cw-ov` |
+
+The Ollama shim omits the device suffix because Ollama clients treat the tag as a
+name, not an address.
+
+### Alternative: the Ollama shim
+
+Odysseus's Ollama path is its best-trodden one, and `locally`'s shim implements
+`/api/tags`, `/api/show`, `/api/chat`, `/api/generate`, `/api/version` and
+`/v1/chat/completions`. On Machine A (where nothing else wants 11434) you can
+point Odysseus at `http://host.docker.internal:11434/v1` and it will look like
+plain Ollama.
+
+One caveat that matters for the NPU: `/api/show` advertises the `tools`
+capability only for `_tools_supported` slots — GPU, CPU, REMOTE. An **NPU slot
+advertises as completion-only**, on purpose: an advert is answered before any
+tool set exists, so claiming `tools` would invite a client to pick the NPU model
+for agent mode and then send it thirty schemas. Clients that simply *send*
+`tools` without consulting the advert — **Odysseus does** — get them honored,
+subject to §5. Use the `/v1` endpoint on port 8000 if you want the honest
+advert.
+
+---
+
+## 5. The NPU tool-calling budget
+
+This is the constraint Odysseus users on Machine A will actually hit, so here it
+is with the numbers rather than as folklore.
+
+The NPU has a hard prompt cap: `NPU_MAX_PROMPT_LEN = 8192` tokens. That is the
+vpux compiler's ceiling, not a memory limit — 9216, 10240 and 12288 all fail
+graph legalisation. Every tool schema a client sends is rendered into the system
+prompt and spends part of that 8192.
+
+Measured on Qwen3-8B-int4-cw's own tokenizer
+(`scripts/measure-tool-budget.py` reproduces it):
+
+| Tool set | Rendered cost | Share of the 8192 window | Result |
+|---|---|---|---|
+| Assistant set — calendar, tasks, notes, search, fetch, notify — **8 tools** | **735 tokens** | **9.0%** | accepted |
+| Trimmed to 5 tools | ~515 tokens | ~6.3% | accepted |
+| Coding agent, **30 tools** | **4,553 tokens** | **55.6%** | **refused** |
+
+The gate is `_tool_capable(slot, tools)` = `_tools_supported(slot)` (device) OR
+`_npu_tools_affordable(slot, tools)` (this request's rendered schema block
+≤ `NPU_TOOL_BUDGET`, **1200 tokens**).
+
+**So: Odysseus's assistant tools work on the NPU. A large tool catalogue will
+not.** An eight-tool assistant costs under a tenth of the window and leaves 40%
+headroom under the budget. A thirty-tool coding agent costs more than half the
+window before you have typed anything, and is refused outright.
+
+Two details, both measured on the 358H:
+
+- The budget measures the **rendered block**, not the tool count. Two schemas
+  with the same name can differ tenfold in size; it is bytes in the prompt that
+  the cap is about. If the tokenizer is unavailable it estimates at chars/3.5 —
+  biased high, so an unmeasurable prompt errs toward refusing.
+- It is a ceiling on the **schema block only**. The conversation still has to fit
+  under `MAX_PROMPT_LEN` separately. A tool set that fits does not license an
+  unbounded chat history.
+
+### If you hit the refusal
+
+The turn is answered as **plain chat** — you get an answer, not an error — with a
+note that names the number:
+
+```
+tools ignored: 30 schemas render to 4553 tokens, over the NPU's 1200-token
+budget. Send fewer tools, or use --agent-tools to trim them here.
+```
+
+Three fixes, in order of preference:
+
+1. **Turn off tools you do not need in Odysseus.** Fewer schemas is the honest
+   fix and costs nothing.
+2. **`--agent-tools NAMES`** trims the client's tool list server-side, before the
+   prompt is built. Comma-separated names to *keep*; the rest are dropped. This is
+   the only option for a client with no such setting.
+3. **Move the slot to the GPU** (or to Machine B). The budget is an NPU
+   constraint; GPU, CPU, and REMOTE slots have no schema ceiling.
+
+Do not raise `--npu-prompt-len` past 8192 hoping to buy room — it is clamped to
+`min(8192, max(1024, N))` because 8192 is the compiler's ceiling.
+
+### Two things `locally` does to make NPU tool turns actually work
+
+Both were measured on 2026-08-29 and both are automatic — listed here because
+they explain behaviour you will see:
+
+- **Reasoning is suppressed on NPU tool turns.** Asked "Remind me to call the
+  dentist tomorrow" with 8 tools, Qwen3-8B spent its entire 400-token budget
+  inside `<think>` and emitted no tool call at all (272 tokens, 23.2 s).
+  Appending the `/no_think` control token: **23.2 s → 4.2 s and a correct
+  `create_task`.** Scoped to the NPU — on the GPU, reasoning before a tool call
+  is affordable.
+- **The tool prompt carries today's date** (~15 tokens, all devices). Without a
+  clock the model called `get_calendar` with its training cutoff (`2023-10-11`)
+  and then told the user the results looked "way in the future".
+
+Full assistant turn on the NPU — tool call, `tool_result`, answer:
+**4.0 s + 4.7 s**, correct events, correct dates.
+
+### SearXNG port clash
+
+Odysseus's compose publishes its bundled SearXNG on `127.0.0.1:8080:8080`.
+`locally`'s own `--search-url` / `--searxng-root` setup defaults to 8080 too
+(`scripts/locally-launch.ps1 -SearxPort`). On a machine running both, move one.
+Moving `locally`'s is easier — `-SearxPort 8081` — since Odysseus's is wired into
+its compose network. Two SearXNG instances is not a problem; two on one port is.
+
+---
+
+## 6. Phone and tablet access — Tailscale, not port-forwarding
+
+Odysseus binds **127.0.0.1 by default** (`APP_BIND=127.0.0.1`, and the compose
+port mapping is `${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000`). ChromaDB, ntfy
+and SearXNG are all bound the same way. That is a deliberate default and it is
+the right one: this stack has your calendar, your email, and your notes in it.
+
+**Do not change `APP_BIND` to `0.0.0.0` to reach it from your phone.** On any
+network you do not fully control — a café, a hotel, an office, a flat with
+guests — that publishes the whole assistant to everyone on the subnet. Port
+forwarding on the router is worse: it publishes it to the internet.
+
+Use Tailscale instead. It gives every device a private address, the traffic is
+encrypted end to end, and nothing is exposed to the local subnet or the internet.
+
+1. Install Tailscale on Machine A, Machine B, and the phone. Same tailnet.
+2. `tailscale up` on each; note the machine names (`machine-a.tailXXXX.ts.net`).
+3. On the machine running Odysseus, enable the Tailscale serve proxy so the
+   127.0.0.1 binding stays intact:
+
+   ```powershell
+   tailscale serve --bg 7000
+   ```
+
+   This proxies your tailnet address to `127.0.0.1:7000`. Odysseus keeps binding
+   loopback; Tailscale is the only thing that can reach it.
+4. On the phone, open `https://machine-a.tailXXXX.ts.net/`. Tailscale terminates
+   HTTPS with a real certificate, which is also what makes the **PWA install**
+   work — service workers require a secure context, and this is the clean way to
+   get one on a private network.
+
+You may need to add the tailnet hostname to `ALLOWED_ORIGINS` in Odysseus's env.
+Verify against your Odysseus version; the variable exists but its exact parsing
+was not confirmed for this document.
+
+**`locally` itself needs the same care and gets none from its own code.** It
+binds `0.0.0.0` on ports 8000 and 11434 with no flag to restrict it. On a laptop
+that leaves the house, block those ports in Windows Firewall for public networks
+and let Tailscale be the only path in. `locally` has no authentication.
+
+---
+
+## 7. Troubleshooting
+
+### `locally` not reachable from inside the Odysseus container
+
+**This is the most common failure by a wide margin. Check it first.**
+
+Symptoms: Odysseus's Settings page shows no models, model discovery times out, or
+chat returns a connection error. Meanwhile `curl http://127.0.0.1:8000/v1/models`
+on the host works perfectly.
+
+Cause: you gave Odysseus `http://localhost:8000/v1`. Inside a container,
+`localhost` is **the container itself** — it is not the machine. The container
+has no `locally` in it, so nothing answers.
+
+Fix, on Windows and macOS:
+
+```
+http://host.docker.internal:8000/v1
+```
+
+`host.docker.internal` is Docker's hostname for the host machine as seen from
+inside a container. Docker Desktop provides it automatically.
+
+On **Linux** it is not automatic — the service needs:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+Odysseus's upstream `docker-compose.yml` already defines this on the `odysseus`
+service (confirmed against the repo). The override file ships it anyway, harmless
+and explicit, so the setting is visible where you are editing.
+
+Verify from inside the container:
+
+```bash
+docker compose exec odysseus curl -sS http://host.docker.internal:8000/v1/models
+```
+
+If that fails but the host `curl` works, in order:
+
+- Is `locally` actually listening on all interfaces? It binds `0.0.0.0` with no
+  flag — `netstat -ano | findstr :8000` should show `0.0.0.0:8000`, not
+  `127.0.0.1:8000`.
+- **Windows Firewall.** A first run usually prompts; a dismissed prompt creates a
+  blocking rule. Docker's traffic arrives from the WSL/Hyper-V virtual adapter,
+  which many "private network" rules do not cover.
+- Wrong port. 8000 is the OpenAI API. 11434 is the Ollama shim — and on Machine B
+  it is disabled (`--ollama-port 0`) because real Ollama owns it.
+
+### Model id mismatch
+
+Symptoms: Odysseus's model dropdown is empty, or it sends a model name and gets
+an answer from a model you did not pick.
+
+`GET /v1/models` is the ground truth. Ask it:
+
+```powershell
+curl.exe -s http://127.0.0.1:8000/v1/models
+```
+
+Use exactly what it returns — `Qwen3-8B-int4-cw-ov@NPU`, or the bare
+`Qwen3-8B-int4-cw-ov`; `_route_request()` accepts either.
+
+The trap: **an unrecognised model id does not error.** `_route_request()` falls
+through to default routing and answers from whichever slot is loaded. With one
+slot resident — which is `locally`'s default, one model at a time — you always
+get an answer, so a typo'd model id looks like it worked. If you swap the model
+and Odysseus keeps sending the old name, it will keep being silently right until
+you load a second slot, at which point it will be silently wrong.
+
+Two things that change the advertised id, both easy to forget:
+
+- **The directory name is the model name.** Rename `~/models/Qwen3-8B-int4-cw-ov`
+  and the model id changes. There is deliberately no `--model-name` flag; the
+  rename *is* the interface.
+- **The device suffix changes with placement.** Load the same model on the GPU
+  and `@NPU` becomes `@GPU`. A proxy slot is always `@REMOTE`.
+
+If a model does not appear in `/v1/models` at all, its slot is not `ready`. Check
+`/health` — a slot still compiling reports `loading`, and a 14 GB model takes
+20–40 s (9.3 s on the NPU with the compile cache warm, 65.1 s cold).
+
+### Tool-budget refusal
+
+Symptom: Odysseus asks for a reminder or a calendar event, gets a chatty English
+answer describing what it *would* do, and nothing is created.
+
+Look for this in `locally`'s console:
+
+```
+tools ignored: 30 schemas render to 4553 tokens, over the NPU's 1200-token
+budget. Send fewer tools, or use --agent-tools to trim them here.
+```
+
+That is the NPU budget, not a bug and not a model-quality problem. See §5 for the
+numbers and the three fixes. If instead you see:
+
+```
+tools ignored (NPU slot)
+```
+
+with no token count, the tool list was empty or failed to render — check that
+Odysseus is actually sending `tools` on that request.
+
+### Proxy slot (Machine B) refuses to start
+
+`ProxySlot` probes on load, so failures surface at startup with the reason:
+
+| Message | Meaning |
+|---|---|
+| `proxy: cannot reach http://localhost:11434: ... Is the server running?` | Ollama is not up. `ollama serve`, or start the service. |
+| `proxy: upstream does not serve 'X'. It offers: a, b, c` | `--proxy-model` typo. Use one of the listed ids, or drop the flag and take the first. |
+| `proxy: upstream rejected the API key (401)` | `--proxy-key` wrong. Ollama does not need one — omit it. |
+| `proxy: upstream has no such model or endpoint (404)` | The base URL is wrong, or a reverse proxy is in the way. `--proxy-url` wants the **root** (`http://localhost:11434`), not `.../v1`. |
+
+Note the asymmetry, it catches people: `--proxy-url` takes the **root** because
+`ProxySlot` appends `/v1/...` itself. The URL you give **Odysseus** ends in
+`/v1`. Different layers, different conventions.
+
+### Odysseus in an iframe shows a blank page
+
+You embedded it. Don't — see §1. Use a link.
+
+---
+
+## 8. Confirmed vs. unverified
+
+Everything about `locally` in this document was read out of `locally.py` and
+`utility_pipeline.py` in this repo. Every flag named here exists; check with
+`grep -n add_argument locally.py`.
+
+**Confirmed against the Odysseus repo** (`odysseus-dev/odysseus`, `main`):
+
+- Default web port **7000**; `APP_PORT` / `APP_BIND` (default `127.0.0.1`).
+- Compose services: `odysseus`, `chromadb`, `searxng`, `ntfy`.
+- Published ports: odysseus `${APP_BIND:-127.0.0.1}:${APP_PORT:-7000}:7000`,
+  chromadb `127.0.0.1:8100:8000`, searxng `127.0.0.1:8080:8080`,
+  ntfy `${NTFY_BIND:-127.0.0.1}:8091:80`.
+- `SEARXNG_INSTANCE` defaults to `http://localhost:8080`, and `.env.example`
+  states Compose overrides it to `http://searxng:8080` for in-network access.
+- `OLLAMA_BASE_URL`, with the documented Docker form
+  `http://host.docker.internal:11434/v1` — **the `/v1` suffix is required**.
+- `LLM_HOST` (default `localhost`) and `LLM_HOSTS` (comma-separated, for model
+  discovery; hostnames/IPs only, Odysseus scans common serve ports).
+- Model providers are configured in the **Settings** UI after first login.
+- The `odysseus` service already defines
+  `extra_hosts: ["host.docker.internal:host-gateway"]`.
+- The service builds from source (`build: .`), so there is no image tag to pin.
+
+**Not confirmed — verify against your Odysseus version:**
+
+- Whether setting `OLLAMA_BASE_URL` alone is sufficient, or whether the endpoint
+  must also be entered in Settings. The setup guide points at Settings; the env
+  var is best treated as a pre-seed.
+- Whether `SEARXNG_INSTANCE` is set on the `odysseus` service in
+  `docker-compose.yml` or applied elsewhere. `.env.example` says Compose
+  overrides it; the override was not read directly.
+- The exact parsing and format of `ALLOWED_ORIGINS` (comma-separated? scheme
+  required?) for adding a Tailscale hostname.
+- Whether Odysseus filters the model list by any capability advert. If it does,
+  an NPU slot advertising completion-only on `/api/show` could be hidden from an
+  agent picker — use the `/v1` endpoint on port 8000, whose `/v1/models` carries
+  no capability field at all.
+- `RESEARCH_LLM_ENDPOINT` exists and its example is a full
+  `.../v1/chat/completions` path rather than a base URL. If you use deep research
+  against `locally`, check that form against your version.

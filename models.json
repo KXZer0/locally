@@ -1,0 +1,266 @@
+{
+  "npu": [
+    {
+      "name": "Qwen3 8B (INT4-CW)",
+      "hf_id": "OpenVINO/Qwen3-8B-int4-cw-ov",
+      "source": "pre-exported",
+      "est_size_gb": 5,
+      "notes": "Recommended (proven). Best quality verified for NPU."
+    },
+    {
+      "name": "SmolLM3 3B (INT4-CW)",
+      "hf_id": "aweussom/SmolLM3-3B-int4-cw-ov",
+      "source": "pre-exported",
+      "est_size_gb": 2,
+      "notes": "Tested on 285K NPU: 23.3 tok/s. New in OpenVINO 2026.3; also runs GPU/CPU."
+    },
+    {
+      "name": "SmolLM3 3B (INT8-CW)",
+      "hf_id": "aweussom/SmolLM3-3B-int8-cw-ov",
+      "source": "pre-exported",
+      "est_size_gb": 3,
+      "notes": "Tested on 285K NPU: 12.3 tok/s. Half the speed of INT4-CW, better quality headroom."
+    },
+    {
+      "name": "LFM2.5 1.2B Instruct (INT4-CW)",
+      "hf_id": "aweussom/LFM2.5-1.2B-Instruct-int4-cw-ov",
+      "source": "pre-exported",
+      "est_size_gb": 1,
+      "notes": "Tested on 285K NPU: 38.8 tok/s — fastest verified NPU model. NPU-only build (fails CPU/GPU, see model card)."
+    },
+    {
+      "name": "LFM2 1.2B (INT4-CW)",
+      "hf_id": "aweussom/LFM2-1.2B-int4-cw-ov",
+      "source": "pre-exported",
+      "est_size_gb": 1,
+      "notes": "Tested on 285K NPU: 36.5 tok/s. NPU-only build (fails CPU/GPU, see model card)."
+    },
+    {
+      "name": "Phi 3.5 Mini (INT4-CW)",
+      "hf_id": "OpenVINO/Phi-3.5-mini-instruct-int4-cw-ov",
+      "source": "pre-exported",
+      "est_size_gb": 2,
+      "notes": "Proven. Smaller and faster than Qwen3 8B, lower quality."
+    },
+    {
+      "name": "DeepSeek R1 Distill 1.5B (INT4-CW)",
+      "hf_id": "OpenVINO/DeepSeek-R1-Distill-Qwen-1.5B-int4-cw-ov",
+      "source": "pre-exported",
+      "est_size_gb": 1,
+      "notes": "Tested: works but terrible quality. Smoke-test/dev use only."
+    },
+    {
+      "name": "DeepSeek R1 Distill 7B (INT4-CW)",
+      "hf_id": "OpenVINO/DeepSeek-R1-Distill-Qwen-7B-int4-cw-ov",
+      "source": "pre-exported",
+      "est_size_gb": 4,
+      "notes": "Untested. Marketed as reasoning-focused — verify before relying on it."
+    },
+    {
+      "name": "Mistral 7B v0.3 (INT4-CW)",
+      "hf_id": "OpenVINO/Mistral-7B-Instruct-v0.3-int4-cw-ov",
+      "source": "pre-exported",
+      "est_size_gb": 4,
+      "notes": "Untested."
+    }
+  ],
+  "gpu_vlm": [
+    {
+      "name": "Qwen3-VL 8B (INT8)",
+      "hf_id": "OpenVINO/Qwen3-VL-8B-Instruct-int8-ov",
+      "source": "pre-exported",
+      "est_size_gb": 9,
+      "notes": "Verified 2026-06-16 on Arc 140V in dual mode (NPU text + GPU vision): correct color/shape ID, ~6s. INT8 retains OCR/number detail better than INT4 at ~9 GB; fits a 16 GB ARC. One generation behind Qwen3.5, but the most thoroughly verified GPU vision pairing for Qwen3-8B on NPU."
+    },
+    {
+      "name": "Gemma 4 26B-A4B (INT4)",
+      "hf_id": "OpenVINO/gemma-4-26b-a4b-it-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 15,
+      "notes": "The power pick IF your GPU has XMX (Arc/Lunar Lake — install.ps1 says so above): multimodal MoE (128 experts), 26.6 tok/s on Arc 140V, 21.0 on a 24-core CPU, 262k context. Will NOT load on non-XMX iGPUs. Verified 2026-08-09 on Arc B390: 14.3 GB of weights does NOT fit a 16.4 GB GPU budget — it fails with a CL_INVALID_EVENT/ProgramBuilder error, which is OOM wearing a driver error's clothes. Use --offload-ratio: ratio 10 gives 18.2 tok/s decode / 3.1s TTFT (ratio 30 drops to 15.6/4.0, so use the SMALLEST ratio that loads). Vision verified under offload. Keep the ASR model off the GPU when running this."
+    },
+    {
+      "name": "Gemma 4 E4B (INT4)",
+      "hf_id": "OpenVINO/gemma-4-E4B-it-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 6,
+      "notes": "Verified 2026-08-09 on Arc B390 (Panther Lake, XMX): 24.7 tok/s decode, 3.1s TTFT via benchmark.py — faster than Qwen3-8B on that machine's NPU (18.6 tok/s, 4.7s TTFT). Coherent English, vision correct on a screenshot. 131k context, 84 KB/token KV. INT4 asymmetric g128 per rt_info. Do NOT run on NPU (garbage or 0.1 tok/s — see TODONT.md)."
+    },
+    {
+      "name": "Gemma 4 E4B (INT8)",
+      "hf_id": "OpenVINO/gemma-4-E4B-it-int8-ov",
+      "source": "pre-exported",
+      "est_size_gb": 8,
+      "notes": "Runs on every device class except NPU: 16.4 tok/s on Arc 140V, ~13 on CPU and non-XMX iGPU. Verified 2026-08-07, lightly. Prefer the INT4 above unless you need the quality headroom. Do NOT run on NPU (garbage or 0.1 tok/s — see TODONT.md)."
+    },
+    {
+      "name": "Qwen3.5 4B (INT4)",
+      "hf_id": "OpenVINO/Qwen3.5-4B-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 3,
+      "notes": "Newest Qwen VLM generation (Qwen2.5-VL -> Qwen3-VL -> Qwen3.5). Verified on Arc 140V 2026-08-07: 27 tok/s VLM streaming. Reads text in images well but confidently invents product identities from logos — prompt for visible features only."
+    },
+    {
+      "name": "Qwen3-VL 8B (INT4)",
+      "hf_id": "OpenVINO/Qwen3-VL-8B-Instruct-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 6,
+      "notes": "Recommended. One generation behind Qwen3.5. Verified on Xe-LPG iGPU for OCR, color/count, no hallucination on empty input. Like all VLMs, prone to confident hallucination on ambiguous images (e.g., invented make/model/year from unbadged photos) — prompt for visible features only and ask for uncertainty explicitly."
+    },
+    {
+      "name": "Qwen2.5-VL 3B (INT8)",
+      "hf_id": "aweussom/Qwen2.5-VL-3B-Instruct-int8-ov",
+      "source": "pre-exported",
+      "est_size_gb": 4,
+      "notes": "Recommended (proven). INT8 retains fine detail (OCR, numbers) better than INT4. Research license (non-commercial) — see model card."
+    },
+    {
+      "name": "Qwen3.5 9B (INT4)",
+      "hf_id": "OpenVINO/Qwen3.5-9B-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 6,
+      "notes": "Experimental. Qwen3.5 generation, natively multimodal (image-text-to-text) — full VLM on GPU. Untested here; needs OpenVINO 2026.2+."
+    },
+    {
+      "name": "Gemma 3 4B Vision (INT4)",
+      "hf_id": "OpenVINO/gemma-3-4b-it-int4-cw-ov",
+      "source": "pre-exported",
+      "est_size_gb": 3,
+      "notes": "Untested. Google."
+    },
+    {
+      "name": "Gemma 3 12B Vision (INT4)",
+      "hf_id": "OpenVINO/gemma-3-12b-it-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 7,
+      "notes": "Untested. Needs ~12 GB RAM with KV cache."
+    },
+    {
+      "name": "Gemma 4 E2B Vision (INT4)",
+      "hf_id": "OpenVINO/gemma-4-E2B-it-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 4,
+      "notes": "Untested. Google Gemma 4 — efficient (E2B effective-2B) successor to Gemma 3. Needs OpenVINO 2026.2+."
+    },
+    {
+      "name": "InternVL2 4B (INT4)",
+      "hf_id": "OpenVINO/InternVL2-4B-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 3,
+      "notes": "Untested. Shanghai AI Lab."
+    },
+    {
+      "name": "Phi 3.5 Vision (INT4)",
+      "hf_id": "OpenVINO/Phi-3.5-vision-instruct-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 3,
+      "notes": "Untested. Microsoft."
+    }
+  ],
+  "whisper": [
+    {
+      "name": "Whisper Base (INT8)",
+      "hf_id": "OpenVINO/whisper-base-int8-ov",
+      "source": "pre-exported",
+      "est_size_gb": 0.2,
+      "notes": "Fastest. Multi-language. Pre-exported — no conversion step (just a small, quick download)."
+    },
+    {
+      "name": "Whisper Small (INT8)",
+      "hf_id": "OpenVINO/whisper-small-int8-ov",
+      "source": "pre-exported",
+      "est_size_gb": 0.4,
+      "notes": "Good balance. Multi-language. Pre-exported — no conversion step (small, quick download)."
+    },
+    {
+      "name": "Whisper Medium (INT8)",
+      "hf_id": "OpenVINO/whisper-medium-int8-ov",
+      "source": "pre-exported",
+      "est_size_gb": 0.9,
+      "notes": "Best accuracy under 16 GB. Multi-language. Pre-exported — no conversion step (download still needed)."
+    }
+  ],
+  "gpu_llm": [
+    {
+      "name": "Qwen3-Coder 30B-A3B (INT4)",
+      "hf_id": "OpenVINO/Qwen3-Coder-30B-A3B-Instruct-int4-ov",
+      "source": "pre-exported",
+      "agent": true,
+      "est_size_gb": 16,
+      "notes": "Verified on Arc B390 (Panther Lake, XMX), 2026-08-10: 15.2 GB int4, 128 experts / 8 active, 262k model context, 96 KB/token KV. Needs a GPU with XMX -- auto disk offload is what makes it fit an 18.5 GB budget. Measured steady-state: 32k context (pool 3 GB, auto ratio 15%) 21.2 tok/s, TTFT 1.15s warm; 87k context (pool 8 GB, auto ratio 49%) 12.8 tok/s, TTFT 5.8s. Tool calling and sequential requests both verified through the serving path. Raise the iGPU Shared Memory Override to ~25 GB to drop the ratio to 0 and keep both."
+    },
+    {
+      "name": "Qwen2.5-Coder 14B (INT4)",
+      "hf_id": "OpenVINO/Qwen2.5-Coder-14B-Instruct-int4-ov",
+      "source": "pre-exported",
+      "agent": true,
+      "est_size_gb": 8,
+      "notes": "Recommended for VS Code Copilot Chat / tool calling (--vscode-compat). Fits 16GB with KV headroom. Emits Hermes-style <tool_call> JSON, handled by parse_tool_calls. Prefer Qwen3-Coder 30B-A3B on an XMX GPU (disk offload makes it fit and it is faster); this remains the best coder for non-XMX GPUs, where offload is a no-op."
+    },
+    {
+      "name": "Qwen2.5-Coder 7B (INT4)",
+      "hf_id": "OpenVINO/Qwen2.5-Coder-7B-Instruct-int4-ov",
+      "source": "pre-exported",
+      "agent": true,
+      "est_size_gb": 5,
+      "notes": "Lighter Copilot/tool-calling option. Faster than the 14B, weaker on multi-step agent loops. Same Hermes tool-call format."
+    },
+    {
+      "name": "Qwen3 14B (INT4)",
+      "hf_id": "OpenVINO/Qwen3-14B-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 8,
+      "notes": "Great reasoning. Sweet spot."
+    },
+    {
+      "name": "Qwen3.6 27B (INT4)",
+      "hf_id": "OpenVINO/Qwen3.6-27B-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 16,
+      "notes": "Untested. Newest generation, natively multimodal. ~16 GB int4 — borderline on a 16 GB Arc, may fall back to CPU silently like the 30B-A3B. Needs OpenVINO 2026.2+."
+    },
+    {
+      "name": "Phi 4 (INT4)",
+      "hf_id": "OpenVINO/phi-4-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 8,
+      "notes": "Microsoft 14B. Strong reasoning."
+    },
+    {
+      "name": "Phi 4 Reasoning (INT4)",
+      "hf_id": "OpenVINO/Phi-4-reasoning-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 8,
+      "notes": "Chain-of-thought specialist."
+    },
+    {
+      "name": "DeepSeek R1 Distill 14B (INT4)",
+      "hf_id": "OpenVINO/DeepSeek-R1-Distill-Qwen-14B-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 8,
+      "notes": "Reasoning specialist."
+    },
+    {
+      "name": "Qwen3 30B-A3B MoE (INT4)",
+      "hf_id": "OpenVINO/Qwen3-30B-A3B-Instruct-2507-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 17,
+      "notes": "Best quality. Needs >32 GB RAM (shared with system). Verified 2026-08-09 on 285K CPU via CB backend (smoke test). 262k context — holds a whole novel with --cache-size-gb 12."
+    },
+    {
+      "name": "Qwen3 Thinking 30B-A3B MoE (INT4)",
+      "hf_id": "aweussom/Qwen3-30B-A3B-Thinking-2507-int4-ov",
+      "source": "pre-exported",
+      "est_size_gb": 17,
+      "notes": "Always-thinking sibling of the Instruct 30B-A3B, same int4 recipe (our export — no Intel pre-export exists). Verified 2026-08-09 on 285K CPU: multi-step reasoning then a correct answer. Output ends thinking with </think> (no opening tag); give it max_tokens headroom or the reasoning eats the budget."
+    },
+    {
+      "name": "Qwen3 Coder 30B-A3B MoE (INT4)",
+      "hf_id": "OpenVINO/Qwen3-Coder-30B-A3B-Instruct-int4-ov",
+      "source": "pre-exported",
+      "agent": true,
+      "est_size_gb": 17,
+      "notes": "Code-focused MoE. Needs >32 GB RAM (shared with system)."
+    }
+  ]
+}
