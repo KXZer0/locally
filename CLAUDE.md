@@ -374,6 +374,135 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
   is why `VadSlot` reads the window width from the model rather than assuming 512.
   Without `--vad-dir` the Voice tab **disables auto turn-taking and says why** — it
   does not fall back to the loudness gate, because the gate is what was broken.
+- **Startup: the chat model goes first, and /health stopped blocking** (2026-08-30).
+  Two separate causes, both measured on the 358H with a warm compile cache.
+  (1) **Every slot loaded at once**, and they are not equal: the user waits for the
+  chat model, while OCR compiling on two engines competes for the same cores and
+  bandwidth. Back to back, same machine: all-concurrent reached "locally ready" in
+  **15.43 s**, chat-only in **9.97 s** — the utilities cost 5.5 s of the wait for a
+  model they have nothing to do with. Utility slots now wait on a
+  `threading.Event` the primary load sets in a `finally` (so a FAILED load
+  releases them too), capped at 120 s so a slow model can never leave the Tools
+  tab dead. Result: **11.24 s to chat-ready**, utilities finishing at 16.17 s off
+  the critical path. Deferred, never dropped.
+  (2) **`/health` cost 1.86 s per call**, on the endpoint the web UI polls —
+  against 1.5 ms for `/v1/models`. The OpenCode and Odysseus liveness probes each
+  did a real HTTP round trip (1508 ms + 360 ms, each its own configured timeout).
+  The reason is not what you would guess: on this machine a connection to a CLOSED
+  loopback port is **dropped, not refused**, so a "fast fail" that assumes
+  ECONNREFUSED never fails fast. `core/portprobe.py` inverts it — readers get the
+  last known answer instantly and a background thread refreshes it, while
+  start()/stop() record what they already know for free. **1.86 s → 0.006 s**, and
+  a state change still shows up immediately. Never put a network probe on
+  `/health` again without caching it.
+- **locally installs itself as a Windows app** (2026-08-30). `-CreateShortcut` wrote
+  `locally.lnk` into the repo root and told the user to go wire it up by hand,
+  while `locally-win32.ps1` was ALREADY looking for it under Start Menu\Programs —
+  creation and lookup disagreed about where the app lives. It now also copies the
+  shortcut to `%APPDATA%\...\Start Menu\Programs` (`-Desktop` adds a desktop
+  copy), which is what Windows counts as installed: verified with `Get-StartApps`,
+  which now returns `locally` with a generated AppID, so it is searchable from
+  Start and pinnable to the taskbar. No binary is shipped and nothing is signed —
+  the shortcut target is System32's powershell.exe — so Smart App Control never
+  enters into it. **The Copilot key cannot be bound through Windows' own setting**:
+  Settings -> Personalization -> Text input -> "Customize Copilot key" lists only
+  MSIX-packaged signed apps, so it cannot target a .lnk or a plain .exe. A remapper
+  pointed at the installed shortcut is the working route, and the script now says
+  so instead of leaving it implied. **On this machine that remapper is NewPilot**
+  (`GamerJagdish.NewPilot`, MSIX) — not PowerToys, which the docs used to name and
+  whose Keyboard Manager holds no remaps here. NewPilot is itself MSIX-packaged,
+  which is exactly why Windows accepts it as a Copilot-key target when a .lnk is
+  refused; it then forwards the press to locally's shortcut. Windows Copilot is
+  **not installed** here, so Win+C is free and already raises locally. Do not
+  re-derive this and do not "fix" it by suggesting PowerToys.
+- **First-run setup has no containers** (2026-08-30). It was a bordered, filled,
+  shadowed dialog holding bordered, filled, rounded cards — boxes inside a box
+  inside an overlay — and Camilo called it: "remove the containers". The shell is
+  now edge-to-edge and the dialog draws nothing; only the ~920px measure survives,
+  because the container going away is not a reason for a line of text to become
+  1440px wide. Options are rows told apart by a single hairline, and the rule is
+  the ONLY chrome: nothing is drawn around an item, just between items. Selection
+  used to be a ring around a card, so with no card it became a 2px ink bar in the
+  left margin plus a brighter title — two signals, both surviving monochrome and
+  grayscale.
+  **The softness is radial gradients, not `filter`/`backdrop-filter`.** That is
+  the perf note above: blur on a full-surface element composites every frame and
+  the iGPU may be loading a model while setup is open. A gradient is blurry by
+  construction and costs one paint. Two fields, sized 120vmax so their edges never
+  enter frame — an ellipse edge crossing the screen reads as a shape, and the point
+  is that you cannot find where it begins.
+  **Three alignment bugs, all found by measuring the rendered page, none by
+  reading it.** (1) The dots sat in the middle column of a 3-column grid whose
+  outer columns were `1fr` but sized by their CONTENT — Back on one side, a
+  variable-length status string plus Continue on the other — so any status text
+  pushed the "centre" off centre. Dots are now absolutely centred on the footer,
+  which is independent of both sides. (2) Continue was measured at x=538 in a
+  footer spanning 260..1020: Back is `display:none` on step 1, so auto-placement
+  put the actions block in column 1. Both are now placed by explicit
+  `grid-column`. (3) Head, content and footer had three different horizontal
+  paddings, so the mark, the headline and the buttons each started on a different
+  vertical line; they now share one `--setup-measure`, so the screen has exactly
+  two vertical lines. Verified across all five steps: dots centre 640, Continue
+  right edge 1020, Back left 260 — identical on every step. Below 680px the
+  centred dots and the right-pinned button provably collide (measured at 375px),
+  so there the dots take a row of their own.
+- **The Code tab shows OpenCode's WEB interface, embedded** (2026-08-30). `opencode
+  serve` already hosts the same UI that `opencode web` opens a browser at, so locally
+  runs it headless (`core/opencode_web.py`) and frames it rather than spawning a
+  window that competes with its own UI. It **pins the port** (4747) because
+  `--port` defaults to **0**, i.e. random — a caller that does not pin it cannot
+  link to, embed, or health-check what it just started. It **adopts** an
+  already-listening OpenCode instead of spawning a duplicate, reports itself in
+  `/health.opencode_web`, and only ever stops a server it started.
+  Framing is allowed here and forbidden for Odysseus, and that is measured, not
+  taste: OpenCode sends no `frame-ancestors`, no `X-Frame-Options` and no HSTS.
+  The server is bound to **127.0.0.1 and that is not configurable** — it starts
+  unauthenticated (`OPENCODE_SERVER_PASSWORD is not set; server is unsecured`) and
+  runs commands, so giving it locally's 0.0.0.0 reach would hand a shell to the LAN.
+  The consequence is that the Code tab's web view only works from the server's own
+  machine; from a phone the button is disabled with that reason, verified over the
+  LAN IP. **Stopping it must kill the process TREE**: `shutil.which("opencode")`
+  resolves to `opencode.CMD`, so the direct child is a cmd.exe wrapper and the real
+  `opencode.exe` is its grandchild — `terminate()` reaped the wrapper while the
+  server kept answering 200, and the orphan would then be silently re-adopted on the
+  next start. `stop()` taskkills the tree *before* reaping the wrapper (taskkill
+  walks live parent links) and then verifies the port, because "stopped" has to mean
+  stopped.
+- **Odysseus is a sidebar LINK, and only when it answers** (2026-08-30). Address in
+  Settings (`locally-odysseus-url`, default `http://localhost:7000`); the entry stays
+  hidden until a probe succeeds, so it is never a control wired to nothing. The probe
+  runs in the **browser**, not the server, because the browser is what follows the
+  link — a server-side probe would light the entry up for a phone that cannot reach
+  it. Never an iframe: HSTS, own-hostname cookies and a service worker each break an
+  embed independently (docs/ODYSSEUS.md).
+  **locally can also START it** (`core/odysseus.py`): `docker compose up -d` on a
+  checkout found via `$ODYSSEUS_DIR` -> sibling `odysseus/` -> `~/odysseus`, the
+  same order `_local_version()` already used, and only when a compose file is
+  actually there. It **adopts** a stack already serving rather than racing it, and
+  it stops with `docker compose stop`, never `down` -- `down` destroys containers
+  and volumes, and this is the user's assistant with their data in it. Autostart
+  runs on a **background thread**: a first run pulls images for minutes and chat
+  must not wait for it. `docker_available` is reported alongside `docker_installed`
+  because "Docker is unavailable" has two causes with two different fixes, and a UI
+  that cannot tell them apart can only ever give one of them the wrong instruction.
+  The **"start it with locally" toggle persists to `odysseus-autostart.json`**
+  (gitignored, machine-local): the thing it controls happens at startup, so a
+  preference that did not survive a restart could never take effect. An explicit
+  `--odysseus-autostart` / `--no-` still wins, the precedence locally.ini.example
+  already states.
+- **Three more `core/`-split NameErrors, found by an AST sweep** (2026-08-30).
+  `locally.py` referenced four names that had moved into `core/` and were never
+  imported back: `_UTIL_SEARCH_MAX_CHUNKS` (`/v1/util/index` 500), `_UTIL_RERANK_POOL`
+  (`/v1/util/search` 500), `_fetch_page_text` (every URL read), `_builtin_runs`
+  (every builtin tool turn) -- plus `_markitdown_instance`, whose `global` moved to
+  `core/documents/read.py` while the variable stayed behind, breaking EVERY
+  text-bearing document read (pdf-with-text, docx, pptx, xlsx, html, epub, csv, txt).
+  This is the trap the split rule above warns about, and it had already bitten once.
+  Reading the code cannot find these -- `global` makes an absent name look defined --
+  so the check is now mechanical: walk the AST, collect module-level bindings, and
+  diff them against every `Name` loaded. It found all five in one pass and reports
+  zero across `locally.py` and every module in `core/`. Run it before trusting a
+  future split.
 - Web UI: `templates/index.html` + `static/css/style.css` + `static/js/app.js`, three tabs
   (Chat / Voice / Util). Chat and Voice share **one** `chatHistory` — switching modes
   must never drop the conversation, and voice turns are mirrored into the chat thread.

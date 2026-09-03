@@ -55,3 +55,17 @@ hf_xet
 # isn't installed. Install with:
 #   venv\Scripts\python.exe -m pip install pywebview
 # pywebview
+
+# Optional: only for `locally`'s Odysseus autostart (docs/ODYSSEUS.md).
+#
+# `podman compose` and `docker compose` are both THIN WRAPPERS -- podman shells
+# out to an external provider and fails with "looking up compose provider
+# failed" when neither docker-compose nor podman-compose is on PATH. Measured
+# 2026-08-30 on a clean Podman 6.0.2 install: the stack could not start at all
+# without this, and the error names a missing binary rather than the missing
+# package, which sends people to the wrong place.
+#
+# Installed into this venv, core/odysseus.py puts the interpreter's own
+# directory on PATH for the compose subprocess, so no global install is needed.
+# Skip it entirely if you have Docker Compose v2, or do not run Odysseus.
+# podman-compose>=1.6.0

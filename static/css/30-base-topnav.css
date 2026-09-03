@@ -88,8 +88,8 @@ button, input, textarea, select { -webkit-tap-highlight-color: transparent; }
     border: 0;
     border-bottom: 1px solid var(--border);
     box-shadow: 0 1px rgb(0 0 0 / 0.28);
-    backdrop-filter: blur(12px) saturate(120%);
-    -webkit-backdrop-filter: blur(12px) saturate(120%);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
 }
 
 .brand { min-width: 132px; gap: 8px; padding: 0; }

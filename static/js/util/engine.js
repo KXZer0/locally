@@ -1,11 +1,17 @@
 // Which engine serves the Tools tab, and which tasks it can actually do.
 //
-// In here: NPU/GPU selection, the per-task availability read out of /health,
+// In here: NPU/GPU/CPU selection, the per-task availability read out of /health,
 // and the workspace switcher. Availability has THREE states -- ready, not
 // installed, installed but not served here -- because each needs a different
 // action from the user, and a task can be unavailable on this engine and fine
 // on the other one.
 // Not in here: running any task. Each workspace owns its own request.
+//
+// CPU is a first-class engine here, not an afterthought: `--util-engines cpu`
+// is the entire configuration on a machine with no Intel accelerator, and while
+// it was missing from this list the models loaded, served requests over HTTP,
+// and were unreachable from the UI. The engine list is ONE constant for that
+// reason — a fourth engine must not need four literals found by grep.
 
 import { generateRun, panelUtil, searchFilesInput, searchIndexBtn, sidebarTools, utilAvailability, utilDescription, utilEngineBtns, utilNavBtns, utilRunBtn, utilStatus, utilTitle, utilViews } from '../core/dom.js';
 import { paintDevice, revealSurface } from '../core/paint.js';
@@ -13,19 +19,21 @@ import { _slotUp } from '../system/devices.js';
 import { imageTaskFiles } from './images.js';
 import { utilBusy, utilFile } from './read.js';
 
+// Preference order for the default engine, and the only list of engine names
+// in this module. It matches the server's `_default_util_engine()`: NPU first
+// (it is the low-power engine and the point of the project), CPU last.
+export const UTIL_ENGINE_ORDER = ['npu', 'gpu', 'cpu'];
+
 export function renderUtilAvailability(slots) {
-    utilEngines = {
-        npu: !!(slots.npu && _slotUp(slots.npu)),
-        gpu: !!(slots.gpu && _slotUp(slots.gpu)),
-    };
-    utilTasks = {
-        npu: slots.npu?.tasks || {},
-        gpu: slots.gpu?.tasks || {},
-    };
-    utilDisabled = {
-        npu: slots.npu?.disabled || {},
-        gpu: slots.gpu?.disabled || {},
-    };
+    utilEngines = {};
+    utilTasks = {};
+    utilDisabled = {};
+    for (const engine of UTIL_ENGINE_ORDER) {
+        const slot = slots[engine];
+        utilEngines[engine] = !!(slot && _slotUp(slot));
+        utilTasks[engine] = slot?.tasks || {};
+        utilDisabled[engine] = slot?.disabled || {};
+    }
 
     for (const btn of utilEngineBtns) {
         const engine = btn.dataset.utilEngine;
@@ -38,11 +46,12 @@ export function renderUtilAvailability(slots) {
                     : `${engine.toUpperCase()} utility models are not loaded`);
     }
 
-    // NPU is the default every fresh session. Fall over only when it is not a
-    // serveable option; never silently move a user's explicit GPU choice back.
+    // NPU is the default every fresh session, then GPU, then CPU. Fall through
+    // only when the current engine is not a serveable option; never silently
+    // move a user's explicit choice.
     if (!utilEngines[utilEngine]) {
-        if (utilEngines.npu) setUtilEngine('npu');
-        else if (utilEngines.gpu) setUtilEngine('gpu');
+        const fallback = UTIL_ENGINE_ORDER.find(e => utilEngines[e]);
+        if (fallback) setUtilEngine(fallback);
     } else {
         setUtilEngine(utilEngine);
     }
@@ -60,10 +69,10 @@ export function renderUtilAvailability(slots) {
 }
 
 export let utilEngine = 'npu';
-export let utilEngines = { npu: false, gpu: false };
-export let utilTasks = { npu: {}, gpu: {} };
+export let utilEngines = Object.fromEntries(UTIL_ENGINE_ORDER.map(e => [e, false]));
+export let utilTasks = Object.fromEntries(UTIL_ENGINE_ORDER.map(e => [e, {}]));
 // task -> why it is off, when the reason is not "the model is missing".
-export let utilDisabled = { npu: {}, gpu: {} };
+export let utilDisabled = Object.fromEntries(UTIL_ENGINE_ORDER.map(e => [e, {}]));
 export let utilTask = 'read';
 export function utilFileUsesNativeParser(file) {
     if (!file) return false;
@@ -75,8 +84,11 @@ export function utilFileUsesNativeParser(file) {
 }
 
 export function setUtilEngine(engine) {
-    if (!['npu', 'gpu'].includes(engine)) return;
-    if (utilEngines[engine] === false && (utilEngines.npu || utilEngines.gpu)) return;
+    if (!UTIL_ENGINE_ORDER.includes(engine)) return;
+    // Refuse a dead engine only when some other one could serve instead —
+    // with nothing loaded there is no better choice to move to.
+    if (utilEngines[engine] === false
+        && UTIL_ENGINE_ORDER.some(e => utilEngines[e])) return;
     utilEngine = engine;
     for (const btn of utilEngineBtns) {
         const active = btn.dataset.utilEngine === engine;
@@ -110,10 +122,13 @@ export function syncUtilityTaskAvailability() {
         // someone to fetch one for the second sends them in circles.
         const why = utilDisabled[utilEngine]?.[task];
         // With per-device tiers a task can be unavailable *here* and fine on
-        // the other engine — saying "unavailable on this hardware" in that case
-        // is simply false, and hides the one-click fix.
-        const other = utilEngine === 'npu' ? 'gpu' : 'npu';
-        const elsewhere = utilEngines[other] && utilTasks[other]?.[task];
+        // another engine — saying "unavailable on this hardware" in that case
+        // is simply false, and hides the one-click fix. Search the whole engine
+        // list in preference order: with three engines "the other one" is not a
+        // single answer, and assuming it was is what hid CPU entirely.
+        const other = UTIL_ENGINE_ORDER.find(
+            e => e !== utilEngine && utilEngines[e] && utilTasks[e]?.[task]);
+        const elsewhere = !!other;
         el.textContent = ready
             ? `${utilEngine.toUpperCase()} ready`
             : elsewhere ? `switch to ${other.toUpperCase()}`

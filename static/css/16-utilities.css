@@ -87,11 +87,16 @@
 }
 .engine-option:disabled { opacity: 0.32; cursor: not-allowed; }
 .engine-dot { width: 7px; height: 7px; border-radius: 50%; }
-/* Same fill grammar as the brand mark: solid NPU, ring GPU. */
+/* Same fill grammar as the brand mark and the device pill: solid NPU, ring
+   GPU, hollow CPU. Three states that survive a monochrome palette. */
 .engine-option[data-util-engine="npu"] .engine-dot { background: var(--ink); }
 .engine-option[data-util-engine="gpu"] .engine-dot {
     background: transparent;
     box-shadow: inset 0 0 0 1.5px var(--ink);
+}
+.engine-option[data-util-engine="cpu"] .engine-dot {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--ink-3);
 }
 .engine-option:not(.active) .engine-dot { opacity: 0.45; }
 

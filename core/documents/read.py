@@ -15,6 +15,18 @@ from core.errors import _TurnError, openai_error
 from core.slots.select import _util_slot
 import threading
 
+# Lazily built on first use and reused after, because MarkItDown's constructor
+# is not free and every document read would otherwise pay for it.
+#
+# It MUST be declared here, in the module whose function reads it. When this
+# code moved out of locally.py the `global` statement came with it and the
+# variable did not, so the name existed only at locally.py:2224 -- and `global`
+# makes an absent name look defined to every static check, which is exactly the
+# trap CLAUDE.md records for this split. `_native_document_markdown` then raised
+# NameError for EVERY text-bearing document: pdf with a text layer, docx, pptx,
+# xlsx, html, epub, csv, txt, md. Found by running the path, not by reading it.
+_markitdown_instance = None
+
 try:
     from utility_pipeline import UtilityUnavailable
 except ImportError:

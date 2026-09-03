@@ -934,21 +934,35 @@ clipboard text, end to end, measured to first paint. Add selection synthesis in
 `locally-key.ps1` second. Images third. Each step is independently useful and
 independently shippable.
 
-### 5.2 Remove Odysseus
+### 5.2 Odysseus KEEPS its integration — do not delete it
 
-It does not work, it is clunky, and it is a large surface for what is a sidebar
-link to a Docker stack. Deleting it directly serves "locally is my assistant".
+**This section previously said "Remove Odysseus". That was reversed on
+2026-09-02, later the same day. Agents must not act on the old text.**
 
-Remove: `core/odysseus.py` (558 lines), `static/js/ui/odysseus.js` (212),
+The position now, in the user's own terms: Odysseus "seems good", is "better
+than my locally" for everything except the NPU and the native web app, and its
+features are wanted. `docs/ODYSSEUS.md` already states the standing
+architecture and it is the one to build to — **Odysseus owns the assistant,
+locally owns the silicon.** They meet at locally's OpenAI-compatible base URL.
+
+Keep, unchanged: `core/odysseus.py`, `static/js/ui/odysseus.js`,
 `docs/ODYSSEUS.md`, `scripts/odysseus-firewall.ps1`, `odysseus-autostart.json`,
-the settings entries, the `/health.odysseus` block, its portprobe entry, and the
-`--odysseus-autostart` / `--no-odysseus-autostart` flags with their
-`locally.ini.example` lines. Roughly 800 lines and one Docker dependency.
+the settings entries, `/health.odysseus`, its portprobe entry, and the
+`--odysseus-autostart` flags. The sidebar link stays a link and never an
+iframe — HSTS, own-hostname cookies and a service worker each break an embed
+independently.
 
-Write the TODONT entry as part of removing it — *why* the embedded-assistant
-idea was abandoned is worth keeping, and CLAUDE.md's Odysseus paragraph should
-shrink to a pointer at that entry. Reversible via git. Do not touch the user's
-Odysseus checkout or its volumes, only locally's integration with it.
+**The licensing constraint governs anything that looks like porting.**
+Odysseus is **AGPL-3.0**; locally currently ships **no LICENSE file at all**.
+Copying Odysseus source into locally would make locally AGPL-3.0 including the
+network-use clause, which matters because it is published at
+`github.com/KXZer0/locally`. Features may be **reimplemented independently**
+from observed behaviour; code must not be copied. Any agent asked to "bring
+over" an Odysseus feature must write it from scratch and say so in the commit.
+
+**OpenCode is the opposite case and is still deleted** — §3.6. The user will
+install it standalone to use its own API keys and OpenRouter. That removal
+stands.
 
 ### 5.3 locally as the router; OpenCode for cloud models
 
@@ -990,8 +1004,8 @@ model; the app shows where it ran.
 
 1. §5.0 re-export. One command, immediate quality, and it unblocks judging
    everything else.
-2. §5.2 Odysseus removal. Deletion, lowest risk, shrinks the surface before
-   anything is added to it.
+2. §3.6 OpenCode removal. Deletion, lowest risk, shrinks the surface before
+   anything is added to it. (Odysseus is KEPT — see §5.2.)
 3. §5.1 quick assistant, text-only path, measured to first paint.
 4. §5.3 multi-proxy and provenance.
 5. §5.1 selection synthesis, then images.

@@ -52,6 +52,7 @@ id_rsa*
 
 # --- personal ---------------------------------------------------------------
 # Enrolled voice profile. This is biometric data and must never be public.
+odysseus-autostart.json
 speaker-profile.json
 # Assistant session memory, local tool settings, and delegated worktrees.
 # Distinct from CLAUDE.md / AGENTS.md at the repo root, which ARE tracked:

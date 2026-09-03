@@ -63,6 +63,10 @@ CODE_MIN_CONTEXT = 70000
 # recompiling. Measured on Qwen3-8B/NPU: 65.1 s cold → 9.3 s cached.
 # --no-model-cache disables it.
 MODEL_CACHE_DIR = None
+# --model-cache-gb: upper bound on .ov-cache. It had none, and an unbounded
+# compile cache measured 41.9 GB here (36.1 GB of it untouched for 14 days).
+# Evicting an entry costs one cold compile of that model, nothing more.
+MODEL_CACHE_GB = 12.0
 
 # Percentage of MoE expert weights streamed from disk on GPU, or "auto".
 # Needs an XMX-capable GPU (Arc / Lunar Lake+) — a silent no-op without one.
@@ -110,6 +114,29 @@ NPU_TOOL_BUDGET = 1200
 PYTHON_TOOL_TIMEOUT = 5.0             # hard wall-clock limit per child process
 PYTHON_TOOL_OUTPUT_BYTES = 64 * 1024  # stdout/stderr cap, per stream
 PYTHON_TOOL_MAX_CODE_BYTES = 32 * 1024
+
+
+# --- Odysseus ---------------------------------------------------------------
+# Odysseus is the assistant layer (docs/ODYSSEUS.md); locally is the engine it
+# talks to. Both run on the same box, so locally can bring it up — but only on
+# request. Autostart is OFF by default because `docker compose up -d` starts
+# four containers holding the user's calendar, mail and notes; an inference
+# server does not get to do that because it happened to be launched.
+
+ODYSSEUS_AUTOSTART = False
+ODYSSEUS_PORT = 7000     # Odysseus's own APP_PORT default
+ODYSSEUS_DIR = None      # --odysseus-dir; None means search (env, sibling, ~)
+
+# A first run builds images from source (the compose service is `build: .`,
+# there is no tag to pull), which is minutes, not seconds. The autostart runs
+# on a background thread precisely so this number cannot delay serving chat.
+ODYSSEUS_START_TIMEOUT = 180
+
+# --container-engine: pin 'docker' or 'podman'. None means take whichever is
+# on PATH, Docker first. Odysseus's compose file declares
+# extra_hosts: host.docker.internal:host-gateway explicitly, so the one
+# Docker-shaped dependency in this architecture is honoured by Podman too.
+CONTAINER_ENGINE = None
 
 
 # --- coding mode ------------------------------------------------------------

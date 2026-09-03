@@ -94,6 +94,48 @@ if ($raised -and $serverUp) {
 # Open it here rather than waking pwsh 7 and the whole launcher for one
 # Start-Process. Only the app-mode path is inlined; anything more exotic
 # (no Chromium installed) still deserves the launcher's fallback chain.
+# A window that is STARTING has no title yet, so Find-locallyWindows cannot see
+# it, so the next key press concludes there is no window and opens another one.
+# The launch log shows exactly that: three "opened pywebview native window"
+# entries inside three seconds (14:46:10, :11, :12), interleaved with successful
+# raises of two different pids. Every extra window is a fresh WebView2 host, and
+# on the cold path a fresh model load -- which is what "everything opens and my
+# computer is flooded" is.
+#
+# A mutex cannot express this: this script exits immediately after spawning the
+# window, so any handle it holds is released before the window appears. The
+# state has to outlive the process, so it is a timestamp on disk. If we opened a
+# window within the grace period, the window is already coming -- do nothing.
+$launchMark = Join-Path $logDir 'opening.mark'
+$graceMs = 8000
+$ownsLaunch = $false
+if (-not $raised) {
+    # Exists-then-write is NOT enough, and the first cut of this guard proved
+    # it: five simultaneous presses, five checks that all ran before any write,
+    # so three still opened windows. The claim has to be ATOMIC, so it is
+    # FileMode::CreateNew -- the filesystem grants that to exactly one caller
+    # and throws for everyone else. Only the winner opens a window.
+    try {
+        $fs = [IO.File]::Open($launchMark, [IO.FileMode]::CreateNew,
+                              [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $fs.Close()
+        $ownsLaunch = $true
+    } catch {
+        # Someone else holds it. Fresh means a window is genuinely on its way;
+        # stale means a previous press died before cleaning up, and refusing
+        # forever because of that would be worse than the flood.
+        $age = $graceMs + 1
+        try {
+            $age = ([DateTime]::UtcNow - [IO.File]::GetLastWriteTimeUtc($launchMark)).TotalMilliseconds
+        } catch { }
+        if ($age -lt $graceMs) {
+            Write-Log ("a window is already opening ({0:N0} ms ago); ignored" -f $age)
+            exit 0
+        }
+        try { [IO.File]::SetLastWriteTimeUtc($launchMark, [DateTime]::UtcNow); $ownsLaunch = $true } catch { }
+    }
+}
+
 if ($serverUp -and -not $raised) {
     $opened = Open-locallyApp "http://127.0.0.1:$Port"
     if ($opened) {
@@ -136,6 +178,17 @@ function Quote($s) {
 $launchArgs = (@('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
                  '-File', $script, '-Port', $Port) + $Rest |
                 ForEach-Object { Quote $_ }) -join ' '
+# The window guard above covers this branch too, and it matters MORE here: a
+# duplicate window costs a WebView2 host, a duplicate SERVER costs a second full
+# model load. Measured on this machine, one server is 8.5 GB resident, so two
+# rapid presses on a cold box is 17 GB -- which is what "everything opens and my
+# computer is flooded" actually was. locally-launch.ps1 has its own
+# already-running check, but two launchers started in the same instant both read
+# "not running" before either binds.
+if (-not $ownsLaunch) {
+    Write-Log "server down, but another press already owns the launch; ignored"
+    exit 0
+}
 try {
     Start-Process -FilePath $pwsh -ArgumentList $launchArgs -WindowStyle Hidden
     Write-Log "server down; handed off to locally-launch.ps1"

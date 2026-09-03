@@ -66,6 +66,7 @@ import './voice/turn.js';
 import './voice/speech-queue.js';
 
 import './ui/code-tab.js';
+import './ui/odysseus.js';
 import './ui/settings.js';
 import './ui/composer.js';
 

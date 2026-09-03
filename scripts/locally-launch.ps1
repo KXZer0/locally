@@ -59,7 +59,13 @@ param(
     # 2 GB default (~21k tokens on a 30B) fails such a turn mid-request.
     # 40k costs ~4 GB and still leaves the 30B needing no offload at all.
     [string] $ContextTokens = '40000',
-    [int]    $SearxPort = 8080,
+    # 8081, not 8080. Odysseus publishes ITS OWN SearXNG on 127.0.0.1:8080,
+    # so on any machine running both, whichever starts first takes the port and
+    # the other silently uses its neighbour'''s search engine -- measured here:
+    # :8080 was owned by wslrelay (Odysseus'''s container) while locally thought
+    # it was talking to its own. Defaulting off 8080 keeps the two independent,
+    # so stopping Odysseus cannot take locally'''s web search down with it.
+    [int]    $SearxPort = 8081,
     # int8 KV halves cache bytes/token (96 KB -> ~48 KB on the 30B). At f16 a
     # 100k-token coding session needs 9.6 GB of KV on top of 15.2 GB of
     # weights and simply will not fit; at u8 it needs 4.8. Measured on the
@@ -77,7 +83,11 @@ param(
     # Regenerate locally.lnk next to the project, then exit. The shortcut is
     # what a hardware key / PowerToys "Open app" points at, since those only
     # take a path and no arguments.
-    [switch] $CreateShortcut
+    [switch] $CreateShortcut,
+
+    # Also drop a copy on the Desktop. Off by default: the Start menu entry is
+    # what makes it an app; a desktop icon is a preference, not a requirement.
+    [switch] $Desktop
 )
 
 $ErrorActionPreference = 'Stop'
@@ -172,7 +182,51 @@ if ($CreateShortcut) {
     $s.IconLocation     = if (Test-Path $icon) { "$icon,0" } else { "$env:SystemRoot\System32\SHELL32.dll,13" }
     $s.Save()
     Write-Host "Created $lnk"
-    Write-Host "Point PowerToys 'Open app' (or a desktop/taskbar shortcut) at that file."
+
+    # Install it as a real app entry, not just a file in the source folder.
+    #
+    # This step used to be missing, and its absence was the whole "why isn't
+    # locally an app" problem: the shortcut landed in the repo root and the
+    # user was told to go wire it up themselves, while locally-win32.ps1 was
+    # ALREADY looking for it under Start Menu\Programs. Creation and lookup
+    # disagreed about where the app lives.
+    #
+    # A .lnk in Start Menu\Programs is what Windows counts as an installed
+    # app: it is searchable from Start, pinnable to Start and the taskbar, and
+    # it is what a key remapper points at. No binary is shipped and nothing is
+    # signed -- the target is System32's powershell.exe -- so Smart App Control
+    # never enters into it (TODONT.md: an unsigned locally-built exe is blocked
+    # outright, and a self-signed cert cannot fix that).
+    $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+    $installed = Join-Path $startMenu 'locally.lnk'
+    try {
+        if (-not (Test-Path $startMenu)) { New-Item -ItemType Directory -Force $startMenu | Out-Null }
+        Copy-Item -LiteralPath $lnk -Destination $installed -Force
+        Write-Host "Installed to Start menu: $installed"
+        Write-Host "  It is now searchable from Start and can be pinned to the taskbar."
+    } catch {
+        Write-Host "Could not write the Start menu entry: $($_.Exception.Message)"
+    }
+
+    if ($Desktop) {
+        try {
+            $desktopLnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'locally.lnk'
+            Copy-Item -LiteralPath $lnk -Destination $desktopLnk -Force
+            Write-Host "Installed to Desktop: $desktopLnk"
+        } catch {
+            Write-Host "Could not write the Desktop shortcut: $($_.Exception.Message)"
+        }
+    }
+
+    # Be straight about the Copilot key. Windows 11's Settings ->
+    # Personalization -> Text input -> "Customize Copilot key" will only list
+    # MSIX-packaged, signed apps, so it cannot be pointed at a .lnk or a plain
+    # .exe -- and shipping a signed MSIX needs a paid certificate. A remapper
+    # is the working route, and it takes the shortcut this just installed.
+    Write-Host ""
+    Write-Host "Hardware key: point PowerToys Keyboard Manager (or your vendor's"
+    Write-Host "key utility) at the shortcut above. Windows' own 'Customize Copilot"
+    Write-Host "key' setting only accepts signed MSIX apps, so it cannot target this."
     return
 }
 

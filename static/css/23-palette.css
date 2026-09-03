@@ -137,3 +137,99 @@ input.palette-input::placeholder { color: var(--text-faint); }
 .code-empty .field-label { text-align: left; }
 .code-workspace { width: 100%; font-family: var(--font-mono); }
 .code-empty-actions { display: flex; gap: var(--sp-3); justify-content: center; }
+
+/* --- Code tab: the embedded OpenCode web interface ---------------------- */
+/* The frame fills the panel because a coding UI inside a letterboxed box is
+   worse than not showing it at all. No colour is introduced here: the bar uses
+   the same white-alpha surfaces and line tokens as every other chrome. */
+.code-web { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.code-web-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-2) var(--sp-3);
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-raised);
+}
+.code-web-url {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--fs-sm);
+    color: var(--text-faint);
+}
+.code-web-actions { display: flex; gap: var(--sp-2); flex: none; }
+.code-web-frame {
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    border: 0;
+    /* OpenCode paints its own background; without this the frame flashes white
+       against a #0A0A0A shell on every load. */
+    background: var(--bg);
+}
+
+/* --- Sidebar: external applications ------------------------------------ */
+/* Odysseus is not a tab -- it leaves the app -- so it sits below the tab list
+   with a rule separating it from the panels this window can actually show.
+   No colour: it borrows the same .tab treatment as everything above it. */
+.sidebar-external {
+    margin-top: var(--sp-2);
+    padding-top: var(--sp-2);
+    border-top: 1px solid var(--line-soft);
+}
+
+/* --- Settings: Odysseus ------------------------------------------------- */
+/* Same grammar as the onboarding rewrite: rows separated by a hairline, no
+   card around anything. The dot's FILL carries the state so it survives a
+   monochrome palette and a grayscale screenshot -- solid = running, ring =
+   installed but stopped, hollow = not installed. No hue is introduced; the
+   only chromatic value in this UI is --alarm and it means something broke. */
+.odys-state {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    padding-bottom: var(--sp-3);
+}
+
+.odys-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border: 1px solid var(--ink-3);
+    border-radius: 50%;
+    background: transparent;
+}
+
+.odys-dot[data-state="running"] { border-color: var(--ink); background: var(--ink); }
+.odys-dot[data-state="stopped"] { border-color: var(--ink-2); background: transparent; }
+.odys-dot[data-state="absent"]  { border-color: var(--ink-4); background: transparent; }
+.odys-dot[data-state="error"]   { border-color: var(--alarm); background: var(--alarm); }
+
+.odys-headline {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--fs-sm);
+    color: var(--ink-2);
+}
+
+.odys-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--sp-4);
+    padding: var(--sp-3) 0;
+    border-top: 1px solid var(--line-soft);
+    cursor: pointer;
+}
+
+.odys-row-copy { display: grid; gap: 2px; min-width: 0; }
+.odys-row-copy strong { font-size: var(--fs-base); font-weight: 600; }
+.odys-row-copy span { color: var(--ink-3); font-size: var(--fs-sm); line-height: 1.45; }
+
+/* The address is typed, not toggled, so it gets a real field rather than being
+   squeezed into the control column. */
+.odys-row-input { grid-template-columns: minmax(0, 1fr); }
+.odys-row-input input { width: 100%; margin-top: var(--sp-2); font-family: var(--font-mono, var(--mono)); }

@@ -272,6 +272,14 @@
         <button class="util-nav-item" type="button" data-util-task="generate" aria-label="Generate image" title="Generate image"><svg class="ic"><use href="#i-sparkles"/></svg><span>Generate image</span></button>
         <button class="util-nav-item" type="button" data-util-task="search" aria-label="Search files" title="Search files"><svg class="ic"><use href="#i-folder-search"/></svg><span>Search files</span></button>
     </div>
+
+    <!-- Odysseus is a LINK, never an iframe, and never a tab: it is a separate
+         application on its own origin. Hidden entirely until it answers, so
+         this is never a control wired to nothing. -->
+    <div class="sidebar-external" id="odysseus-nav" hidden>
+        <button class="tab" id="odysseus-link" type="button"
+                title="Open Odysseus in a new tab"><svg class="ic"><use href="#i-link"/></svg><span>Odysseus</span></button>
+    </div>
     </nav>
 
     <footer class="sidebar-footer">
@@ -419,6 +427,40 @@
                 </div>
                 <p class="field-hint" id="opencode-status">Adds locally as a provider without replacing your existing OpenCode providers.</p>
                 <p class="field-hint" id="coding-mode-status">Coding mode: Disables all internal models except LLM</p>
+            </div>
+        </details>
+
+        <details class="settings-disclosure">
+            <summary><span><b>Odysseus</b><small>The assistant layer, if you run it</small></span><svg class="ic"><use href="#i-chevron"/></svg></summary>
+            <div class="settings-disclosure-content field">
+                <div class="odys-state" id="odysseus-state">
+                    <span class="odys-dot" id="odysseus-dot" aria-hidden="true"></span>
+                    <span class="mono odys-headline" id="odysseus-headline">Checking…</span>
+                    <button class="btn ghost small" id="odysseus-action" type="button" hidden></button>
+                </div>
+                <p class="field-hint" id="odysseus-status"></p>
+
+                <label class="odys-row" for="odysseus-autostart">
+                    <span class="odys-row-copy">
+                        <strong>Start it with locally</strong>
+                        <span>Brings Odysseus up in the background when locally starts. Needs Docker running.</span>
+                    </span>
+                    <span class="switch">
+                        <input type="checkbox" id="odysseus-autostart">
+                        <span class="switch-track" aria-hidden="true"></span>
+                    </span>
+                </label>
+
+                <label class="odys-row odys-row-input" for="odysseus-url">
+                    <span class="odys-row-copy">
+                        <strong>Address</strong>
+                        <span>Where it answers. Change this only if you moved it off port 7000.</span>
+                    </span>
+                    <input id="odysseus-url" type="url" inputmode="url" autocomplete="off"
+                           spellcheck="false" placeholder="http://localhost:7000">
+                </label>
+
+                <p class="field-hint">Odysseus opens in its own tab, never inside locally: it sends HSTS, wants its own hostname for cookies, and registers a service worker as an installable PWA. See docs/ODYSSEUS.md.</p>
             </div>
         </details>
 
@@ -765,6 +807,13 @@
                         aria-checked="false" data-util-engine="gpu">
                     <span class="engine-dot"></span>GPU
                 </button>
+                <!-- CPU is a real utility engine (`--util-engines cpu` is the
+                     whole configuration on a non-Intel box). Omitting it here
+                     made loaded, serving models unreachable from the UI. -->
+                <button class="engine-option" type="button" role="radio"
+                        aria-checked="false" data-util-engine="cpu">
+                    <span class="engine-dot"></span>CPU
+                </button>
             </div>
         </header>
 
@@ -832,7 +881,7 @@
                 <p class="util-format-note"><b>How files are read:</b> DOCX, PPTX,
                     XLSX, HTML, EPUB, CSV and text are parsed directly—no model can improve
                     on text already stored in the file. Images and scanned PDF pages use
-                    the selected NPU or GPU OCR engine.</p>
+                    the selected OCR engine.</p>
             </section>
 
             <section class="util-workspace util-view" data-util-view="background" hidden>
@@ -888,6 +937,13 @@
 
 <main class="panel code-panel" id="panel-code" role="tabpanel"
       aria-labelledby="tab-code" hidden>
+    <!-- Two views, never both. The web interface is the default because it is
+         what shows plans, sessions and diffs; the TUI stays one button away
+         because it is still the better place to type.
+         The iframe is legitimate here and is NOT a contradiction of the
+         no-iframe rule in docs/ODYSSEUS.md: measured on OpenCode 1.18.25, the
+         server sends no frame-ancestors, no X-Frame-Options and no HSTS, and a
+         frame of it loads and renders. Odysseus sends all three. -->
     <div class="code-empty" id="code-empty">
         <h2>OpenCode</h2>
         <p>Use locally's current model, or switch to any other provider already connected in OpenCode.</p>
@@ -896,9 +952,24 @@
                autocomplete="off" spellcheck="false"
                placeholder="Leave blank to use this locally folder">
         <div class="code-empty-actions">
-            <button class="btn" id="code-start-btn" type="button">Open OpenCode</button>
+            <button class="btn" id="code-web-btn" type="button">Open web interface</button>
+            <button class="btn ghost" id="code-start-btn" type="button">Open terminal instead</button>
         </div>
         <p class="field-hint mono" id="code-panel-status"></p>
+    </div>
+
+    <div class="code-web" id="code-web" hidden>
+        <header class="code-web-bar">
+            <span class="mono code-web-url" id="code-web-url"></span>
+            <span class="code-web-actions">
+                <button class="btn ghost small" id="code-web-external" type="button"
+                        title="Open in your default browser">Open in browser</button>
+                <button class="btn ghost small" id="code-web-stop" type="button"
+                        title="Stop the OpenCode server locally started">Stop server</button>
+            </span>
+        </header>
+        <iframe class="code-web-frame" id="code-web-frame" title="OpenCode web interface"
+                referrerpolicy="no-referrer"></iframe>
     </div>
 </main>
 

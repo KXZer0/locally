@@ -78,6 +78,15 @@
    A quiet, full-window decision surface: one task, one content column, no
    nested app chrome. State changes are immediate; installation progress is
    text and fill, not decorative motion. */
+/* First run blurs the app behind it. Literally: `backdrop-filter`, not a
+   painted gradient standing in for one. An earlier cut used gradients to dodge
+   compositing cost while a model loads; that was the wrong call to make on the
+   user's behalf -- the blur IS the design, and setup lasts seconds. The
+   background is translucent so there is something to blur; an opaque fill makes
+   backdrop-filter a no-op.
+
+   `saturate` before `blur`: blurring first averages the colour out, so
+   saturating afterwards has nothing left to lift. */
 .setup-shell {
     position: fixed;
     z-index: 120;
@@ -85,29 +94,72 @@
     display: grid;
     place-items: center;
     padding: var(--sp-5);
-    background: rgb(0 0 0 / 0.82);
+    overflow: hidden;
+    /* Thin on purpose. This UI is near-black -- the sidebar is rgb(18,18,18)
+       on a rgb(10,10,10) body, eight levels apart -- so a heavy scrim crushes
+       that difference to nothing and the blur becomes invisible even though it
+       is running. Measured: at 0.62 the blurred app was indistinguishable from
+       flat black. The scrim only has to hold text contrast; the blur does the
+       separating. */
+    background: rgb(10 10 10 / 0.30);
+    /* blur only -- NO saturate(). This palette is pure neutral (R=G=B) by
+       rule, so a saturation boost has nothing to boost; it just adds a colour
+       operation to a full-surface composite on a machine whose GPU may be
+       running inference. It was here and it did nothing but cost. */
+    -webkit-backdrop-filter: blur(34px);
+    backdrop-filter: blur(34px);
+    isolation: isolate;
 }
 
+.setup-shell::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: -30vmax;
+    background: radial-gradient(circle at 38% 32%,
+        rgb(255 255 255 / 0.035) 0%,
+        rgb(255 255 255 / 0) 62%);
+    pointer-events: none;
+}
+
+/* No border, no fill, no shadow, no radius: there is nothing here to see, only
+   content sitting on the field. The 920px measure survives because a full-width
+   line of text at 1440px is unreadable -- the container went, the typography
+   did not. */
+/* 920x680, as asked. The blur is edge-to-edge; the CONTENT is a panel. Full
+   height was the previous cut and it read as a takeover rather than a step.
+   Still no border, fill or shadow -- the blurred plate behind it is the surface. */
 .setup-dialog {
+    --setup-measure: min(620px, calc(100% - var(--sp-6)));
     width: min(920px, 100%);
-    height: min(680px, calc(100vh - var(--sp-7)));
-    min-height: 520px;
+    height: min(680px, calc(100vh - var(--sp-6)));
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
     overflow: hidden;
     color: var(--ink);
-    background: var(--bg-raised);
-    border: 1px solid var(--line-strong);
-    border-radius: calc(var(--radius-card) + var(--sp-2));
-    box-shadow: 0 32px 90px rgb(0 0 0 / 0.58);
+    background: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
 }
 
+/* --- One measure ---------------------------------------------------------
+   Head, content and footer previously had three different horizontal paddings
+   (sp-5, an auto-centred 760px column, and sp-5 again), so the mark, the
+   headline and the buttons each started on a different vertical line. With a
+   card around them that reads as padding; with the card gone it just reads as
+   crooked. All three now share --setup-measure, so there are exactly two
+   vertical lines on this screen and everything lands on one of them. */
+.setup-dialog { --setup-measure: min(760px, calc(100% - var(--sp-7))); }
+
 .setup-head {
+    width: var(--setup-measure);
+    margin-inline: auto;
     min-height: 72px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--sp-4) var(--sp-5) 0;
+    padding: var(--sp-5) 0 0;
 }
 
 .setup-mark {
@@ -133,9 +185,9 @@
 }
 
 .setup-content {
-    width: min(760px, calc(100% - var(--sp-7)));
+    width: var(--setup-measure);
     margin-inline: auto;
-    padding: var(--sp-3) 0 var(--sp-5);
+    padding: var(--sp-4) 0 var(--sp-5);
     overflow: auto;
     scrollbar-gutter: stable;
 }
@@ -155,49 +207,84 @@
 }
 
 .setup-content > h2 {
-    margin: var(--sp-2) 0 var(--sp-2);
-    font-size: clamp(28px, 4vw, 42px);
-    letter-spacing: -0.03em;
+    margin: var(--sp-1) 0 var(--sp-2);
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
 }
 
 .setup-lede {
-    max-width: 620px;
-    margin: 0 0 var(--sp-6);
-    color: var(--ink-2);
-    font-size: var(--fs-md);
+    max-width: 52ch;
+    margin: 0 0 var(--sp-5);
+    color: var(--ink-3);
+    font-size: var(--fs-sm);
+    line-height: 1.5;
 }
 
 .setup-stage { min-height: 260px; }
 
+/* One column, zero gap. A gap between rows would leave the hairlines floating
+   with air on both sides; a list is continuous or it is a stack of cards. */
 .setup-hardware-grid,
 .setup-choice-grid {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--sp-3);
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
 }
 
+/* The row is <strong>CPU</strong><span>full name</span><span class=mono>role</span>
+   -- three children. Left to auto-placement in two columns the third wrapped
+   into the 88px label column and shredded ("Universal / fallback" over two
+   lines). Each child is therefore placed by hand: the label spans both rows on
+   the left, the two descriptions stack on the right. */
+.setup-device-card {
+    grid-template-columns: 92px minmax(0, 1fr);
+    align-items: baseline;
+    column-gap: var(--sp-4);
+    row-gap: 2px;
+}
+
+.setup-device-card > strong { grid-column: 1; grid-row: 1 / span 2; }
+.setup-device-card > span:not(.mono) { grid-column: 2; grid-row: 1; }
+.setup-device-card > span.mono { grid-column: 2; grid-row: 2; }
+
+/* Every option used to be a bordered, filled, rounded card, so a five-item list
+   was five boxes inside a box inside an overlay. They are rows now, told apart
+   by a single hairline. The rule is the separator AND the only chrome: nothing
+   is drawn around an item, just between items. */
 .setup-device-card,
 .setup-choice,
 .setup-toggle-row,
 .setup-review-row {
     min-width: 0;
-    padding: var(--sp-4);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-card);
-    background: var(--fill);
+    padding: var(--sp-3) 0;
+    border: 0;
+    border-bottom: 1px solid var(--line-soft);
+    border-radius: 0;
+    background: none;
+    transition: background-color 140ms ease;
 }
+
+/* The last row in any list has nothing after it to be separated from, and a
+   trailing rule reads as a table edge -- which is the container again. */
+.setup-hardware-grid > :last-child,
+.setup-choice-grid > :last-child,
+.setup-toggle-list > :last-child,
+.setup-review-list > :last-child { border-bottom: 0; }
 
 .setup-device-card {
     display: grid;
-    gap: var(--sp-1);
+    gap: 2px;
 }
 
 .setup-device-card strong,
 .setup-choice strong,
 .setup-toggle-copy strong,
 .setup-review-row strong {
-    font-size: var(--fs-base);
-    font-weight: 600;
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    letter-spacing: 0;
 }
 
 .setup-device-card span,
@@ -205,8 +292,8 @@
 .setup-toggle-copy span,
 .setup-review-row span,
 .setup-note {
-    color: var(--ink-2);
-    font-size: var(--fs-sm);
+    color: var(--ink-3);
+    font-size: var(--fs-xs);
     line-height: 1.5;
 }
 
@@ -238,11 +325,32 @@
     white-space: nowrap;
 }
 
-.setup-choice:has(input:checked) {
-    border-color: var(--ink);
-    background: var(--fill-active);
-    box-shadow: inset 0 0 0 1px var(--ink);
+/* Selection used to be a ring around a card. With no card to ring, it is a
+   2px ink bar in the left margin plus a brighter title -- two signals, both of
+   which survive a monochrome palette and a grayscale screenshot. */
+.setup-choice::before {
+    content: "";
+    position: absolute;
+    top: var(--sp-3);
+    bottom: var(--sp-3);
+    /* Inside the row, not in the margin. `.setup-content` is an
+       overflow:auto scroller, so anything at a negative offset is CLIPPED --
+       which is why the selection bar was invisible and selection read as only
+       "a grey box appeared". It lives in the row's own left padding now. */
+    left: 0;
+    width: 2px;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    transition: background-color 140ms ease;
 }
+
+.setup-choice:has(input:checked)::before { background: var(--ink); }
+.setup-choice:has(input:checked) strong { color: var(--ink); }
+/* NO background on the selected row. A filled rectangle is a container, which
+   is the thing this screen exists to not have, and its hard edges cut a box out
+   of the soft field behind it -- visible as the selection "cutting the
+   background short". The bar and the brighter title carry the state; both
+   survive greyscale, and neither draws an edge. */
 
 .setup-choice:has(input:focus-visible) {
     outline: 2px solid var(--ink);
@@ -260,10 +368,10 @@
 }
 
 .setup-section-title {
-    margin: var(--sp-5) 0 var(--sp-3);
-    color: var(--ink-3);
-    font: 500 var(--fs-xs)/1.4 var(--mono);
-    letter-spacing: 0.08em;
+    margin: var(--sp-4) 0 var(--sp-2);
+    color: var(--ink-4);
+    font: 500 10px/1.4 var(--mono);
+    letter-spacing: 0.09em;
     text-transform: uppercase;
 }
 
@@ -358,18 +466,53 @@
 .setup-install-item[data-state="installed"] { color: var(--ink); }
 .setup-install-item[data-state="error"] { color: var(--alarm); }
 
+/* The dots used to sit in the middle column of a three-column grid whose outer
+   columns were both `1fr` but sized by their CONTENT -- Back on one side, a
+   variable-length status string plus Continue on the other. Any status text
+   made the right column wider than the left, which pushed the "centre" column
+   off centre. The dots therefore moved as the wording changed, which is what
+   read as broken alignment.
+
+   The fix is to stop asking a grid to centre something between two things of
+   unequal width. The dots are taken out of flow and centred on the FOOTER, so
+   they are pinned to the middle of the surface no matter what either side is
+   doing. Back and Continue then sit at fixed edges, so all three land in the
+   same place on every step. */
 .setup-footer {
+    position: relative;
+    width: var(--setup-measure);
+    margin-inline: auto;
     min-height: 76px;
     display: grid;
-    grid-template-columns: minmax(100px, 1fr) auto minmax(100px, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: center;
     gap: var(--sp-4);
-    padding: var(--sp-3) var(--sp-5) var(--sp-4);
+    padding: var(--sp-4) 0 var(--sp-6);
     border-top: 1px solid var(--line-soft);
 }
 
-.setup-footer > .btn { justify-self: start; }
+/* Explicit placement, because auto-placement is what broke this in the first
+   place: Back is display:none on step 1, so the actions block became the FIRST
+   grid item and sat in column 1 -- measured at x=538 in a footer spanning
+   260..1020. Naming the column makes the button's position independent of
+   whether its neighbour exists. */
+.setup-footer > .btn.ghost {
+    grid-column: 1;
+    justify-self: start;
+}
 
+.setup-footer-actions { grid-column: 2; }
+
+.setup-dots {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+}
+
+/* Continue is pinned right and never moves. The status string grows leftward
+   from it rather than displacing it, so the primary action is muscle memory
+   across all five steps. */
 .setup-footer-actions {
     min-width: 0;
     display: flex;
@@ -377,6 +520,10 @@
     justify-content: flex-end;
     gap: var(--sp-3);
 }
+
+/* Reserve the row so that a step with no Back button does not let the footer
+   collapse to a different height than the step before it. */
+.setup-footer > .btn.ghost[hidden] { display: none; }
 
 .setup-status {
     max-width: 260px;
@@ -411,27 +558,51 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
-    .setup-choice:hover,
-    .setup-toggle-row:hover { background: var(--fill-hover); }
+    /* Hover speaks the same language as selection -- a bar, never a filled
+       rectangle. A box on hover has the same hard edge against the soft field
+       that made selection look like it was cutting the background short, and
+       it would contradict the rule the rest of this screen follows. */
+    .setup-choice:hover::before { background: var(--ink-4); }
+    .setup-choice:hover strong,
+    .setup-toggle-row:hover strong { color: var(--ink); }
     .setup-close:hover { color: var(--ink); background: var(--fill-hover); }
 }
 
 @media (max-width: 680px) {
     .setup-shell { padding: 0; }
     .setup-dialog {
+        --setup-measure: calc(100% - var(--sp-6));
         width: 100%;
         height: 100%;
         min-height: 0;
         border: 0;
         border-radius: 0;
     }
-    .setup-content { width: calc(100% - var(--sp-6)); }
     .setup-hardware-grid,
     .setup-choice-grid { grid-template-columns: 1fr; }
+
+    /* Centring the dots on the footer and pinning Continue to its right edge
+       are both correct and, below ~560px, mutually exclusive: measured at
+       375px the two overlap. So on narrow screens the dots stop being
+       absolutely centred and take a row of their own above the buttons --
+       still centred, still in the same place on every step, just no longer
+       fighting the button for the same pixels. */
     .setup-footer {
-        grid-template-columns: auto 1fr auto;
-        padding-inline: var(--sp-4);
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-areas:
+            "dots dots"
+            "back next";
+        row-gap: var(--sp-4);
+        padding-inline: 0;
     }
+    .setup-dots {
+        position: static;
+        transform: none;
+        grid-area: dots;
+        justify-self: center;
+    }
+    .setup-footer > .btn.ghost { grid-area: back; }
+    .setup-footer-actions { grid-area: next; }
     .setup-status { display: none; }
 }
 

@@ -368,7 +368,21 @@ def main() -> int:
         )
         return 1
 
-    target = args.url if _url_is_up(args.url, args.wait_secs) else _not_serving_page(args.url)
+    # The window is created NOW, not after the server answers.
+    #
+    # This used to be `_url_is_up(url, 20.0)` on the main thread before
+    # create_window, so pressing the hardware key on a cold machine produced
+    # NOTHING for as long as the server took to bind -- no window, no taskbar
+    # button, no feedback of any kind. The rational response to that is to
+    # press the key again, which is exactly what people did.
+    #
+    # So: one fast probe, and if the server is not up yet we open on the
+    # waiting page immediately and swap to the real URL from a background
+    # thread the moment it binds. The taskbar button exists from the first
+    # frame either way, and the models keep loading behind it -- the server
+    # serves the page long before the model is ready.
+    already_up = _url_is_up(args.url, 0.35)
+    target = args.url if already_up else _not_serving_page(args.url)
 
     # The OS frame is gone (frameless), so the page draws its own title bar and
     # window buttons -- see .window-controls in templates/index.html, revealed
@@ -431,7 +445,50 @@ def main() -> int:
     # button) -- it returned this ICO's artwork, not the Python default. So
     # the Win32 WM_SETICON fallback this was expected to need turned out to
     # be dead code; not adding it.
-    webview.start(_restore_window_affordances, gui="edgechromium",
+    def _on_start():
+        # Runs after the window exists. Restore the frame affordances first --
+        # that is what this callback was always for -- then, if we opened on
+        # the waiting page, watch for the server and navigate when it answers.
+        _restore_window_affordances()
+        if already_up:
+            return
+        if _url_is_up(args.url, args.wait_secs) and _WINDOW:
+            try:
+                _WINDOW.load_url(args.url)
+            except Exception:
+                # A window closed while we were waiting is the normal way to
+                # cancel this, not an error worth a traceback on stderr.
+                pass
+
+    # private_mode=False is REQUIRED, and its absence is silent.
+    #
+    # pywebview defaults `private_mode=True` (verified against the installed
+    # library, not the docs: inspect.signature(webview.start) reports
+    # private_mode=True, storage_path=None). In that mode WebView2 keeps no
+    # profile, so localStorage and cookies are discarded when the window
+    # closes. Every preference this UI owns lives in localStorage -- the system
+    # prompt, the voice, the Odysseus address, the turn-taking settings, and
+    # the `locally-onboarding-complete` flag.
+    #
+    # The visible symptom was not "storage is broken", which is why this
+    # survived: it was "first-run setup opens every single time" and "my
+    # choices do not save". The server was remembering correctly the whole
+    # time -- setup.json had the right answers and /v1/setup reported
+    # first_run=false -- and the browser threw its half away on every close.
+    #
+    # storage_path is set explicitly rather than left to pywebview's default so
+    # the profile lands beside the launch log locally already owns, and so the
+    # location is greppable when someone next asks where the settings went.
+    storage = os.path.join(
+        os.environ.get("LOCALAPPDATA")
+        or os.path.expanduser("~/.local/share"), "locally", "webview")
+    try:
+        os.makedirs(storage, exist_ok=True)
+    except OSError:
+        storage = None          # unwritable profile dir must not stop the app
+
+    webview.start(_on_start, gui="edgechromium",
+                  private_mode=False, storage_path=storage,
                   icon=ICON_PATH if os.path.isfile(ICON_PATH) else None)
     return 0
 

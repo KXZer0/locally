@@ -30,15 +30,21 @@ def _http_fetcher():
     Optional and lazy, for the same reason flask-sock is: a missing dependency
     should cost the feature it backs, not the server.
 
-    **Scrapling was the obvious choice here and is deliberately not used.** Its
-    plain `Fetcher` is exactly this — one curl_cffi request — but
-    `scrapling.fetchers` cannot be imported without Playwright's Python
-    package: measured, `playwright` + `patchright` are **223 MB** of browser
-    automation for a code path that never launches a browser, against 1.1 MB
-    for curl_cffi and markdownify doing the same job. In a project that
-    self-hosts its own fonts so it works on a plane, that is not a rounding
-    error. What Scrapling would have added over this is anti-bot bypass, and
-    that needs the browsers anyway.
+    **Scrapling is the escalation tier, not the default one.** Its plain
+    `Fetcher` is exactly this -- one curl_cffi request -- so using it for the
+    common case buys nothing and costs a lot: `scrapling.fetchers` cannot be
+    imported without Playwright, measured at **223 MB** of browser automation
+    against **1.1 MB** for curl_cffi and markdownify. Paying that on every
+    install, for every user, to fetch pages that answer a plain request, is the
+    trade this module refused and still refuses.
+
+    What Scrapling genuinely adds is anti-bot bypass, and that is a real
+    capability -- it is simply not needed until a site actually refuses us.
+    So it is wired in at the point where the cheap path FAILS (see
+    `_stealth_fetch`): curl_cffi first, and a site that blocks it escalates to
+    a real browser. Installed, it works; not installed, the error names the
+    command. Nobody pays 223 MB for a feature they do not use, and nobody is
+    told "no" when they need it.
 
     curl_cffi is what carries the useful half — a real Chrome TLS/JA3
     fingerprint, so pages that refuse python-requests still answer.
@@ -54,6 +60,65 @@ def _http_fetcher():
                 "server_error", 503))
         _http_fetcher_mod = creq
     return _http_fetcher_mod
+
+
+
+_stealth_mod = None
+_STEALTH_UNAVAILABLE = object()
+
+# Statuses that mean "a bot check refused us", as opposed to "this page is
+# genuinely not there". Escalating on 404 would launch a browser to confirm a
+# typo; escalating on these is the entire point of having a browser.
+BLOCKED_STATUSES = (401, 403, 405, 406, 409, 418, 429, 503)
+
+
+def stealth_available():
+    """True when Scrapling can be imported. Never raises, never blocks."""
+    return _stealth_fetcher() is not None
+
+
+def _stealth_fetcher():
+    """Scrapling's StealthyFetcher, or None when it is not installed.
+
+    Imported lazily and cached -- including the FAILURE, because the import
+    walks Playwright and must not be retried on every blocked page.
+    """
+    global _stealth_mod
+    if _stealth_mod is _STEALTH_UNAVAILABLE:
+        return None
+    if _stealth_mod is None:
+        try:
+            from scrapling.fetchers import StealthyFetcher
+        except Exception:
+            # Exception, not ImportError: a half-installed Scrapling raises
+            # from inside Playwright, and a browser-automation stack failing to
+            # load must not take the ordinary reader down with it.
+            _stealth_mod = _STEALTH_UNAVAILABLE
+            return None
+        _stealth_mod = StealthyFetcher
+    return _stealth_mod
+
+
+def _stealth_fetch(url, timeout_s):
+    """Fetch through a real browser. Returns HTML, or None if unavailable.
+
+    NOT VERIFIED END TO END -- Scrapling is not installed on this machine, so
+    this path has never run against a live site. Scrapling's fetch API has also
+    moved between releases, which is why the result is read through several
+    attribute names rather than one. Treat a first success here as the test.
+    """
+    fetcher = _stealth_fetcher()
+    if fetcher is None:
+        return None
+    page = fetcher.fetch(url, headless=True, network_idle=True,
+                         timeout=int(timeout_s * 1000))
+    for attr in ("html_content", "content", "body", "text"):
+        html = getattr(page, attr, None)
+        if isinstance(html, bytes):
+            html = html.decode("utf-8", "replace")
+        if isinstance(html, str) and html.strip():
+            return html
+    return None
 
 
 # Stripped before conversion. Boilerplate is the whole reason this endpoint

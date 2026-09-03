@@ -54,13 +54,26 @@ Machine B — desktop, RTX 4070
 and this is not a matter of taste — three separate mechanisms in Odysseus each
 break an embed independently:
 
-1. **HSTS.** Odysseus sends `Strict-Transport-Security`. A browser that has seen
-   that header will upgrade the embed to `https://`, which a plain local
-   deployment does not serve. The frame goes blank with no error you can catch.
-2. **Its own hostname.** Odysseus sets `ALLOWED_ORIGINS` and issues cookies
-   scoped to the host it thinks it is. Framed under `locally`'s origin, the login
-   cookie is third-party — modern browsers partition or drop it, so you are
-   logged out on every navigation inside the frame.
+1. **It refuses outright.** `GET /login` returns **`X-Frame-Options: DENY`**
+   and a CSP containing **`frame-ancestors 'none'`**. Either alone ends the
+   discussion; a browser will not paint the frame, and there is no header we
+   can send from our side that overrides the framed site's own refusal.
+
+   > Measured 2026-08-30 against a real stack (`podman compose up`, Odysseus +
+   > chromadb + searxng + ntfy). An earlier version of this document claimed the
+   > mechanism was **HSTS**. That was wrong: `Strict-Transport-Security` is
+   > **not sent** on this deployment. The conclusion was right and the reason
+   > was not, which is worth recording — a correct rule resting on a false
+   > premise is one upstream change away from being quietly discarded.
+   > Note `/` alone is a bare `302 -> /login` with no security headers at all,
+   > so anyone re-checking this must look at `/login`, not the root.
+
+2. **Its own hostname.** Odysseus sets `ALLOWED_ORIGINS` (the compose file
+   defaults it to `http://localhost,http://127.0.0.1`) and issues cookies
+   scoped to the host it thinks it is. Framed under `locally`'s origin, the
+   login cookie is third-party — modern browsers partition or drop it, so you
+   are logged out on every navigation inside the frame.
+
 3. **A service worker.** Odysseus registers one and is an installable PWA. A
    service worker's scope is tied to its own origin and it expects to control a
    top-level page; inside a frame it either fails to register or serves a
@@ -69,10 +82,29 @@ break an embed independently:
 Fighting all three buys you a worse version of a `target="_blank"` link. Take the
 link. On a phone, the PWA install is a *better* result than an embed would be.
 
-> **Status:** there is no `locally` flag today that configures a sidebar link
-> (verify with `grep -n add_argument locally.py` — nothing matches). Adding one
-> is a one-line edit to `templates/index.html`, deliberately out of scope for
-> this document.
+> **Status (2026-08-30):** the sidebar link now exists. The address is a UI
+> setting, not a server flag — Settings -> Odysseus, stored under
+> `locally-odysseus-url`, default `http://localhost:7000`. The entry appears
+> only while that address answers, and reachability is probed from the BROWSER
+> rather than from the server: the browser is what follows the link, so a phone
+> that cannot reach Odysseus is not shown an entry that dead-ends for it.
+> See `static/js/ui/odysseus.js`.
+>
+> **locally can also start it** (`core/odysseus.py`, 2026-08-30). It looks for a
+> checkout in `$ODYSSEUS_DIR`, then a sibling `odysseus/`, then `~/odysseus`, and
+> runs `docker compose up -d` on a background thread at startup. Turn it on with
+> the "Start it with locally" toggle in Settings (persisted in the gitignored
+> `odysseus-autostart.json`) or with `--odysseus-autostart`; the flag wins over the
+> toggle. `--odysseus-port` and `--odysseus-dir` override the defaults.
+> Endpoints: `GET /v1/odysseus`, `POST /v1/odysseus/{start,stop,autostart}` — the
+> POSTs are localhost-only. Stopping uses `docker compose stop`, never `down`.
+>
+> **Unverified:** Docker is not installed on the Intel laptop, so the real
+> `compose up` / `stop` paths, the port poll after a successful start, and adoption
+> of a live stack have never been exercised. What has been verified is every
+> failure path that does not need Docker: no checkout (503 in 0.74 s with a
+> sentence naming the three search locations), a checkout with no compose file,
+> `docker` absent, and the autostart preference surviving a restart.
 
 ---
 

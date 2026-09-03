@@ -80,7 +80,7 @@ except ImportError:
 # Imported by name rather than with * so that every symbol below has one
 # obvious home, and so `grep "def foo"` still finds exactly one definition.
 # ---------------------------------------------------------------------------
-from core import config, runtime
+from core import cachetrim, config, odysseus, opencode_web, runtime
 from core.genai.tokens import _count_tokens
 from core.slots.capability import (_npu_tools_affordable, _tool_capable,
                                    _tools_refused_note, _tools_supported)
@@ -92,22 +92,26 @@ from core.slots.tts import TtsSlot
 from core.slots.util import UtilSlot
 from core.slots.vad import VadSlot
 from core.slots.whisper import WhisperSlot
-from core.documents.inputs import (_pil_data_url, _util_chunks, _util_item,
+from core.documents.inputs import (_UTIL_SEARCH_MAX_CHUNKS, _pil_data_url,
+                                   _util_chunks, _util_item,
                                    _util_input_from_request)
 from core.documents.read import (_document_result, _layout_markdown,
                                  _native_document_markdown, _ocr_pages, _pdf_pages)
 from core.tools.builtin import (BUILTIN_TOOLS, _builtin_generator,
-                                _builtin_stream, _builtin_tools_supported,
+                                _builtin_runs, _builtin_stream,
+                                _builtin_tools_supported,
                                 _fit_tool_output, builtin_tools_for)
 from core.coding_mode import _coding_mode_error
 from core.slots.route import _route_request
-from core.slots.select import _slot_serviceable, _util_slot
+from core.slots.select import _default_util_engine, _slot_serviceable, _util_slot
 from core.tools.registry import PYTHON_TOOL, WEB_SEARCH_TOOL
-from core.web.fetch_page import (_web_search_answer, _web_search_hits,
-                                 _web_search_run)
-from core.web.fetch_page_cfg import _login_wall, _web_sources_for_results
+from core.web.fetch_page import (_fetch_page_text, _web_search_answer,
+                                 _web_search_hits, _web_search_run)
+from core.web.fetch_page_cfg import (_UTIL_RERANK_POOL, _login_wall,
+                                     _web_sources_for_results)
 from core.voice.session import VoiceStreamSession
 from core.voice.think_filter import _ThinkFilter
+from core.web import search as web_search_mod
 from core.web.search import (_WEB_ANSWER_RESERVE, _searx, _web_grounded_blocks,
                              web_search_status)
 from core.errors import _TurnError, openai_error
@@ -133,7 +137,9 @@ from core.tools.parse import parse_tool_calls
 from core.tools.render import (_suppress_think_for_tools, _tool_calls_to_text,
                                prepare_messages_for_tools, render_tools_prompt)
 from core.tools.text import _strip_tool_markup, strip_thinking
-from core.web.reader import (_guard_public_url, _html_to_markdown, _http_fetcher)
+from core.web.reader import (BLOCKED_STATUSES, _guard_public_url,
+                             _html_to_markdown, _http_fetcher,
+                             _stealth_fetch, stealth_available)
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +638,15 @@ def _health_data():
                   "enabled": config.PROMPT_CACHE,
                   "pool_gb": config.PROMPT_CACHE_GB,
                   "prewarm_file": config.PREWARM_FILE,
-              }}
+              },
+              # The OpenCode web server's state belongs here for the same
+              # reason every other subsystem's does: it is a process this one
+              # may be holding open, and nothing else reports it.
+              "opencode_web": opencode_web.status(),
+              # Odysseus is a separate program, but locally may be holding its
+              # containers up, so its state belongs in the same snapshot for
+              # the same reason OpenCode's does.
+              "odysseus": odysseus.status()}
     if runtime.whisper_slot and runtime.whisper_slot.status != "not_configured":
         result["whisper"] = runtime.whisper_slot.info
     if runtime.tts_slot and runtime.tts_slot.status != "not_configured":
@@ -1379,6 +1393,7 @@ def setup_finish():
                     raise RuntimeError("SearXNG is not installed")
                 SEARXNG_ROOT = _setup_destination(entry)
                 WEB_SEARCH_URL = "http://127.0.0.1:8080"
+                web_search_mod.WEB_SEARCH_URL = WEB_SEARCH_URL
                 web_cfg["root"] = SEARXNG_ROOT
                 web_cfg["url"] = WEB_SEARCH_URL
 
@@ -2252,11 +2267,33 @@ def _url_result(url):
             _guard_public_url(str(hop_url))
 
     status = int(getattr(page, "status_code", 0) or 0)
-    if status >= 400:
+    stealth_html = None
+    if status in BLOCKED_STATUSES:
+        # A bot check, not a missing page. curl_cffi already sends a real Chrome
+        # TLS/JA3 fingerprint, so a refusal here means the site wants an actual
+        # browser -- which is exactly what Scrapling provides and the only case
+        # that justifies its cost. Escalate when it is installed; otherwise say
+        # so, rather than reporting a bare HTTP 403 the user cannot act on.
+        try:
+            stealth_html = _stealth_fetch(url, _UTIL_URL_TIMEOUT_S)
+        except Exception as e:
+            stealth_html = None
+            print(f"  [web] stealth fetch failed for {url}: {e}", flush=True)
+        if stealth_html:
+            fetch_ms = round((time.perf_counter() - t0) * 1000, 1)
+    if stealth_html is None and status >= 400:
+        hint = ""
+        if status in BLOCKED_STATUSES and not stealth_available():
+            hint = (" This looks like a bot check. `pip install scrapling` "
+                    "then `scrapling install` adds a real-browser fallback for "
+                    "exactly this case.")
         raise _TurnError(openai_error(
-            f"{url} returned HTTP {status} {getattr(page, 'reason', '') or ''}".strip()))
+            (f"{url} returned HTTP {status} "
+             f"{getattr(page, 'reason', '') or ''}").strip() + hint))
 
     content_type = (page.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if stealth_html is not None:
+        content_type = "text/html"      # a browser rendered it; it is a page
     if content_type and not (content_type.startswith("text/")
                              or content_type.endswith(("html", "xml"))):
         raise _TurnError(openai_error(
@@ -2264,7 +2301,10 @@ def _url_result(url):
             f"it and send it as a file — /v1/util/read reads PDFs and Office "
             f"documents from an upload."))
 
-    body = getattr(page, "content", b"") or b""
+    if stealth_html is not None:
+        body = stealth_html.encode("utf-8", "replace")
+    else:
+        body = getattr(page, "content", b"") or b""
     size = len(body if isinstance(body, (bytes, bytearray))
                else body.encode("utf-8", "ignore"))
     if size > _UTIL_URL_MAX_BYTES:
@@ -2307,7 +2347,7 @@ def util_read():
     uploads stay in memory; nothing here is written to disk.
     """
     body = request.get_json(silent=True) or {}
-    engine = request.form.get("engine") or body.get("engine") or "npu"
+    engine = request.form.get("engine") or body.get("engine") or _default_util_engine()
     if engine.lower() not in ("npu", "gpu", "cpu"):
         return openai_error(f"Unknown engine '{engine}'. Use 'npu', 'gpu' or 'cpu'.")
 
@@ -2415,7 +2455,7 @@ def util_read():
 def _util_image_turn(operation):
     """Resolve an image utility request to a ready slot and PIL image."""
     body = request.get_json(silent=True) or {}
-    engine = request.form.get("engine") or body.get("engine") or "npu"
+    engine = request.form.get("engine") or body.get("engine") or _default_util_engine()
     item = _util_input_from_request()
     if item["kind"] != "image":
         raise _TurnError(openai_error(
@@ -2532,7 +2572,7 @@ def util_generate():
     if len(prompt) > 2000:
         return openai_error("'prompt' is too long (maximum 2000 characters)")
     try:
-        slot = _util_slot(body.get("engine") or "npu")
+        slot = _util_slot(body.get("engine") or _default_util_engine())
         slot.ensure_loaded()
         steps = min(30, max(1, int(body.get("steps", 12))))
         seed = int(body.get("seed", 0))
@@ -2561,7 +2601,7 @@ def util_index():
     if len(uploads) > _UTIL_SEARCH_MAX_FILES:
         return openai_error(
             f"Too many files (maximum {_UTIL_SEARCH_MAX_FILES} per index).")
-    engine = request.form.get("engine") or "npu"
+    engine = request.form.get("engine") or _default_util_engine()
     try:
         slot = _util_slot(engine)
         slot.ensure_loaded()
@@ -3006,6 +3046,10 @@ def python_tool_status():
 
 
 atexit.register(_searx.stop)
+atexit.register(opencode_web.stop)
+# Only ever stops a stack this process started, and `stop` never `down`, so
+# nothing the user has in Odysseus can be lost by locally exiting.
+atexit.register(odysseus.stop)
 
 
 _URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
@@ -4031,6 +4075,32 @@ def _opencode_local_provider():
     return provider, model_id
 
 
+def _opencode_overlay():
+    """The OPENCODE_CONFIG_CONTENT overlay adding locally as one provider.
+
+    Shared by the TUI and web routes so there is a single place that decides
+    how locally is offered to OpenCode. It MERGES with the user's own config
+    rather than replacing it, so their existing providers survive.
+    """
+    overlay = {}
+    raw_existing = os.environ.get("OPENCODE_CONFIG_CONTENT")
+    if raw_existing:
+        try:
+            parsed = json.loads(raw_existing)
+            if isinstance(parsed, dict):
+                overlay = parsed
+        except ValueError:
+            pass
+    provider, model_id = _opencode_local_provider()
+    if provider:
+        providers = dict(overlay.get("provider") or {})
+        providers["locally"] = provider
+        overlay["provider"] = providers
+        if _coding_mode_state()["agent_ready"] and not overlay.get("model"):
+            overlay["model"] = f"locally/{model_id}"
+    return overlay
+
+
 def _opencode_status_data():
     command, version = _opencode_command()
     coding = _coding_mode_state()
@@ -4040,12 +4110,135 @@ def _opencode_status_data():
         "local_model": model_id, "local_agent_ready": coding["agent_ready"],
         "local_reason": coding["reason"],
         "workspace": config.SCRIPT_DIR,
+        "web": opencode_web.status(),
     }
 
 
 @app.route("/v1/opencode/status", methods=["GET"])
 def opencode_status():
     return jsonify(_opencode_status_data())
+
+
+@app.route("/v1/opencode/web", methods=["POST"])
+def opencode_web_start():
+    """Start (or adopt) the OpenCode WEB server and return its URL.
+
+    Localhost-only and no caller-supplied command, exactly as
+    /v1/opencode/launch: the only input is a directory, the argv is fixed, and
+    the directory travels in an environment variable rather than being
+    interpolated into a shell string.
+
+    Unlike the TUI route this does not open a terminal. `opencode serve` hosts
+    the same web interface `opencode web` opens a browser at, so locally starts
+    it headless and shows it in the Code tab instead of spawning a window that
+    competes with its own UI.
+    """
+    if not _request_is_local():
+        return openai_error("This endpoint is local-only (it starts a process "
+                            "on the server's machine).", "invalid_request_error", 403)
+
+    body = request.get_json(silent=True) or {}
+    workspace = os.path.abspath(os.path.expanduser(
+        str(body.get("workspace") or config.SCRIPT_DIR).strip()))
+    if not os.path.isdir(workspace):
+        return openai_error(f"Workspace directory not found: {workspace}")
+
+    env = dict(os.environ)
+    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
+        _opencode_overlay(), separators=(",", ":"))
+
+    ok, detail = opencode_web.start(env=env, cwd=workspace)
+    state = opencode_web.status()
+    if not ok:
+        return jsonify({**state, "error": {"message": detail,
+                                           "type": "server_error"}}), 503
+    provider, model_id = _opencode_local_provider()
+    coding = _coding_mode_state()
+    return jsonify({**state, "detail": detail, "workspace": workspace,
+                    "local_model": model_id,
+                    "local_agent_ready": coding["agent_ready"],
+                    "warning": coding["reason"]})
+
+
+@app.route("/v1/opencode/web", methods=["DELETE"])
+def opencode_web_stop():
+    """Stop an OpenCode web server locally started. Never one the user ran."""
+    if not _request_is_local():
+        return openai_error("This endpoint is local-only.",
+                            "invalid_request_error", 403)
+    stopped = opencode_web.stop()
+    return jsonify({**opencode_web.status(), "stopped": stopped})
+
+
+@app.route("/v1/odysseus", methods=["GET"])
+def odysseus_status():
+    """Is the assistant installed, up, and can Docker bring it up?
+
+    Readable from anywhere: it starts nothing and names no path a caller did
+    not already have. The two routes below that DO start a process are
+    localhost-only.
+    """
+    return jsonify(odysseus.status())
+
+
+@app.route("/v1/odysseus/start", methods=["POST"])
+def odysseus_start():
+    """Start (or adopt) the Odysseus compose stack.
+
+    Localhost-only, exactly as /v1/opencode/web: this starts a process on the
+    server's machine, the argv is fixed, and nothing from the request body is
+    interpolated into it.
+
+    Synchronous on purpose here even though the startup hook is threaded — a
+    user who pressed a button is waiting for an answer, and the answer has to
+    be "it is serving" rather than "compose returned 0".
+    """
+    if not _request_is_local():
+        return openai_error("This endpoint is local-only (it starts a process "
+                            "on the server's machine).", "invalid_request_error", 403)
+    ok, detail = odysseus.start(timeout=config.ODYSSEUS_START_TIMEOUT)
+    state = odysseus.status()
+    if not ok:
+        return jsonify({**state, "detail": detail,
+                        "error": {"message": detail, "type": "server_error"}}), 503
+    return jsonify({**state, "detail": detail})
+
+
+@app.route("/v1/odysseus/autostart", methods=["POST"])
+def odysseus_set_autostart():
+    """Persist 'start Odysseus with locally'.
+
+    Local-only because it writes a file on the server's machine and changes
+    what that machine does on its next start.
+
+    This deliberately does NOT start or stop anything. The row it belongs to
+    says "when locally starts", and a toggle that also acted immediately would
+    be two controls wearing one switch -- the Start button next to it is the
+    one that acts now.
+    """
+    if not _request_is_local():
+        return openai_error("This endpoint is local-only.",
+                            "invalid_request_error", 403)
+    body = request.get_json(silent=True) or {}
+    enabled = bool(body.get("enabled"))
+    if not odysseus.save_autostart(enabled):
+        return openai_error("Could not save that setting (the folder may be "
+                            "read-only).", "server_error", 500)
+    config.ODYSSEUS_AUTOSTART = enabled
+    return jsonify(odysseus.status())
+
+
+@app.route("/v1/odysseus/stop", methods=["POST"])
+def odysseus_stop():
+    """Stop a stack locally started. Never one the user brought up themselves.
+
+    `docker compose stop`, never `down` — see core/odysseus.stop().
+    """
+    if not _request_is_local():
+        return openai_error("This endpoint is local-only.",
+                            "invalid_request_error", 403)
+    stopped = odysseus.stop()
+    return jsonify({**odysseus.status(), "stopped": stopped})
 
 
 @app.route("/v1/opencode/launch", methods=["POST"])
@@ -4072,23 +4265,9 @@ def launch_opencode():
         return openai_error(f"Workspace directory not found: {workspace}")
 
     env = dict(os.environ)
-    overlay = {}
-    raw_existing = env.get("OPENCODE_CONFIG_CONTENT")
-    if raw_existing:
-        try:
-            parsed = json.loads(raw_existing)
-            if isinstance(parsed, dict):
-                overlay = parsed
-        except ValueError:
-            pass
     provider, model_id = _opencode_local_provider()
-    if provider:
-        providers = dict(overlay.get("provider") or {})
-        providers["locally"] = provider
-        overlay["provider"] = providers
-        if _coding_mode_state()["agent_ready"] and not overlay.get("model"):
-            overlay["model"] = f"locally/{model_id}"
-    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(overlay, separators=(",", ":"))
+    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
+        _opencode_overlay(), separators=(",", ":"))
     env["LOCALLY_OPENCODE_WORKSPACE"] = workspace
 
     try:
@@ -4798,6 +4977,11 @@ def parse_args():
                    help="Max image dimension before resize (default: 768)")
     p.add_argument("--whisper-dir", default=None,
                    help="Whisper model directory for speech-to-text (enables /v1/audio/transcriptions)")
+    p.add_argument("--model-cache-gb", type=float, default=12.0,
+                   help="Upper bound on the compile cache (default 12 GB). "
+                        "Least-recently-used entries are evicted at startup; "
+                        "evicting one costs a single cold compile. 0 disables "
+                        "trimming, which is how it reached 41.9 GB before.")
     p.add_argument("--no-model-cache", action="store_true",
                    help="Disable the OpenVINO compiled-model cache. The cache "
                         "trades disk for startup: the first load of a model "
@@ -4915,6 +5099,33 @@ def parse_args():
     p.add_argument("--searxng-idle", type=int, default=600, metavar="SECS",
                    help="Stop an auto-started SearXNG after this many idle "
                         "seconds (0 keeps it up).")
+    p.add_argument("--odysseus-autostart", dest="odysseus_autostart",
+                   action="store_true", default=None,
+                   help="Bring an Odysseus checkout up at startup with "
+                        "`docker compose up -d` (see docs/ODYSSEUS.md). Runs on "
+                        "a background thread — a first run builds images and "
+                        "takes minutes, and chat must not wait for it. Does "
+                        "nothing when no checkout is found.")
+    p.add_argument("--no-odysseus-autostart", dest="odysseus_autostart",
+                   action="store_false",
+                   help="Never start Odysseus, even if a checkout is found "
+                        "(the default).")
+    p.add_argument("--container-engine", choices=("docker", "podman"),
+                   default=None,
+                   help="Which container engine runs the Odysseus stack. "
+                        "Default: whichever is on PATH, Docker first. Podman "
+                        "works because Odysseus's compose file declares "
+                        "host.docker.internal via host-gateway explicitly, "
+                        "which Podman honours.")
+    p.add_argument("--odysseus-port", type=int, default=config.ODYSSEUS_PORT,
+                   metavar="N",
+                   help=f"Port Odysseus serves on (default "
+                        f"{config.ODYSSEUS_PORT}; its own APP_PORT default). "
+                        f"This is what locally probes to tell running from not.")
+    p.add_argument("--odysseus-dir", default=None, metavar="DIR",
+                   help="Odysseus checkout to manage. Without it: $ODYSSEUS_DIR, "
+                        "then a sibling `odysseus` directory, then ~/odysseus — "
+                        "the same order the update check already uses.")
     p.add_argument("--search-url", default=None, metavar="URL",
                    help="SearXNG base URL for web search, e.g. "
                         "http://localhost:8080. Unset (the default) means the "
@@ -5035,10 +5246,33 @@ def main():
                 root = guess
                 break
     SEARXNG_ROOT = root if root and os.path.isdir(root) else None
-    WEB_SEARCH_URL = (args.search_url or "").strip() or None
+    # Assign the MODULE attribute, never a local copy. core/web/search.py owns
+    # this value: it is what `web_search_status()` reads and what /health
+    # reports. locally.py used to keep its own module-level WEB_SEARCH_URL and
+    # set that instead, so `--search-url` was accepted, printed at startup, and
+    # then silently ignored -- /health said "start with --search-url to enable
+    # web search" on a server that had been started with exactly that flag.
+    # This is the split trap CLAUDE.md records, in its mirror form: the
+    # variable moved into core/ and the assignment stayed behind.
+    # NOT `web_search` -- that name is the Flask view function defined
+    # below, so importing the module under it was silently shadowed and
+    # the assignment set an attribute on a function object. The symptom
+    # was identical to having made no fix at all.
+    web_search_mod.WEB_SEARCH_URL = (args.search_url or "").strip() or None
+    WEB_SEARCH_URL = web_search_mod.WEB_SEARCH_URL
     if WEB_SEARCH_URL:
         print(f"  Web search via {WEB_SEARCH_URL} "
               f"(the only outbound network path this server has)", flush=True)
+    config.CONTAINER_ENGINE = args.container_engine
+    config.ODYSSEUS_PORT = int(args.odysseus_port or config.ODYSSEUS_PORT)
+    config.ODYSSEUS_DIR = (os.path.abspath(os.path.expanduser(args.odysseus_dir))
+                           if args.odysseus_dir else None)
+    # None means the flag was not given, so fall back to what the settings
+    # toggle saved. An explicit --odysseus-autostart / --no- always wins, the
+    # same precedence locally.ini.example states for every other setting.
+    config.ODYSSEUS_AUTOSTART = (bool(args.odysseus_autostart)
+                                 if args.odysseus_autostart is not None
+                                 else odysseus.load_autostart())
     PYTHON_TOOL_ENABLED = bool(args.python_tool)
     config.PYTHON_TOOL_TIMEOUT = max(0.1, min(60.0, float(args.python_timeout)))
     config.PYTHON_TOOL_OUTPUT_BYTES = max(1024, min(16 * 1024 * 1024,
@@ -5191,6 +5425,11 @@ def main():
         except OSError as e:
             print(f"  WARNING: can't use model cache ({e}); compiling every start")
             config.MODEL_CACHE_DIR = None
+        # Trim BEFORE anything loads: evicting a blob mid-compile would turn a
+        # cache miss into a failure.
+        if config.MODEL_CACHE_DIR:
+            config.MODEL_CACHE_GB = float(args.model_cache_gb or 0)
+            cachetrim.trim(config.MODEL_CACHE_DIR, config.MODEL_CACHE_GB)
 
     # 5. Create device slots
     if args.proxy_url:
@@ -5298,15 +5537,50 @@ def main():
     print(f"  Starting server on {ports_msg}...", flush=True)
 
     threads = []
+
+    # --- Load order: the chat model first, the utilities after --------------
+    #
+    # Every slot used to start at once, and they are not equal: the user is
+    # waiting for the CHAT model and nothing else, while OCR compiling on two
+    # engines competes with it for the same cores and the same memory
+    # bandwidth. Measured on the 358H with a warm compile cache, same machine,
+    # back to back: everything concurrent reached "locally ready" in **15.43 s**;
+    # with the utility slots held back it was **9.97 s**. The utilities cost
+    # 5.5 s of the wait for a model they have nothing to do with.
+    #
+    # They are only DEFERRED, never dropped -- the wait is capped so a model
+    # that loads slowly, or fails outright, cannot leave the Tools tab dead
+    # forever, and the event is set in a `finally` so an exception releases it
+    # too. On a proxy slot "loading" is one HTTP probe, so the wait is
+    # negligible there, which matters because the utilities are the whole
+    # reason locally runs on the NVIDIA machine.
+    _primary_ready = threading.Event()
+    _UTIL_DEFER_CAP = 120.0
+
+    def _load_primary_then_release(*load_args):
+        try:
+            _load_in_background(*load_args)
+        finally:
+            _primary_ready.set()
+
+    def _load_after_primary(*load_args):
+        if not _primary_ready.wait(timeout=_UTIL_DEFER_CAP):
+            print("  [util] chat model still loading after "
+                  f"{_UTIL_DEFER_CAP:.0f}s; loading utilities anyway", flush=True)
+        _load_in_background(*load_args)
+
     if args.proxy_url or not setup_only:
         t = threading.Thread(
-            target=_load_in_background,
+            target=_load_primary_then_release,
             args=(runtime.primary, model_dir, devices, args.port, args.ollama_port, all_slots),
             daemon=True,
         )
         threads.append(t)
     else:
         print(f"  Setup UI: http://localhost:{args.port}", flush=True)
+        # Nothing is going to set this, and the utilities are the only thing
+        # this mode can actually offer.
+        _primary_ready.set()
 
     if runtime.secondary:
         t2 = threading.Thread(
@@ -5354,7 +5628,7 @@ def main():
     for util in (runtime.util_npu, runtime.util_gpu, runtime.util_cpu):
         if util:
             threads.append(threading.Thread(
-                target=_load_in_background,
+                target=_load_after_primary,
                 args=(util, runtime.UTIL_DIR, devices, args.port,
                       args.ollama_port, all_slots),
                 daemon=True,
@@ -5362,6 +5636,33 @@ def main():
 
     for t in threads:
         t.start()
+
+    # Odysseus autostart — on its own thread, never inline.
+    #
+    # `docker compose up -d` on a cold checkout builds the image from source
+    # (the compose service is `build: .`), which is minutes. Doing that before
+    # app.run() would mean locally refuses chat while waiting on an unrelated
+    # program, so the whole thing — the search, the Docker probe, the build —
+    # happens behind the server that is already answering.
+    if config.ODYSSEUS_AUTOSTART:
+        def _start_odysseus():
+            found = odysseus.find_dir(config.ODYSSEUS_DIR)
+            if not found:
+                print("  [odysseus] no checkout found - nothing to start "
+                      "(set --odysseus-dir or $ODYSSEUS_DIR)", flush=True)
+                return
+            print(f"  [odysseus] starting {found} (first run builds images; "
+                  f"this can take minutes)", flush=True)
+            began = time.time()
+            ok, detail = odysseus.start(timeout=config.ODYSSEUS_START_TIMEOUT)
+            took = time.time() - began
+            if ok:
+                print(f"  [odysseus] {detail} - {odysseus.url()} ({took:.1f}s)",
+                      flush=True)
+            else:
+                print(f"  [odysseus] not started ({took:.1f}s): {detail}",
+                      flush=True)
+        threading.Thread(target=_start_odysseus, daemon=True).start()
 
     # Idle watchdog — unload models after inactivity
     if args.idle_timeout > 0:
