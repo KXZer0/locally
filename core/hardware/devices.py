@@ -8,13 +8,10 @@ pagefile at 0.5 tok/s. So the budget is min(ceiling, free - reserve)."""
 
 import openvino as ov
 
+from core import config
 from .memory import _mem_status, _system_ram_bytes
 
-
-# Headroom left to the OS, the graphics driver, and whatever the user opens
-# while a model is resident. Big enough that Windows is not pushed into the
-# pagefile by one more browser tab, small enough not to waste a large machine.
-_OS_RESERVE_BYTES = 3 * 2 ** 30
+_AVAILABILITY_UNSET = object()
 
 
 def _device_mem_bytes(device_name, device_id):
@@ -44,7 +41,8 @@ def _gpu_shares_system_ram(device_id):
         return False
 
 
-def _usable_gpu_bytes(device_name, device_id):
+def _usable_gpu_bytes(device_name, device_id,
+                      available_bytes=_AVAILABILITY_UNSET):
     """(usable, driver_ceiling) for a GPU, in bytes. (None, None) if unknown.
 
     `GPU_DEVICE_TOTAL_MEM_SIZE` is a *ceiling*, not an availability figure. On
@@ -69,10 +67,13 @@ def _usable_gpu_bytes(device_name, device_id):
         return ceiling, ceiling
     if not _gpu_shares_system_ram(device_id):
         return ceiling, ceiling          # discrete: the VRAM really is ours
-    _total, avail = _mem_status()
-    if not avail:
+    if available_bytes is _AVAILABILITY_UNSET:
+        _total, avail = _mem_status()
+    else:
+        avail = available_bytes
+    if avail is None:
         return ceiling, ceiling          # can't tell — keep the old behaviour
-    return min(ceiling, max(0, avail - _OS_RESERVE_BYTES)), ceiling
+    return min(ceiling, max(0, avail - config.GPU_RESERVE_BYTES)), ceiling
 
 
 def _gpu_has_xmx(device_id="GPU"):

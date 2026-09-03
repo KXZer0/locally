@@ -81,6 +81,11 @@ MODEL_CACHE_GB = 12.0
 # Measured on Arc 140V: 30B-A3B int4 runs in 2.35 GB resident at ratio 90.
 OFFLOAD_RATIO = "auto"
 
+# System-RAM headroom withheld from an integrated GPU's usable budget. This is
+# mutable because main() resolves --gpu-reserve-gb after argument parsing; all
+# consumers must read config.GPU_RESERVE_BYTES rather than importing the name.
+GPU_RESERVE_BYTES = 3 * 2 ** 30
+
 
 # --- prewarm ----------------------------------------------------------------
 

@@ -20,8 +20,8 @@ import openvino as ov
 from core import config
 from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx, _usable_gpu_bytes
 from core.hardware.memory import _mem_status
-from core.models.geometry import (_kv_bytes_for_context, _kv_bytes_per_token,
-                                  _model_max_context,
+from core.models.geometry import (_effective_kv_bytes_per_token,
+                                  _kv_bytes_for_context, _model_max_context,
                                   _moe_expert_fraction, _text_config)
 from core.models.integrity import _dir_size_bytes
 
@@ -58,7 +58,7 @@ class MemoryPlanning:
         """
         if not config.PROMPT_CACHE or vlm or self.device_name not in ("GPU", "CPU"):
             return 0, ""
-        per_tok = _kv_bytes_per_token(self.model_dir)
+        per_tok = _effective_kv_bytes_per_token(self.model_dir)
         gib = 2 ** 30
         if config.CONTEXT_TOKENS is None or not per_tok:
             return config.PROMPT_CACHE_GB, ""
@@ -85,7 +85,8 @@ class MemoryPlanning:
             # Not tokens * per_tok: on a sliding-window model the total is a
             # line plus a constant, and the constant is what a short context is
             # almost entirely made of. See _kv_bytes_for_context.
-            need = _kv_bytes_for_context(self.model_dir, config.CONTEXT_TOKENS)                 or config.CONTEXT_TOKENS * per_tok
+            need = (_kv_bytes_for_context(self.model_dir, config.CONTEXT_TOKENS)
+                    or config.CONTEXT_TOKENS * per_tok)
             gb = max(1, -(-need // gib))  # ceil
             note = f" (for --context-tokens {config.CONTEXT_TOKENS})"
 
@@ -182,7 +183,7 @@ class MemoryPlanning:
                       f"— this will likely NOT work ({hint})", flush=True)
         pool_capacity = None
         if kv_pool:
-            per_tok = _kv_bytes_per_token(self.model_dir)
+            per_tok = _effective_kv_bytes_per_token(self.model_dir)
             if per_tok:
                 pool_capacity = int(kv_pool // per_tok)
                 line = (f"  [{self.device_name}] KV pool {self.kv_pool_gb} GB"
@@ -197,7 +198,7 @@ class MemoryPlanning:
         """How many tokens the KV pool holds, or None when there is no pool."""
         if not self.kv_pool_gb:
             return None
-        per_tok = _kv_bytes_per_token(self.model_dir)
+        per_tok = _effective_kv_bytes_per_token(self.model_dir)
         if not per_tok:
             return None
         return int((self.kv_pool_gb * (2 ** 30)) // per_tok)

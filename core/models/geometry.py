@@ -8,6 +8,8 @@ every VLM."""
 import json
 import os
 
+from core import config
+
 
 def _model_max_context(model_dir):
     """The model's own context ceiling, from config.json.
@@ -127,18 +129,24 @@ def _kv_bytes_per_layer_token(cfg):
 
 
 def _kv_bytes_for_context(model_dir, tokens):
-    """Total KV bytes to hold `tokens` of context, fp16.
+    """Total KV bytes to hold `tokens` of context, at the configured precision.
 
-    Not `tokens * _kv_bytes_per_token`: a sliding-window layer stops growing at
-    its window, so the total is a line plus a constant, not a line through the
-    origin. Sizing a pool off the rate alone is what makes a gemma-style model
-    ask for the wrong number.
+    Two corrections live here and they are independent, so both apply:
+
+    * Not `tokens * _kv_bytes_per_token`. A sliding-window layer stops growing
+      at its window, so the total is a line plus a constant, not a line through
+      the origin. Sizing a pool off the rate alone is what makes a gemma-style
+      model ask for the wrong number at a short context.
+    * `--kv-precision u8` stores one byte per element instead of two, and a
+      pool budgeted in f16 while the cache is written in u8 is twice the memory
+      nobody asked for. Same factor `_effective_kv_bytes_per_token` applies.
     """
     try:
         cfg = _text_config(model_dir)
         per_layer = _kv_bytes_per_layer_token(cfg)
         full, sliding, window = _kv_layer_split(cfg)
-        return per_layer * (full * tokens + sliding * min(tokens, window))
+        total = per_layer * (full * tokens + sliding * min(tokens, window))
+        return total // 2 if config.KV_PRECISION == "u8" else total
     except Exception:
         return None
 
@@ -161,3 +169,17 @@ def _kv_bytes_per_token(model_dir):
         return _kv_attention_layers(cfg) * _kv_bytes_per_layer_token(cfg)
     except Exception:
         return None
+
+
+def _effective_kv_bytes_per_token(model_dir):
+    """KV bytes/token at the runtime's configured cache precision.
+
+    Model geometry is precision-independent, so `_kv_bytes_per_token` reports
+    the f16 baseline. OpenVINO's u8 KV cache stores one byte instead of two per
+    element; every live fit estimate and context-sized pool must apply that
+    same factor rather than silently continuing to budget f16.
+    """
+    fp16 = _kv_bytes_per_token(model_dir)
+    if fp16 is None:
+        return None
+    return fp16 // 2 if config.KV_PRECISION == "u8" else fp16

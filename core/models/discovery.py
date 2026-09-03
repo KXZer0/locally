@@ -4,6 +4,7 @@ import os
 
 from core import config, runtime
 from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx
+from core.models.availability import add_live_fit_data
 from core.models.describe import _model_dirs_under
 from core.models.geometry import _moe_expert_fraction
 from core.models.identity import _is_generative_dir, is_vlm, model_display_name
@@ -165,7 +166,7 @@ def _available_models_data():
         if slot and slot.model_dir:
             loaded[os.path.realpath(slot.model_dir)] = slot.device_name
     data = []
-    for m in _available_models():
+    for m in add_live_fit_data(_available_models(), runtime.DEVICES):
         entry = dict(m)
         entry["loaded_on"] = loaded.get(os.path.realpath(m["path"]))
         data.append(entry)

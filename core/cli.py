@@ -249,6 +249,14 @@ def parse_args():
                    default=config.PYTHON_TOOL_OUTPUT_BYTES, metavar="N",
                    help="Maximum stdout/stderr bytes from one calculation "
                         f"(default: {config.PYTHON_TOOL_OUTPUT_BYTES}).")
+    p.add_argument("--gpu-reserve-gb", type=float, default=3.0, metavar="N",
+                   help="System RAM to keep outside the shared-GPU budget, in GB "
+                        "(default: 3). The reserve is not arbitrary: an 18.3 GB "
+                        "model once 'fit' a 23.6 GB advertised ceiling on a "
+                        "machine with 0.9 GB actually free, Windows paged it, and "
+                        "an A3B MoE touching a fresh expert set every token "
+                        "decoded at 0.5 tok/s out of the pagefile. 0 restores "
+                        "exactly that failure mode.")
     p.add_argument("--kv-precision", default=None, choices=["u8", "f16"],
                    metavar="P",
                    help="KV cache element type. 'u8' halves cache bytes per "

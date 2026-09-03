@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import gc
+import pathlib
 import sys
 import time
 
@@ -56,12 +57,18 @@ PROMPTS = [
 # measured 210 tokens/13.4 s become 31 tokens/3.1 s with it.
 SUFFIX = " /no_think"
 MAX_NEW = 48
+CACHE_DIR = pathlib.Path(".ov-cache").resolve()
 
 
 def run(model_dir: str) -> dict:
     print(f"\n=== {model_dir}")
     t0 = time.perf_counter()
-    pipe = ov_genai.LLMPipeline(model_dir, "NPU", MAX_PROMPT_LEN=8192)
+    # Same CACHE_DIR locally passes. Without it every load is a cold vpux
+    # compile of the whole graph -- 168 s measured here against the 9 s a warm
+    # cache gives -- and a load time measured that way says nothing about what
+    # a user waits for.
+    pipe = ov_genai.LLMPipeline(model_dir, "NPU", MAX_PROMPT_LEN=8192,
+                                CACHE_DIR=str(CACHE_DIR))
     load_s = time.perf_counter() - t0
     print(f"  load           {load_s:6.1f} s")
 

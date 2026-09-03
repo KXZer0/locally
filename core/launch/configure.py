@@ -64,6 +64,7 @@ def configure(args):
     config.PROMPT_CACHE = (False if args.no_prompt_cache
                     else (True if args.prompt_cache else None))
     config.KV_PRECISION = args.kv_precision
+    config.GPU_RESERVE_BYTES = int(max(0.0, args.gpu_reserve_gb) * 2 ** 30)
     if args.npu_prompt_len:
         if args.npu_prompt_len > 8192:
             print(f"WARNING: --npu-prompt-len {args.npu_prompt_len} is above the "

@@ -10,7 +10,7 @@ from flask import jsonify, render_template, request
 from core import config, odysseus, opencode_web, runtime
 from core.chat.common import overall_status
 from core.chat.turn import python_tool_status
-from core.hardware.devices import (_gpu_shares_system_ram, _OS_RESERVE_BYTES,
+from core.hardware.devices import (_gpu_shares_system_ram,
                                    _usable_gpu_bytes)
 from core.hardware.memory import _mem_status
 from core.models.discovery import _available_models_data, _models_data
@@ -169,7 +169,7 @@ def _memory_data():
     # Worst state across slots wins: one offloading model is the headline even
     # if another is comfortable.
     offloading = [s for s in slots if s["offload_ratio"]]
-    if available is not None and available < _OS_RESERVE_BYTES:
+    if available is not None and available < config.GPU_RESERVE_BYTES:
         state = "critical"
         message = (f"{available / 2 ** 30:.1f} GB free — the OS is close to "
                    f"paging, which collapses generation speed.")
@@ -201,7 +201,7 @@ def _memory_data():
             "usable_mb": usable and round(usable / mib),
             "shares_system_ram": _gpu_shares_system_ram("GPU")
             if "GPU" in runtime.DEVICES else None,
-            "reserve_mb": round(_OS_RESERVE_BYTES / mib),
+            "reserve_mb": round(config.GPU_RESERVE_BYTES / mib),
         },
         "slots": slots,
     }
