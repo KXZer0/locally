@@ -22,6 +22,14 @@ the page produces today, after three merges:
 
 Nothing in the backend split disturbed the shell.
 
+Those figures are the **fallback** boot path's, for the reason Defect 1 gives.
+With `/v1/ui/bootstrap` stubbed the real path builds **779 elements and 2,428
+nodes**, listeners unchanged at 164, stable across three runs. Two elements and
+twenty nodes is not a finding on its own; it is the correct baseline to compare
+the next change against.
+
+## Defects 1 and 2 are fixed. What follows is what they turned out to be.
+
 ## Defect 1 - every measurement so far was taken on the fallback boot path
 
 `static/js/system/bootstrap.js` fetches `/v1/ui/bootstrap`, which answers
@@ -36,9 +44,13 @@ The endpoint has existed since `389bf30`, so this was true for the CSS collapse
 and for §2.2/§2.3 as well. It does not invalidate the geometry results - the
 same DOM is built either way - but it does mean no boot-timing figure taken on
 this rig has ever described the path the app actually takes, and one failed
-request sits inside every capture. Stub it, composing the four payloads the
-file already defines, and re-run `smoke.js` to confirm `bootstrapSource` reads
-`combined`.
+request sits inside every capture.
+
+**Fixed.** `uiserve.py` now serves `/v1/ui/bootstrap` composed from the same
+four payload constants it already defined, so the fallback and the fast path
+cannot disagree here in a way they would not disagree for real. Verified:
+`bootstrapSource` reads `combined`, three runs, 779 elements / 2,428 nodes /
+164 listeners each time.
 
 ## Defect 2 - the thread's pinned heights go stale the moment the rail moves
 
@@ -66,18 +78,69 @@ written to prevent. Nothing is wrong with the pin; what is missing is that
 anything which changes the thread's width invalidates it. The same applies to a
 plain window resize, which the module also does not watch.
 
-Dropping the pins on a width change makes the thread briefly *shorter* than it
-should be, which is the same class of jump in the other direction, so the
-honest version re-measures: rehydrate on width change, then let `capThread()`
-re-cap at the new width. §2.2 already budgets `ResizeObserver` "only where JS
-must know size", and this is such a place. At 40 bodies that is one `innerHTML`
-write each, and it belongs on the pointerup rather than on every frame of the
-drag.
-
 At a 1280px viewport the same drag produced a drift of **0 px**, because the
-thread is measure-capped there and 100px of rail does not reach the text. That
-is why this was not caught: it only appears once the column is narrow enough to
+thread does not reflow there and 100px of rail does not reach the text. That is
+why this was not caught: it only appears once the column is narrow enough to
 reflow, which is precisely where the draggable rail can now put it.
+
+### The pin was the smaller half, and by a long way
+
+The obvious repair — a `ResizeObserver` on the thread that rehydrates every
+capped body and lets `capThread()` re-pin at the new width — was written first
+and **moved the drift from 1,386 px to 1,313**. The pins themselves came out
+exactly right: measured across all 40, `real - pinned` summed to **0**. So
+something else was holding the missing 1,313 px, and re-pinning could never
+have found it.
+
+It is `content-visibility: auto`. `contain-intrinsic-size: auto 240px` makes an
+off-screen assistant turn contribute *the height it last had* to `scrollHeight`,
+and the height it last had is the height it had **at the width it last had**.
+Nothing invalidates a remembered size when the column changes width, and the
+turns holding stale ones are not only the 40 capped bodies — they are every
+assistant message off screen, capped or mounted. Isolated by forcing a real
+layout of the thread with the cap untouched:
+
+| | |
+|---|---|
+| `scrollHeight` after the drag, as reported | 27,146 |
+| the same document with `content-visibility: visible` | **28,542** |
+| attributable to remembered sizes | **1,396 px** |
+
+and it stays corrected once the flag comes off again.
+
+**The fix, therefore, is both halves.** `thread-window.js` grows a
+`ResizeObserver` (§2.2 budgets one "only where JS must know size"; this is such
+a place) which, 150 ms after the last width change, rehydrates every capped
+body, sets `#thread[data-remeasuring]` so `chat.css` turns `content-visibility`
+off for one painted frame, re-caps under it, and restores the reader's scroll
+position from an anchor taken beforehand.
+
+**A remembered size is recorded when the box is rendered, not when it is laid
+out.** Setting and clearing the attribute inside one task, with a forced
+`scrollHeight` read between them, corrects nothing — that was the 73 px version.
+The flag has to survive a painted frame, so it is dropped in a double
+`requestAnimationFrame`. This is the single non-obvious line in the change and
+the reason it is written down here.
+
+Measured, same 900px viewport and 60-turn thread, rail 200 to 360:
+
+| | before | after |
+|---|---|---|
+| drift after the drag settles | 1,386 px | **9 px** |
+| the anchored message moves by | — | **−1 px** |
+| worst frame during the correction | — | **45.6 ms**, one frame, median 8.3 |
+
+Nothing else moved. The §2.3 result reproduces unchanged at 1280 (1,380 vs
+2,500 elements, 44.8 %, `scrollHeightMoved` 0, `emptyOnScreen` 0), the rail
+probe passes, and boot is 779/2,428/164 as before. Two edge cases were
+measured rather than reasoned about: switching to the Voice tab takes the
+thread to width 0, which the observer ignores (20 capped bodies before, during
+and after; `scrollHeight` identical; **0** bodies pinned to a zero-width
+layout), and after `resetThreadWindow()` a fresh thread is watched again — the
+next drag grows the document by 995 px at the settle and drifts **−5 px**.
+
+The 9 px that remain are per-body rounding, an order of magnitude below the
+height of one line.
 
 ## Correction 1 - the stated blocker for container queries does not exist
 
@@ -141,15 +204,13 @@ needs" - a two-line change with no cascade redesign attached.
 
 ## What is worth doing, in order
 
-**1. Stub `/v1/ui/bootstrap` in `uiserve.py`.** Ten minutes, and until it is
-done every timing number the rig produces describes a path the app does not
-take. Everything below is measured with the rig, so this goes first.
+**1. ~~Stub `/v1/ui/bootstrap` in `uiserve.py`.~~ Done.** See Defect 1. Every
+figure in this document below the baseline table was taken after it.
 
-**2. Re-measure the thread on width change.** 1,386 px of silent scroll drift,
-and the feature that causes it shipped in the same commit as the feature that
-suffers it. `scripts/probes/` needs a probe for this; the one used here is a
-rail drag at 900px followed by a full rehydrate, and it belongs in the
-directory next to `thread.js`.
+**2. ~~Re-measure the thread on width change.~~ Done.** See Defect 2. The
+probe is `scripts/probes/thread-resize.js`; it must be run at `--width 900`,
+because at 1280 the thread does not reflow and it reports a clean zero for the
+wrong reason.
 
 **3. Container queries, §2.2's remaining structural item.** Nine blocks:
 `base.css` 378/766, `chat.css` 243/1069/1086, `voice.css` 251/917,

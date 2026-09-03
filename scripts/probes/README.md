@@ -21,6 +21,7 @@ node scripts/uidrive.mjs --url http://127.0.0.1:8779/ --width 1280 --height 800 
 | `a11y.js` | the mode tablist's roving tabindex, and the separator's place in the tab order |
 | `thread.js` | the 40-message cap over a 100-turn session: nodes, scroll height, rehydration |
 | `thread-phase.js` | the same session stopped at one phase (`--arg capped\|hydrated`) so the renderer's node and listener counters can be read per phase |
+| `thread-resize.js` | whether a width change corrects the heights the thread is holding, and whether it moves the reader. **Run at `--width 900`** — at 1280 the thread does not reflow and the probe reports a clean zero for the wrong reason |
 | `listeners.js` | whether the listener count grows across 80 tab switches and 20 panel opens (`--arg boot\|tabs\|panels`) |
 
 The noise floor is real and small: two loads of the identical page at 375px

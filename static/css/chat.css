@@ -2034,6 +2034,26 @@ body[data-mode="chat"] .composer .mem-hud {
     contain-intrinsic-size: auto 240px;
 }
 
+/* The height it "last had" is the height it had AT THE WIDTH IT LAST HAD, and
+   nothing invalidates a remembered size when the column changes width. Measured
+   at a 900px viewport, dragging the rail 200 -> 360: the thread reports 27,146px
+   and is really 28,542, so 1,396px of the document does not exist until the
+   reader scrolls through it and it appears under them. That is far more than the
+   40 capped bodies contribute, and it is not the cap's doing -- an off-screen
+   assistant turn counts its remembered size towards scrollHeight whether its
+   body is pinned or mounted.
+
+   There is no API for "forget the remembered size". Turning the optimisation off
+   for one layout is the whole repair: every box lays out at the new width, the
+   size each remembers is replaced by a true one, and it survives the attribute
+   being removed again (verified: scrollHeight is identical before and after the
+   flag comes off). chat/thread-window.js sets it once per settled width change,
+   never during a drag. */
+
+#thread[data-remeasuring] .message {
+    content-visibility: visible;
+}
+
 /* thread-window.js empties the body of anything past the 40-message cap and
    pins the height it had, so the document does not shorten under the
    scrollbar. Nothing should be able to escape the pinned box in the frame
