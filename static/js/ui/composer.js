@@ -64,18 +64,30 @@ export const INPUT_MAX_H = INPUT_LINE * INPUT_ROWS_MAX + INPUT_PAD;      // 184
 // a word, type a longer one, and the box kept a height that no longer matched
 // its content. One textarea's worth of forced layout per keystroke is not a cost
 // worth a heuristic that can disagree with what is on screen.
+// The measurement is a deliberate write/read/write, which forces layout. That
+// is unavoidable -- the length-based heuristic it replaced was simply wrong
+// about wrapped text -- but it does not have to happen once per keystroke. One
+// per frame is enough: nothing between two keystrokes in the same frame can be
+// seen. Same arithmetic, same correctness, a fraction of the layout work.
+let sizePending = false;
+
 export function autosizeInput() {
-    // Measure with the gutter hidden: a visible scrollbar narrows the content
-    // box, so leaving it on would over-report the height the text needs and the
-    // box would never come back down off the cap.
-    input.style.overflowY = 'hidden';
-    input.style.height = `${INPUT_MIN_H}px`;
-    const content = input.scrollHeight;
-    const next = Math.min(Math.max(content, INPUT_MIN_H), INPUT_MAX_H);
-    input.style.height = `${next}px`;
-    // Only past the cap is there anything to scroll. Below it the gutter would
-    // be a scrollbar over content that already fits.
-    if (content > INPUT_MAX_H) input.style.overflowY = 'auto';
+    if (sizePending) return;
+    sizePending = true;
+    requestAnimationFrame(() => {
+        sizePending = false;
+        // Measure with the gutter hidden: a visible scrollbar narrows the content
+        // box, so leaving it on would over-report the height the text needs and the
+        // box would never come back down off the cap.
+        input.style.overflowY = 'hidden';
+        input.style.height = `${INPUT_MIN_H}px`;
+        const content = input.scrollHeight;
+        const next = Math.min(Math.max(content, INPUT_MIN_H), INPUT_MAX_H);
+        input.style.height = `${next}px`;
+        // Only past the cap is there anything to scroll. Below it the gutter would
+        // be a scrollbar over content that already fits.
+        input.style.overflowY = content > INPUT_MAX_H ? 'auto' : 'hidden';
+    });
 }
 
 input.addEventListener('input', () => {

@@ -3,7 +3,9 @@
 // filename, command, or filesystem path is accepted from the browser.
 (() => {
     const shell = document.getElementById('setup-shell');
+    const dialog = document.getElementById('setup-dialog');
     const stage = document.getElementById('setup-stage');
+    const stepStatus = document.getElementById('setup-step-status');
     const kicker = document.getElementById('setup-kicker');
     const title = document.getElementById('setup-title');
     const lede = document.getElementById('setup-lede');
@@ -285,9 +287,8 @@
         steps.forEach((item, index) => {
             const dot = el('button', 'setup-dot');
             dot.type = 'button';
-            dot.setAttribute('role', 'tab');
-            dot.setAttribute('aria-label', `${index + 1}. ${item.kicker.toLowerCase()}`);
-            dot.setAttribute('aria-selected', String(index === step));
+            dot.setAttribute('aria-label', `Step ${index + 1}: ${item.title}`);
+            dot.setAttribute('aria-current', index === step ? 'step' : 'false');
             dot.addEventListener('click', () => {
                 if (busy) return;
                 step = index;
@@ -311,6 +312,11 @@
         next.textContent = finished ? 'Start chatting' : step === steps.length - 1 ? 'Install & finish' : 'Continue';
         next.disabled = busy;
         status.textContent = '';
+        // Announce the transition, not the contents: the step's cards, options
+        // and hints are read on demand, once, by navigating them.
+        stepStatus.textContent = finished
+            ? copy.title
+            : `Step ${step + 1} of ${steps.length}: ${copy.title}`;
     }
 
     function showInstallProgress(ids) {
@@ -416,10 +422,10 @@
             render();
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
+            // One announcement: `status` is role="status" and speaks; the line
+            // in the stage is the silent visual twin, styled by class.
             status.textContent = message;
-            const errorLine = el('p', 'setup-note', message);
-            errorLine.style.color = 'var(--alarm)';
-            stage.append(errorLine);
+            stage.append(el('p', 'setup-note is-error', message));
         } finally {
             busy = false;
             next.disabled = false;
@@ -427,12 +433,101 @@
         }
     }
 
+    // --- focus containment ---------------------------------------------------
+    // The dialog declared aria-modal="true" and nothing kept Tab inside it, so
+    // assistive tech was told the app behind was inert when it was not -- and on
+    // first run the dialog cannot be dismissed, which means a keyboard user could
+    // Tab into an app they had no way back out of. `inert` makes the claim true;
+    // the Tab handler is the same cycle palette.js and swap.js already use.
+    const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),'
+        + 'select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
+    let returnFocusTo = null;
+
+    const focusablesIn = root =>
+        [...root.querySelectorAll(FOCUSABLE)].filter(node => node.offsetParent !== null);
+
+    // Capture, so it runs before the app's own Tab handling -- the Escape
+    // handler below is registered the same way for the same reason.
+    function onTrapKey(event) {
+        if (event.key !== 'Tab') return;
+        const items = focusablesIn(dialog);
+        if (!items.length) { event.preventDefault(); return; }
+        const first = items[0];
+        const last = items[items.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey && (active === first || !dialog.contains(active))) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+            event.preventDefault();
+            first.focus();
+        }
+    }
+
+    // "Everything except this subtree" is a walk UP from the dialog, inerting
+    // each ancestor's other children. Inerting only `document.body.children`
+    // looks right and is wrong here: the shell is nested inside `.app-column`,
+    // so that version inerted the dialog along with the app and focus could not
+    // enter it at all — `dialog.focus()` silently did nothing.
+    const inertOutside = value => {
+        for (let node = shell; node && node !== document.body; node = node.parentElement) {
+            for (const sibling of node.parentElement.children) {
+                if (sibling !== node) sibling.inert = value;
+            }
+        }
+    };
+
+    // The app appends while setup is open -- the update card, toasts, the memory
+    // HUD. Inerting once left those live behind a dialog claiming aria-modal,
+    // which is the exact hole this code exists to close, so anything added
+    // outside the dialog's own ancestry is inerted as it arrives.
+    const watchNewSiblings = new MutationObserver(records => {
+        for (const record of records) {
+            for (const node of record.addedNodes) {
+                // Anything on the path to the dialog, and the dialog's own
+                // content, must stay live -- render() replaces the stage on
+                // every step, and inerting that would empty the dialog of
+                // anything focusable.
+                if (node.nodeType !== 1) continue;
+                if (node === shell || node.contains(shell) || shell.contains(node)) continue;
+                node.inert = true;
+            }
+        }
+    });
+
+    // Watch each level of the dialog's ancestry, so a new sibling at any depth
+    // of that path is caught without observing the whole document.
+    const observePath = () => {
+        for (let node = shell; node && node !== document.body; node = node.parentElement) {
+            watchNewSiblings.observe(node.parentElement, { childList: true });
+        }
+    };
+
     function setOpen(open) {
         shell.hidden = !open;
         shell.setAttribute('aria-hidden', String(!open));
         document.body.dataset.setupOpen = open ? '1' : '0';
-        document.body.style.overflow = open ? 'hidden' : '';
-        if (open) window.setTimeout(() => next.focus(), 0);
+        if (open) {
+            // Read the outgoing focus BEFORE inerting, or the element holding it
+            // is already unfocusable and there is nothing to return to.
+            returnFocusTo = document.activeElement;
+            inertOutside(true);
+            observePath();
+            document.addEventListener('keydown', onTrapKey, true);
+            // Focus moves after the inerting, not before: inerting the button
+            // that opened setup drops focus to <body>, so a focus() scheduled
+            // ahead of that is simply undone. The dialog, not Continue --
+            // opening a step with the primary action focused puts a stray Enter
+            // one keystroke from advancing past content nobody has read.
+            dialog.focus();
+        } else {
+            watchNewSiblings.disconnect();
+            inertOutside(false);
+            document.removeEventListener('keydown', onTrapKey, true);
+            returnFocusTo?.focus?.();
+            returnFocusTo = null;
+        }
     }
 
     async function openSetup(force = false) {
