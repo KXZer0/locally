@@ -60,15 +60,23 @@ MAX_NEW = 48
 CACHE_DIR = pathlib.Path(".ov-cache").resolve()
 
 
-def run(model_dir: str) -> dict:
-    print(f"\n=== {model_dir}")
+def run(model_dir: str, device: str = "NPU") -> dict:
+    print(f"\n=== {model_dir}  [{device}]")
     t0 = time.perf_counter()
     # Same CACHE_DIR locally passes. Without it every load is a cold vpux
     # compile of the whole graph -- 168 s measured here against the 9 s a warm
     # cache gives -- and a load time measured that way says nothing about what
     # a user waits for.
-    pipe = ov_genai.LLMPipeline(model_dir, "NPU", MAX_PROMPT_LEN=8192,
-                                CACHE_DIR=str(CACHE_DIR))
+    kwargs = {"CACHE_DIR": str(CACHE_DIR)}
+    if device == "NPU":
+        # NPU only: the 8192 cap is a property of the vpux compiler and
+        # means nothing to the GPU plugin.
+        kwargs["MAX_PROMPT_LEN"] = 8192
+    if str(model_dir).lower().endswith(".gguf"):
+        # Convert once and keep the IR, so a second run measures loading
+        # rather than converting.
+        kwargs["enable_save_ov_model"] = True
+    pipe = ov_genai.LLMPipeline(model_dir, device, **kwargs)
     load_s = time.perf_counter() - t0
     print(f"  load           {load_s:6.1f} s")
 
@@ -109,10 +117,16 @@ def run(model_dir: str) -> dict:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+    device = "NPU"
+    if "--device" in args:
+        i = args.index("--device")
+        device = args[i + 1].upper()
+        del args[i:i + 2]
+    if not args:
         print(__doc__)
         return 2
-    results = [run(d) for d in sys.argv[1:]]
+    results = [run(d, device) for d in args]
     print("\n" + "=" * 72)
     print(f"{'model':<44}{'load':>8}{'tok/s':>9}{'factual':>10}")
     for r in results:
