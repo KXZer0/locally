@@ -76,8 +76,15 @@ def probe(base: str, target: int) -> None:
                     ttft = time.perf_counter() - t0
                 tokens += 1
     total = time.perf_counter() - t0
-    decode = tokens / (total - ttft) if ttft and total > ttft else 0
     approx_prompt = len(prompt.split())
+    if ttft is None:
+        # No content token ever arrived. That is a failed turn, not a slow one,
+        # and printing a zero here would quietly become a data point.
+        print(f"  ~{target // 1000}k prompt ({approx_prompt:,} words): "
+              f"NO TOKENS after {total:.1f} s — the turn failed, see the "
+              f"server log")
+        return
+    decode = tokens / (total - ttft) if total > ttft else 0
     print(f"  ~{target // 1000}k prompt ({approx_prompt:,} words): "
           f"TTFT {ttft:6.2f} s | prefill ~{approx_prompt / ttft:7.0f} word/s | "
           f"decode {decode:5.1f} tok/s over {tokens} tokens")

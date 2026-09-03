@@ -40,6 +40,7 @@ HEALTH = {
 }
 MODELS = {"object": "list", "data": [
     {"id": "Qwen3-8B-int4-ov", "object": "model", "owned_by": "locally"}]}
+AVAILABLE = {"models": []}
 MEMORY = {
     "devices": [{
         "device": "GPU", "total_bytes": 27_200_000_000,
@@ -60,12 +61,28 @@ SETUP = {
     "configured": {"assistant": "Qwen3-8B-int4-ov"},
     "models_root": str(ROOT / "models"),
 }
+# The web UI's real boot is ONE request. /v1/ui/bootstrap answers health,
+# models, available models and memory together, and system/bootstrap.js falls
+# back to the four public endpoints only when it fails. Serving the four and
+# not this one meant every capture ever taken on this rig booted through the
+# `catch` -- readable as `document.documentElement.dataset.bootstrapSource ==
+# "fallback"` -- so the rig was measuring a path the app does not take, with a
+# failed request inside every measurement. Composed from the same four
+# payloads: one source of truth per endpoint, so the fallback and the fast
+# path can never disagree here in a way they would not disagree for real.
+BOOTSTRAP = {
+    "health": HEALTH,
+    "models": MODELS,
+    "available_models": AVAILABLE,
+    "memory": MEMORY,
+}
 STUBS = {
     "/health": HEALTH,
     "/v1/setup": SETUP,
     "/v1/models": MODELS,
-    "/v1/models/available": {"models": []},
+    "/v1/models/available": AVAILABLE,
     "/v1/memory": MEMORY,
+    "/v1/ui/bootstrap": BOOTSTRAP,
 }
 
 MIME = {

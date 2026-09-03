@@ -159,6 +159,51 @@ about 80x faster. For a tool whose purpose is a quick exact calculation inside a
 chat turn, seven seconds is the difference between a tool and an interruption —
 so `--python-sandbox` earning its three settings is the point, and which default
 is right depends on whether the code being run is trusted or merely likely.
+## gemma-4-26b at 100k: the wall is an allocation, not the budget
+
+Asked directly: gemma-4-26b is already good, so why not run *it* at 100k? The
+memory arithmetic says yes and the GPU plugin says no, and the reason is worth
+writing down because it is not the reason anyone expects.
+
+**The budget is fine.** Weights 14.3 GB, and with the corrected KV geometry
+(5 full-attention + 25 sliding-window layers, 1024 window) a 100k context at
+`--kv-precision u8` needs **2.01 GB** of cache — 16.3 GB total against a 20.7 GB
+budget on this machine. `--offload-ratio auto` agreed and picked **0**: it loaded
+fully resident at 14,647 MB with no expert streaming at all.
+
+**What fails is a single allocation.** Both large prompts died with:
+
+```
+[GPU] Exceeded max size of memory object allocation:
+  requested 32,664,649,728 bytes  (~30.4 GB, 32k prompt)
+  requested 288,364,068,864 bytes (~268.6 GB, 100k prompt)
+  max alloc size supported by device is 27,201,245,184 bytes (25.3 GB)
+```
+
+268 GB is not a cache — the KV for that context is 2 GB. It is the **attention
+score buffer, and it is O(n²)**: the prompt grew 3.1x from 32k to 100k and the
+request grew 8.8x, which is n² to within measurement error. This path materialises
+the full attention matrix instead of chunking it.
+
+**So the ceiling is per-allocation, not capacity, and no amount of free RAM moves
+it.** The device refuses any single object over 25.3 GB. The error names
+`ov::intel_gpu::hint::enable_large_allocations`, which is worth trying for the
+32k case (30.4 GB is within reach of a raised limit); 268 GB is not reachable by
+any setting.
+
+**And this is exactly what hybrid attention is for.** Qwen3.5-9B *did* complete
+64k on the same machine, in 48.6 s, because 24 of its 32 layers are
+`linear_attention` and build no n² matrix at all — only 8 full-attention layers
+pay the quadratic cost. gemma-4-26b has 5 full-attention layers with a **global**
+span and 25 windowed at 1024: the windowed ones are cheap, but the 5 global ones
+each materialise the full square. Fewer quadratic layers is why the smaller model
+reaches the longer context.
+
+**Practical answer: gemma-4-26b is a strong model with a short usable context on
+this GPU path, and Qwen3.5-9B is a weaker model that actually reaches 64k.** If
+the 100k agent is the goal, the model is not the variable to tune — the attention
+implementation is.
+
 ## Also fixed along the way
 
 **`.gitignore` was swallowing source.** `models/` was unanchored, so it matched
