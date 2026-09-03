@@ -42,3 +42,8 @@ util_cpu = None
 DEVICES = {}
 UTIL_DIR = None      # where the utility models were found
 MODELS_DIR = None    # --models-dir: where POST /v1/models/load looks
+
+# Every live slot, including audio and utility slots added by onboarding after
+# the server has bound.  The idle watchdog and setup activation share this
+# exact list; replacing it would strand one of those consumers on a stale copy.
+slots = []
