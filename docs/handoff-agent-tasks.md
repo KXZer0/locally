@@ -117,24 +117,48 @@ context, 0.27 GB is right and the rate alone says 0.08.
 
 ---
 
-## TASK C — Podman sandbox: **built, not yet proven**
+## TASK C — Podman sandbox: **proven, after a bug that made it a no-op**
 
-`core/sandbox/podman.py`, a `--python-sandbox {auto,podman,subprocess}` flag, and
-tests are merged (`a03e217`). `/health` now reports the boundary **actually in
-force** rather than the best one available — "none (Podman `--network=none`)" or
-"subprocess import guardrails only" — because a user must never read a
-containerised claim while running in the fallback.
+`scripts/verify-sandbox.py` runs each escape through the real `execute_python`
+path and asserts it fails. Measured on this machine with
+`docker.io/library/python:3.12-alpine`:
 
-**What has not been measured, and must be before this is called done:** a network
-call failing inside the container, a write outside the bind mount failing, a 2 GB
-allocation being killed at `--memory=512m`, a fork bomb contained by
-`--pids-limit`, `ctypes` failing to reach the host (the case the subprocess path
-cannot stop and the whole reason for the task), and cold vs warm start with the
-machine stopped. Those need `podman machine start`, which costs **1.44 GB** of
-host RAM and must be stopped again afterwards.
+| case | podman | subprocess |
+|---|---|---|
+| baseline `print(sum(range(10)))` | runs, `45` | runs, `45` |
+| network egress | **blocked** — connect hangs to timeout | blocked (import refused) |
+| write outside the mount | **blocked** — `[Errno 30] Read-only file system: /etc/locally-escape` | blocked (open refused) |
+| 2 GB allocation | **killed, exit 137** (SIGKILL, OOM at `--memory=512m`) | **ESCAPED** — `ALLOCATED 2147483648` |
+| fork bomb | **contained** — `BlockingIOError` at `--pids-limit=64` | blocked (`os.fork` refused) |
+| `ctypes.CDLL(None)` | runs, and is **useless**: `getpid()` returns **1** | blocked (import refused) |
 
----
+The two paths fail differently and that is the interesting part. The subprocess
+audit hook refuses things **by name** — it has no memory cap at all, so the one
+escape it lets through is the runaway allocation, which is also the likeliest
+accident from a small model. The container caps memory for real and does not
+bother forbidding ctypes: `CDLL(None)` loads, and `getpid()` answers **1**,
+because it is looking at its own PID namespace and there is nothing of the
+host's to reach.
 
+**It did not work at all until `59ee312`+ fixed this**: the status-file path
+baked into the generated `run.py` was built with `os.path.join` on a Windows
+host, producing `/workspace\.locally-python-xxx\status.json` — one long
+filename, opened in a read-only root. **Every calculation failed**, including
+the arithmetic baseline. Five of the six cases still reported "contained",
+because code that never runs never escapes; only the baseline caught it. That
+is the argument for putting a positive control in a security test suite.
+
+**Lifecycle, measured.** The machine is started on demand and stopped again:
+`machine_running` is False before and False after, and `sandbox_status()` costs
+**1.9 ms** with the VM down, so a `/health` read never pays the VM probe.
+
+**The cost is real and is the argument against `auto` for interactive use.** A
+warm container run is **~7 s**; the whole six-case suite including machine start
+was 50 s. The subprocess path answers the same calculations in **75-90 ms**,
+about 80x faster. For a tool whose purpose is a quick exact calculation inside a
+chat turn, seven seconds is the difference between a tool and an interruption —
+so `--python-sandbox` earning its three settings is the point, and which default
+is right depends on whether the code being run is trusted or merely likely.
 ## Also fixed along the way
 
 **`.gitignore` was swallowing source.** `models/` was unanchored, so it matched

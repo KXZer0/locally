@@ -7,6 +7,7 @@ which boundary actually ran the code.
 
 import json
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -302,7 +303,12 @@ def _execute_podman(code):
     """Run code in the hardened container, mounting only the workspace."""
     root = tempfile.mkdtemp(prefix=".locally-python-", dir=config.SCRIPT_DIR)
     script_path = os.path.join(root, "run.py")
-    status_path = os.path.join(
+    # This path is read INSIDE the container, which is Linux, so it must be
+    # built with POSIX separators no matter what the host is. os.path.join on
+    # Windows produced "/workspace\.locally-python-xxx\status.json", which the
+    # container opened as one long filename in a read-only root and failed on
+    # every single calculation -- including `print(sum(range(10)))`.
+    status_path = posixpath.join(
         podman.CONTAINER_WORKSPACE, os.path.basename(root), "status.json")
     stdout_path = os.path.join(root, "stdout.bin")
     stderr_path = os.path.join(root, "stderr.bin")
