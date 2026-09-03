@@ -32,10 +32,10 @@ FILLER = (
 
 
 def build_prompt(target_tokens: int) -> str:
-    # ~0.75 tokens per word for English prose is the usual rule; this filler
-    # measured close enough to it that the reported prompt_tokens is what
-    # matters, and that is read back from the response.
-    words = int(target_tokens / 0.75)
+    # English prose runs about 1.33 tokens per word, so a target in TOKENS is
+    # about 0.75x that many words. Dividing instead of multiplying (the first
+    # cut of this) overshoots by 1.8x, and a run labelled "8k" was really 14k.
+    words = int(target_tokens * 0.75)
     text = (FILLER * (words // len(FILLER.split()) + 2)).split()
     return " ".join(text[:words])
 

@@ -43,8 +43,31 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
   after weights. Both are capped at the model's real `max_position_embeddings` (a pool
   larger than the model can address is memory nobody can use) and resolved **per model in
   `load()`**, not once per process: KV bytes/token vary ~3× across models one slot holds
-  over its life (84 KB gemma-4-E4B, 144 Qwen3-8B, 240 gemma-4-26b), so a fixed GB figure
+  over its life (**32 KB Qwen3.5-9B, 40 gemma-4-26b, 144 Qwen3-8B**), so a fixed GB figure
   silently means a different context after every swap. The resolved figure is in
+- **Only the full-attention layers hold a KV cache** (corrected 2026-09-03). The figures
+  above are lower than this file used to claim (it said 240 KB/token for gemma-4-26b)
+  because `_kv_bytes_per_token` multiplied by `num_hidden_layers`, which is right only
+  for a dense model. `layer_types` names each layer, and the 2026 models are hybrid:
+  **Qwen3.5-9B is 24 `linear_attention` + 8 `full_attention`** and a linear layer keeps a
+  fixed recurrent state, not a per-token cache — so the real rate is 32 KB/token, not 128,
+  a factor of four. That number sizes the pool and decides placement, so the over-count
+  asked for 13 GB where 4 was needed and ruled the model out of a device it fits in with
+  room to spare. **`sliding_attention` is the trap in fixing this**: gemma-4 has 25 such
+  layers with a 1024 window, and they DO hold a cache — just a capped one. Excluding them
+  like linear layers under-counts by a constant, which is the direction that hard-fails a
+  generation (#21): measured on gemma-4-26b at a 2k context, 0.27 GB is right and the rate
+  alone says 0.08. Hence two functions — `_kv_bytes_per_token` is the growing rate,
+  `_kv_bytes_for_context` adds the fixed part and the `--kv-precision u8` halving. Dense
+  models are untouched: Qwen3-8B still reports 144 KB/token and still resolves
+  `--context-tokens 30000` to the same 5 GB pool.
+- **A VLM slot could not stream** (fixed 2026-09-03). `stream_llm` called
+  `pipe.generate(history, gen, streamer)` positionally; LLMPipeline accepts that and
+  VLMPipeline does not — its ChatHistory form is `(history, **kwargs)` only — so every
+  streamed text turn on a VLM ended with 0 tokens and an "incompatible function
+  arguments" error. The non-streaming path takes a different overload and worked fine,
+  which is exactly why it went unnoticed: a plain POST answered, and streaming is what
+  the web UI and every agent client actually use. Pass them by keyword.
   `/health` as `context_tokens` + `kv_pool_gb`. Measured: `--context-tokens 30000` on
   Qwen3-8B/GPU → 5 GB pool holding 36k; `auto` → 6 GB, capped at the model's 40k. NPU and VLM slots keep the
   plain pipeline (NPU has no CB path; it keeps MAX_PROMPT_LEN). Falls back to the plain
