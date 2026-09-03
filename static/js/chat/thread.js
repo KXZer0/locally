@@ -11,6 +11,7 @@ import { brandMark, emptyState, thread } from '../core/dom.js';
 import { escapeHtml } from '../core/format.js';
 import { paintDevice, scrollToBottom, shouldAutoScroll } from '../core/paint.js';
 import { renderMarkdown } from '../markdown/render.js';
+import { capThread } from './thread-window.js';
 
 // --- Message actions ---------------------------------------------------------
 
@@ -143,6 +144,9 @@ export function addMessage(role, content, options) {
     // meta line survive every re-render.
     div.body = bodyDiv;
     div.label = label;
+    // After the append, never before: capThread() measures the height it is
+    // about to pin, and an element that is not in the document measures zero.
+    capThread();
     return div;
 }
 

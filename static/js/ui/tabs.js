@@ -92,7 +92,12 @@ for (const action of document.querySelectorAll('[data-home-prompt], [data-home-t
     });
 }
 
-export const modeTabs = [tabChat, tabVoice, tabUtil];
+// DOM order, and all four of them. Code was missing: setMode() gave it
+// tabIndex 0 when it was the selected tab, so a keyboard user could land on
+// it, but no arrow key ever reached it and none of its own arrow keys did
+// anything -- a roving tabindex with one tab outside the roll. A tablist
+// whose arrow keys skip a tab is the case ARIA's pattern exists to prevent.
+export const modeTabs = [tabChat, tabVoice, tabCode, tabUtil];
 for (const [index, tab] of modeTabs.entries()) {
     tab.addEventListener('keydown', (e) => {
         let next = null;

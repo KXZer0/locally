@@ -146,7 +146,28 @@ Verified in the running app, not by reading:
 2. **Layers, deliberately.** Start with `tokens` and `base` — the two whose contents
    genuinely should lose to everything — and verify each with the oracle before adding
    the next.
-3. **§2.2/§2.3 are untouched**: draggable sidebar, container queries, the 40-node
-   thread cap, listener teardown.
-4. `templates/index.html.bak39` is kept only so the tool can regenerate. Delete it
-   once the 9 sheets are the source of truth, and drop `--order`.
+3. **§2.2/§2.3: done except container queries** — see `docs/handoff-layout.md`.
+   The draggable sidebar and the 40-message thread cap shipped 2026-09-03, and
+   two of the plan's §2.3 items (listener teardown, object-URL revocation)
+   were measured and do not exist.
+4. **"Regenerate, never hand-edit" no longer holds, and had already stopped
+   holding when this was written.** Four of the nine sheets carry rules the
+   generator knows nothing about: `base.css` and `components.css` from §2.1a
+   (`body[data-setup-open="1"]`, `.setup-note.is-error`,
+   `.setup-dot[aria-current="step"]`, `overscroll-behavior: contain`), and
+   `layout.css` and `chat.css` from §2.2/§2.3. Re-running `css_collapse.py`
+   would have deleted all of them without a word — the generated header
+   survives an append, so it was never a usable marker.
+
+   The tool now records a SHA-256 of everything it writes in
+   `scripts/css-collapse.manifest.json` and refuses any sheet that no longer
+   matches; a sheet with no record counts as edited, because "no record" and
+   "written by hand" are the same state on disk today and only one of them is
+   safe to guess wrong about. `--force` overwrites. Verified: with the 39
+   sources restored from `c6a8c9d`, it refuses exactly `base`, `layout`,
+   `components` and `chat`, and regenerates the other five byte-identically.
+
+   The 39 sources are **deleted from the working tree**, so the tool cannot
+   run at all without restoring them from `c6a8c9d` first. The nine sheets are
+   the source of truth. `templates/index.html.bak39` is only the `--order`
+   input for that restore path and is itself recoverable from `c6a8c9d`.

@@ -2014,3 +2014,31 @@ body[data-mode="chat"] .composer .mem-hud {
     }
 
 }
+
+/* --- Long threads (REBUILD-PLAN §2.3) ------------------------------------- */
+
+/* An answer that is scrolled past costs style, layout and paint on every
+   frame for as long as it stays in the document. content-visibility hands
+   the browser permission to skip all three while it is off screen, and
+   `auto` in contain-intrinsic-size makes it remember the height it last
+   had, so scrolling back does not make the thread jump.
+
+   Assistant turns only, deliberately. `.message.user` is `width: fit-content`,
+   and size containment resolves fit-content against the intrinsic size rather
+   than the text -- an off-screen bubble would be laid out at the placeholder
+   width. User turns are a line or two; there is nothing here to win from them
+   and a real way to be wrong. */
+
+.message.assistant {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 240px;
+}
+
+/* thread-window.js empties the body of anything past the 40-message cap and
+   pins the height it had, so the document does not shorten under the
+   scrollbar. Nothing should be able to escape the pinned box in the frame
+   before it is filled back in. */
+
+.msg-body[data-dehydrated] {
+    overflow: hidden;
+}

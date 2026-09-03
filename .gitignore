@@ -60,3 +60,6 @@ speaker-profile.json
 .claude/
 # Local planning notes, not reviewed and not part of the design record.
 plans/
+
+# Measurement scratch: probe output, screenshots, regenerated sheets.
+scratchpad/

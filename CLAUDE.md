@@ -503,10 +503,39 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
   diff them against every `Name` loaded. It found all five in one pass and reports
   zero across `locally.py` and every module in `core/`. Run it before trusting a
   future split.
-- Web UI: `templates/index.html` + `static/css/style.css` + `static/js/app.js`, three tabs
-  (Chat / Voice / Util). Chat and Voice share **one** `chatHistory` — switching modes
-  must never drop the conversation, and voice turns are mirrored into the chat thread.
-  Util keeps its selected file/result independently and can hand extracted text to Chat.
+- Web UI: `templates/index.html` + **nine** stylesheets in `static/css/` + ES modules
+  under `static/js/` (`main.js` is the entry point and does nothing but import and
+  `init()`), four tabs (Chat / Voice / Code / Tools). Chat and Voice share **one**
+  `chatHistory` — switching modes must never drop the conversation, and voice turns are
+  mirrored into the chat thread. Util keeps its selected file/result independently and
+  can hand extracted text to Chat. The nine sheets replaced 39 on 2026-09-03
+  (`docs/handoff-css.md`) and are now the **source of truth**: `css_collapse.py` still
+  regenerates them from the 39 originals in `c6a8c9d`, but four of them have been edited
+  by hand since, so it checks `scripts/css-collapse.manifest.json` and refuses rather
+  than silently deleting those rules.
+- **The frontend is measured from the command line, not from a console** (2026-09-03).
+  `scripts/uiserve.py` serves the page with stubbed boot endpoints, so CSS and DOM work
+  does not wait 10–40 s for a model to compile onto a device, and `?strip=<id>` serves it
+  with one element removed — the only way to ask "did adding this move anything else"
+  and get an answer rather than an `nth-child` renumbering. `scripts/uidrive.mjs` drives
+  the WebView2/Edge Chromium over CDP with **no npm dependency** (Node 21+ has a global
+  `WebSocket`), sets a real layout viewport, seeds `localStorage` before the app's first
+  line runs, and appends `Memory.getDOMCounters` and console errors to every result.
+  This exists because a hidden browser pane reports `document.hidden === true`, where
+  `requestAnimationFrame` **never fires** — so every rAF-batched measurement hangs
+  instead of returning, which reads as a broken feature rather than a broken rig.
+  Do not measure this UI in a hidden pane, and do not measure DOM cost with
+  `performance.memory`: nodes do not live on the JS heap.
+- **The sidebar's width is draggable and the thread is capped** (§2.2/§2.3,
+  `docs/handoff-layout.md`). Width is one custom property (`--rail-open`), so the grid,
+  the sidebar and everything measured off them move together; it applies only where the
+  handle does (>780px, fine pointer), because a 348px rail carried over from a desktop
+  left a 375px viewport with **27px** of app column. The thread keeps 40 message bodies
+  mounted and empties the rest into a string, pinned to the height they had: **44.8%
+  fewer elements** over a 100-turn session (1,380 vs 2,500; 8,621 vs 11,683 renderer
+  nodes) with `scrollHeight` unchanged to the pixel. Two of §2.3's items were measured
+  and **do not exist** — the listener count is flat across 80 tab switches (164 → 162),
+  and every `createObjectURL` already has its `revokeObjectURL`.
 - **Markdown is hand-rolled and escape-first** (`renderBody`): the body is HTML-escaped
   before anything else, so only tags the renderer constructs itself can reach the DOM —
   that property, plus `<think>` blocks and scheme-restricted links, is why marked.js

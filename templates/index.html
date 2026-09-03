@@ -295,6 +295,15 @@
     </footer>
 </aside>
 
+<!-- The rail's width is draggable (REBUILD-PLAN §2.2). A separator, not a
+     button: it has a value, and a screen reader announcing "200 to 360,
+     currently 260" is the only way a non-sighted user learns there is a
+     width here at all. It sits between the two grid columns rather than
+     inside either, so neither one's overflow can clip it. -->
+<div class="rail-resizer" id="rail-resizer" role="separator" tabindex="0"
+     aria-orientation="vertical" aria-label="Resize sidebar"
+     aria-controls="primary-sidebar"></div>
+
 <div class="app-column">
 <header class="main-header topbar pywebview-drag-region" id="topbar">
     <div class="main-header-start">

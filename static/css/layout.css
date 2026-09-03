@@ -609,6 +609,69 @@ body[data-rail="collapsed"] > .sidebar-tools {
     transform: translateX(-100%);
 }
 
+/* --- Rail resizer (REBUILD-PLAN §2.2) ------------------------------------- */
+
+/* A third grid item in column 1, pinned to its right edge and hanging half
+   its width into column 2, so it straddles the border the sidebar already
+   draws. It is not a child of either column: .sidebar-tools scrolls and
+   .app-column is overflow:hidden, and a handle inside either would scroll
+   away or be clipped.
+
+   The hit area is 11px and the ink is 2px. Those are different numbers on
+   purpose -- the target has to be catchable with a pointer, and a permanent
+   2px line beside a 1px border reads as a scrollbar, so the ink only appears
+   once the handle is pointed at, focused, or being dragged. */
+
+.rail-resizer {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: end;
+    align-self: stretch;
+    width: 11px;
+    margin-right: -5px;
+    z-index: 60;
+    cursor: col-resize;
+    touch-action: none;
+    background: linear-gradient(to right,
+        transparent 0 calc(50% - 1px),
+        var(--handle-ink, transparent) calc(50% - 1px) calc(50% + 1px),
+        transparent calc(50% + 1px) 100%);
+}
+
+.rail-resizer:hover,
+.rail-resizer:focus-visible {
+    --handle-ink: var(--ink-3);
+}
+
+body[data-rail-resizing="1"] .rail-resizer {
+    --handle-ink: var(--ink-2);
+}
+
+/* Collapsed, there is no width to change and no border to sit on. Hiding it
+   also keeps it out of the tab order, so Tab does not stop on a control that
+   cannot do anything. */
+
+body[data-rail="collapsed"] .rail-resizer {
+    display: none;
+}
+
+/* While dragging, the cursor must not flicker to a text caret every time the
+   pointer crosses a label, and a drag across the thread must not select it. */
+
+body[data-rail-resizing="1"] {
+    cursor: col-resize;
+    user-select: none;
+}
+
+/* There is deliberately no `transition: none` for the sidebar here. The only
+   transition it carries is on `transform`, which is the collapse drawer; the
+   drag moves `width` and the grid column, neither of which is transitioned,
+   so the rail tracks the pointer with no lag. A rule suppressing a transition
+   that does not apply would also have LOST: the reduced-motion block that
+   declares it sits later in this file at equal specificity. Measured
+   mid-drag: `transform 0.28s`, and the rail still lands on the pointer in the
+   same frame. */
+
 .sidebar-tools .brand {
     width: 100%;
     min-width: 0;
@@ -1061,6 +1124,33 @@ body[data-mode="util"] .app-column > #panel-util {
 
     body[data-mode] > .sidebar-tools {
         transition: transform var(--dur-slow) var(--ease-drawer);
+    }
+
+}
+
+/* Filed after the base rule rather than hoisted into responsive.css: a media
+   rule that moves forward in the cascade gains precedence it never had, which
+   is the third defect docs/handoff-css.md records. */
+
+@media (max-width: 780px) {
+
+    /* Below this the rail is already fighting the thread for room -- a 200px
+       floor would leave 175px of app column on a phone. Width is not the
+       control that helps there; the collapse toggle is. */
+
+    .rail-resizer {
+        display: none;
+    }
+
+}
+
+@media (pointer: coarse) {
+
+    /* An 11px drag target is not a touch target, and there is no hover with
+       which to discover it. */
+
+    .rail-resizer {
+        display: none;
     }
 
 }

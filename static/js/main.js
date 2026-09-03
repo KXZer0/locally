@@ -69,6 +69,7 @@ import './ui/code-tab.js';
 import './ui/odysseus.js';
 import './ui/settings.js';
 import './ui/composer.js';
+import './ui/rail-resize.js';
 
 import './palette.js';
 

@@ -10,6 +10,7 @@ import { runCompletion } from './completion.js';
 import { compactHistory, invalidateContextCount, scheduleExactContextCount, syncComposerDraftState, updateContextDisplay } from './context.js';
 import { isGenerating } from './generation.js';
 import { addMessage, resetMessageGrouping } from './thread.js';
+import { resetThreadWindow } from './thread-window.js';
 import { webSearchAllowed, webSearchReady } from './websearch.js';
 import { emptyState, input, noThinkCheckbox, thread } from '../core/dom.js';
 import { escapeHtml } from '../core/format.js';
@@ -154,6 +155,7 @@ export function newChat() {
     invalidateContextCount(true);
     thread.innerHTML = '';
     resetMessageGrouping();
+    resetThreadWindow();
     emptyState.hidden = false;
     setMode('chat');
     updateContextDisplay();

@@ -40,6 +40,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import pathlib
 import re
 import sys
@@ -439,6 +441,37 @@ def split(items):
     return out
 
 
+MANIFEST = pathlib.Path("scripts/css-collapse.manifest.json")
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _read_manifest() -> dict:
+    try:
+        return json.loads(MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _hand_edited(path: pathlib.Path, manifest: dict) -> bool:
+    """True unless the file on disk is exactly what this tool last wrote.
+
+    A file with no manifest entry counts as edited, not as new. The manifest
+    did not exist when the nine sheets were first generated, so "no record"
+    and "written by hand" are the same state as far as anything on disk today
+    is concerned, and only one of the two is safe to guess wrong about. A file
+    that is simply absent is a genuine first run and passes.
+    """
+    if not path.exists():
+        return False
+    recorded = manifest.get(path.name)
+    if recorded is None:
+        return True
+    return _sha(path.read_text(encoding="utf-8")) != recorded
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--order", default="templates/index.html",
@@ -451,6 +484,9 @@ def main() -> int:
                          "later layer beats an earlier one regardless of "
                          "specificity, so this is a redesign, not a port)")
     ap.add_argument("--report", action="store_true")
+    ap.add_argument("--force", action="store_true",
+                    help="overwrite generated sheets that have been edited "
+                         "by hand since (their rules are lost)")
     args = ap.parse_args()
 
     # The load order IS the cascade, so it has to come from the page that
@@ -484,6 +520,26 @@ def main() -> int:
         d.mkdir(parents=True, exist_ok=True)
         parts = split(items)
         total = 0
+        # The nine sheets became the source of truth the moment §2.2/§2.3
+        # started writing rules into them by hand (docs/handoff-layout.md).
+        # This tool regenerates from the 39 originals and knows nothing about
+        # those rules, so an unguarded re-run deletes them silently -- the
+        # header comment survives an append, so it is not a usable marker.
+        # MANIFEST records the hash of what was last generated; anything that
+        # no longer matches has been edited since, and is not ours to discard.
+        manifest = _read_manifest()
+        edited = [name for name in ORDER
+                  if _hand_edited(d / f"{name}.css", manifest)]
+        if edited and not args.force:
+            print()
+            print("refusing to overwrite sheets edited since they were "
+                  "generated:")
+            for name in edited:
+                print(f"  {name}.css")
+            print("Port those rules back into the 39 sources first, or pass "
+                  "--force to discard them.")
+            return 1
+        written = {}
         print()
         for name in ORDER:
             body = emit(parts[name]) if parts[name] else ""
@@ -503,11 +559,14 @@ def main() -> int:
             else:
                 text = NEWLINE.join(header) + NEWLINE + body
             path = d / f"{name}.css"
+            written[path.name] = _sha(text)
             path.write_text(text, encoding="utf-8")
             total += len(text.encode())
             label = name + ".css"
             print(f"  {label:<18} {len(parts[name]):>4} rules  "
                   f"{len(text.encode()):>7,} b   @layer {layer}")
+        MANIFEST.write_text(json.dumps(written, indent=2) + NEWLINE,
+                            encoding="utf-8")
         print(f"  {'TOTAL':<18} {sum(len(v) for v in parts.values()):>4} rules  "
               f"{total:>7,} b")
     return 0
