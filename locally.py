@@ -117,13 +117,15 @@ from core.web.search import (_WEB_ANSWER_RESERVE, _searx, _web_grounded_blocks,
 from core.errors import _TurnError, openai_error
 from core.genai.results import extract_perf, extract_text, explain_genai_error
 from core.hardware.devices import (_device_mem_bytes, _gpu_has_xmx,
-                                   _gpu_shares_system_ram, _OS_RESERVE_BYTES,
+                                   _gpu_shares_system_ram,
                                    _usable_gpu_bytes)
 from core.hardware.memory import (_mem_status, _memory_snapshot, _process_memory,
                                   _settle_memory, _system_ram_bytes,
                                   _win_current_process)
 from core.media.images import load_image, pil_to_tensor
+from core.metrics import register_metrics_route
 from core.models.describe import _model_dirs_under, describe_model, scan_models
+from core.models.availability import add_live_fit_data
 from core.models.geometry import (_kv_bytes_per_token, _model_max_context,
                                   _moe_expert_fraction, _text_config)
 from core.models.identity import (_GENERIC_DIR_NAMES, _is_generative_dir,
@@ -360,6 +362,7 @@ app = Flask("locally",
             template_folder=os.path.join(config.SCRIPT_DIR, "templates"),
             static_folder=os.path.join(config.SCRIPT_DIR, "static"))
 app.config["MAX_CONTENT_LENGTH"] = config.MAX_REQUEST_BYTES
+register_metrics_route(app)
 # Jinja caches compiled templates for the life of the process unless this is on,
 # while /static is served fresh from disk every request (Cache-Control:
 # no-cache). A long-running server therefore pairs OLD html with NEW javascript
@@ -560,7 +563,7 @@ def _prewarm_slot(slot):
         gen.max_new_tokens = 1
         gen.do_sample = False
         t0 = time.perf_counter()
-        slot.generate_llm(raw_messages, gen)  # prefills -> populates prefix cache
+        slot.generate_llm(raw_messages, gen, record_metric=False)  # cache warmup, not a turn
         slot.prewarmed = True
         print(f"  [{slot.device_name}] pre-warmed prompt cache from "
               f"{os.path.basename(config.PREWARM_FILE)} ({time.perf_counter() - t0:.1f}s)",
@@ -620,6 +623,7 @@ def _health_data():
     # truth-tests it; the details live in prompt_cache_info (per-slot TTFT
     # and prewarm state are in each device's info block).
     result = {"status": overall_status(), "devices": devices,
+              "reserve_mb": round(config.GPU_RESERVE_BYTES / 2 ** 20),
               "prompt_cache": config.PROMPT_CACHE,
               "web_search": web_search_status(),
               "python_tool": python_tool_status(),
@@ -1436,7 +1440,9 @@ def _memory_data():
     would be worse than no HUD.
     """
     total, available = _mem_status()
-    usable, ceiling = _usable_gpu_bytes("GPU", "GPU") if "GPU" in runtime.DEVICES \
+    usable, ceiling = _usable_gpu_bytes(
+        "GPU", runtime.DEVICES["GPU"].get("id", "GPU"), available
+    ) if "GPU" in runtime.DEVICES \
         else (None, None)
     mib = 2 ** 20
 
@@ -1457,7 +1463,7 @@ def _memory_data():
     # Worst state across slots wins: one offloading model is the headline even
     # if another is comfortable.
     offloading = [s for s in slots if s["offload_ratio"]]
-    if available is not None and available < _OS_RESERVE_BYTES:
+    if available is not None and available < config.GPU_RESERVE_BYTES:
         state = "critical"
         message = (f"{available / 2 ** 30:.1f} GB free — the OS is close to "
                    f"paging, which collapses generation speed.")
@@ -1489,7 +1495,7 @@ def _memory_data():
             "usable_mb": usable and round(usable / mib),
             "shares_system_ram": _gpu_shares_system_ram("GPU")
             if "GPU" in runtime.DEVICES else None,
-            "reserve_mb": round(_OS_RESERVE_BYTES / mib),
+            "reserve_mb": round(config.GPU_RESERVE_BYTES / mib),
         },
         "slots": slots,
     }
@@ -1660,7 +1666,7 @@ def _available_models_data():
         if slot and slot.model_dir:
             loaded[os.path.realpath(slot.model_dir)] = slot.device_name
     data = []
-    for m in _available_models():
+    for m in add_live_fit_data(_available_models(), runtime.DEVICES):
         entry = dict(m)
         entry["loaded_on"] = loaded.get(os.path.realpath(m["path"]))
         data.append(entry)
@@ -5079,6 +5085,14 @@ def parse_args():
                         "stay off entirely when it already fits. '0' disables it; "
                         "1-99 pins a value. GPU + XMX + MoE only — it does nothing "
                         "on dense models or non-XMX GPUs, by design of the plugin.")
+    p.add_argument("--gpu-reserve-gb", type=float, default=3.0, metavar="N",
+                   help="System RAM to keep outside the shared-GPU budget in GB "
+                        "(default: 3). The reserve exists because an 18.3 GB model "
+                        "once 'fit' a 23.6 GB advertised ceiling on a machine with "
+                        "0.9 GB actually free, Windows paged it, and an A3B MoE "
+                        "touching a fresh expert set every token decoded at 0.5 "
+                        "tok/s out of the pagefile. 0 restores exactly that failure "
+                        "mode.")
     p.add_argument("--context-tokens", default=None, metavar="N",
                    help="Size the KV pool by the context you need, instead of "
                         "guessing gigabytes with --cache-size-gb: N tokens is "
@@ -5282,6 +5296,7 @@ def main():
               f"{config.PYTHON_TOOL_TIMEOUT:g}s, output cap "
               f"{config.PYTHON_TOOL_OUTPUT_BYTES} bytes)", flush=True)
     config.PROMPT_CACHE_GB = args.cache_size_gb
+    config.GPU_RESERVE_BYTES = int(max(0.0, args.gpu_reserve_gb) * 2 ** 30)
     if args.context_tokens is not None:
         raw = str(args.context_tokens).strip().lower()
         if raw == "auto":

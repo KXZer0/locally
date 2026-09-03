@@ -9,6 +9,10 @@ model/
 gpu-model/
 npu-model/
 models/
+# `core/models` is Python source; the broad machine-model rule above predates
+# that package and would otherwise hide every newly added source module there.
+!core/models/
+!core/models/*.py
 
 # --- Python environments ---------------------------------------------------
 venv/

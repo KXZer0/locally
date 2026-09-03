@@ -8,6 +8,8 @@ every VLM."""
 import json
 import os
 
+from core import config
+
 
 def _model_max_context(model_dir):
     """The model's own context ceiling, from config.json.
@@ -82,3 +84,17 @@ def _kv_bytes_per_token(model_dir):
         return 2 * layers * kv_heads * head_dim * 2
     except Exception:
         return None
+
+
+def _effective_kv_bytes_per_token(model_dir):
+    """KV bytes/token at the runtime's configured cache precision.
+
+    Model geometry is precision-independent, so `_kv_bytes_per_token` reports
+    the f16 baseline. OpenVINO's u8 KV cache stores one byte instead of two per
+    element; every live fit estimate and context-sized pool must apply that
+    same factor rather than silently continuing to budget f16.
+    """
+    fp16 = _kv_bytes_per_token(model_dir)
+    if fp16 is None:
+        return None
+    return fp16 // 2 if config.KV_PRECISION == "u8" else fp16

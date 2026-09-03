@@ -15,6 +15,7 @@ from core import config
 from core.genai.results import explain_genai_error, extract_perf, extract_text
 from core.genai.tokens import _count_tokens
 from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx, _usable_gpu_bytes
+from core.metrics import record_turn
 from core.models.geometry import _kv_bytes_per_token, _model_max_context, _moe_expert_fraction, _text_config
 from core.models.identity import is_vlm, model_display_name
 from core.models.integrity import _dir_size_bytes, _verify_weights_integrity
@@ -189,6 +190,27 @@ class DeviceSlot(MemoryPlanning):
             return ""
         return f", prefill {n / (self.last_ttft_ms / 1000):.0f} tok/s"
 
+    @staticmethod
+    def _message_text(raw_messages):
+        return "\n".join(str(msg.get("content") or "") for msg in raw_messages)
+
+    def _record_turn(self, prompt_text, completion_text, completion_tokens,
+                     started, finish_reason="stop", ttft_ms=None):
+        """Turn the measurements already used by log lines into JSON data."""
+        total_ms = (time.perf_counter() - started) * 1000
+        prompt_tokens = _count_tokens(self, prompt_text)
+        if completion_tokens is None:
+            completion_tokens = _count_tokens(self, completion_text)
+        record_turn(
+            device=self.device_name,
+            model=self.model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            ttft_ms=ttft_ms,
+            total_ms=total_ms,
+            finish_reason=finish_reason,
+        )
+
 
     def warmup(self):
         self.status = "warming_up"
@@ -237,7 +259,9 @@ class DeviceSlot(MemoryPlanning):
 
     def generate_vlm(self, text_prompt, images, gen):
         """VLM generate — images optional."""
+        self.last_ttft_ms = None
         with self.lock:
+            started = time.perf_counter()
             if images:
                 imgs = images[0] if len(images) == 1 else images
                 result = self.pipe.generate(
@@ -248,20 +272,29 @@ class DeviceSlot(MemoryPlanning):
                     prompt=text_prompt, generation_config=gen,
                 )
             self.last_used = time.time()
-        return extract_text(result)
+        text = extract_text(result)
+        ttft_ms, _ = extract_perf(result)
+        self.last_ttft_ms = ttft_ms
+        self._record_turn(text_prompt, text, None, started, ttft_ms=ttft_ms)
+        return text
 
-    def generate_llm(self, raw_messages, gen):
+    def generate_llm(self, raw_messages, gen, record_metric=True):
         """LLM generate — non-streaming."""
+        self.last_ttft_ms = None
         history = ovg.ChatHistory()
         for msg in raw_messages:
             history.append({"role": msg["role"], "content": msg["content"]})
         with self.lock:
+            started = time.perf_counter()
             result = self.pipe.generate(history, gen)
             self.last_used = time.time()
         ttft_ms, _ = extract_perf(result)
-        if ttft_ms is not None:
-            self.last_ttft_ms = ttft_ms
-        return extract_text(result)
+        self.last_ttft_ms = ttft_ms
+        text = extract_text(result)
+        if record_metric:
+            self._record_turn(self._message_text(raw_messages), text, None,
+                              started, ttft_ms=ttft_ms)
+        return text
 
     def cancel(self):
         """Signal the current generation to stop."""
@@ -272,6 +305,8 @@ class DeviceSlot(MemoryPlanning):
         token_queue = Queue()
         token_count = 0
         gen_error = [None]
+        ttft_ms = None
+        self.last_ttft_ms = None
 
         def streamer_callback(token):
             if self._cancel.is_set():
@@ -320,6 +355,9 @@ class DeviceSlot(MemoryPlanning):
                     break
                 if token is None:
                     break
+                if token_count == 0:
+                    ttft_ms = (time.perf_counter() - t0) * 1000
+                    self.last_ttft_ms = ttft_ms
                 token_count += 1
                 chunk = {
                     "id": completion_id, "object": "chat.completion.chunk",
@@ -356,6 +394,10 @@ class DeviceSlot(MemoryPlanning):
         print(f"{datetime.now():%H:%M:%S} -> [{self.device_name}] "
               f"VLM {token_count} tokens in {elapsed:.1f}s ({tps:.1f} tok/s){tag}",
               flush=True)
+        self._record_turn(text_prompt, "", token_count, t0,
+                          "cancelled" if was_cancelled else
+                          ("error" if gen_error[0] else "stop"),
+                          ttft_ms=ttft_ms)
 
     def stream_llm(self, raw_messages, gen, completion_id, created, t0):
         """LLM generate — SSE streaming."""
@@ -366,6 +408,8 @@ class DeviceSlot(MemoryPlanning):
         token_queue = Queue()
         token_count = 0
         cancelled = False
+        ttft_ms = None
+        self.last_ttft_ms = None
 
         def streamer_callback(token):
             if self._cancel.is_set():
@@ -425,7 +469,8 @@ class DeviceSlot(MemoryPlanning):
                     break
                 if token_count == 0:
                     # Wall-clock TTFT: prefill is over when the first token lands.
-                    self.last_ttft_ms = (time.perf_counter() - t0) * 1000
+                    ttft_ms = (time.perf_counter() - t0) * 1000
+                    self.last_ttft_ms = ttft_ms
                 token_count += 1
                 chunk = {
                     "id": completion_id, "object": "chat.completion.chunk",
@@ -467,6 +512,8 @@ class DeviceSlot(MemoryPlanning):
         print(f"{datetime.now():%H:%M:%S} -> [{self.device_name}] "
               f"{token_count} tokens in {elapsed:.1f}s ({tps:.1f} tok/s{ttft}){tag}",
               flush=True)
+        self._record_turn(self._message_text(raw_messages), "", token_count, t0,
+                          finish_reason, ttft_ms=ttft_ms)
 
     @property
     def info(self):
