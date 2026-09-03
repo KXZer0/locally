@@ -179,7 +179,7 @@ thinking models multiply by your patience.
   current date is supplied — without those, the model burned its whole budget inside
   `<think>` emitting no call at all (23.2 s → **4.2 s**), and dated its calendar queries
   to its training cutoff. `scripts/measure-tool-budget.py` reproduces the numbers.
-- **Exact local calculations** (`--python-tool`, off by default) — the Chat toggle gives the model one small server-side Python tool, so prime factors and other arithmetic are computed rather than guessed. The child runs with `-I` in a fresh temporary directory, has a hard kill timeout and capped stdout/stderr, and the UI shows the exact code and output. This is defence-in-depth for a small model or prompt-injected page, not a hostile-code jail.
+- **Exact local calculations** (`--python-tool`, off by default) — the Chat toggle gives the model one small server-side Python tool, so prime factors and other arithmetic are computed rather than guessed. In `auto` mode each run uses a disposable Podman container with no network, a read-only root, 512 MiB of memory, 64 PIDs, no capabilities and no privilege escalation; only the workspace is bind-mounted read-write. If Podman is absent, the response explicitly names the older subprocess guardrails and warns that they are not a security boundary.
 - **Prefix caching** (on by default) — a repeated prompt prefix (e.g. an agent's fixed system prompt) is prefilled once, not every turn — ~47× faster on cached turns
 - **MoE disk offload** (`--offload-ratio`) — run 30B-class MoE models on 16 GB-class XMX GPUs by streaming expert weights from disk (verified: 2.35 GB resident for a 15.2 GB model)
 - **Built-in web UI** — compact left sidebar for Chat, Voice, and each utility;
@@ -495,8 +495,10 @@ python locally.py --vad-dir ~/models/silero-vad --speaker-dir ~/models/speaker
 # cosines. Every verification also logs its score while the server runs.
 python locally.py --speaker-dir ~/models/speaker --speaker-threshold 0.42
 
-# Enable the server-side calculation tool (off by default)
-python nollama.py --python-tool --python-timeout 5
+# Enable the server-side calculation tool (off by default). Podman is the
+# automatic default; force either boundary with --python-sandbox.
+python locally.py --python-tool --python-timeout 5
+python locally.py --python-tool --python-sandbox subprocess
 
 # Change the default idle-unload timeout (default is 1800 = 30 min)
 python locally.py --idle-timeout 600     # unload after 10 min idle
@@ -537,7 +539,9 @@ through the OpenAI `tools` array, so this mode also works on an NPU. The direct
 utility endpoint is `POST /v1/util/python` with `{"code": "..."}`.
 `/health` reports whether the feature is enabled, its timeout/output caps, and
 the fixed prompt addition's byte count plus an exact tokenizer count when the
-loaded model exposes one.
+loaded model exposes one. It also reports `podman_available` and
+`machine_running` separately. The machine-state check is cached and refreshed
+in the background, so `/health` never waits for `podman machine inspect`.
 
 ### What have I got? (`--scan`)
 

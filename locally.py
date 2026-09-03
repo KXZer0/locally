@@ -132,7 +132,7 @@ from core.models.identity import (_GENERIC_DIR_NAMES, _is_generative_dir,
                                   model_display_name, resolve_display_name)
 from core.models.integrity import _dir_size_bytes, _verify_weights_integrity
 from core.models.irinfo import _flatten_rt_info, read_ir_rt_info, weight_precision
-from core.sandbox.python_exec import execute_python
+from core.sandbox.python_exec import execute_python, sandbox_status
 from core.tools.parse import parse_tool_calls
 from core.tools.render import (_suppress_think_for_tools, _tool_calls_to_text,
                                prepare_messages_for_tools, render_tools_prompt)
@@ -3011,6 +3011,7 @@ def _builtin_tool_turn(generate, raw_messages, specs, slot_for_fit=None):
 def python_tool_status():
     """Describe the opt-in local calculation tool for /health and the UI."""
     prompt = _python_tool_prompt()
+    sandbox = sandbox_status()
     token_count = None
     if PYTHON_TOOL_ENABLED and runtime.primary and runtime.primary.status != "not_configured":
         try:
@@ -3025,7 +3026,9 @@ def python_tool_status():
         "max_rounds": BUILTIN_TOOL_MAX_ROUNDS,
         "prompt_bytes": len(prompt.encode("utf-8")),
         "prompt_tokens": token_count,
-        "network": "blocked imports only; not a hostile-code jail on Windows",
+        **sandbox,
+        "network": ("none (Podman --network=none)" if sandbox["sandbox"] == "podman"
+                    else "subprocess import guardrails only"),
         "reason": None if PYTHON_TOOL_ENABLED else
                   "start with --python-tool to enable local calculations",
     }
@@ -5133,6 +5136,11 @@ def parse_args():
     p.add_argument("--python-tool", action="store_true",
                    help="Enable the server-side local Python calculation tool "
                         "(off by default; use only for local model turns).")
+    p.add_argument("--python-sandbox", choices=("auto", "podman", "subprocess"),
+                   default="auto",
+                   help="Boundary for Python calculations: Podman container, "
+                        "subprocess guardrails, or auto (default: Podman with "
+                        "an explicit subprocess fallback when unavailable).")
     p.add_argument("--python-timeout", type=float, default=config.PYTHON_TOOL_TIMEOUT,
                    metavar="SECS",
                    help="Hard timeout for one Python calculation child "
@@ -5274,13 +5282,15 @@ def main():
                                  if args.odysseus_autostart is not None
                                  else odysseus.load_autostart())
     PYTHON_TOOL_ENABLED = bool(args.python_tool)
+    config.PYTHON_SANDBOX = args.python_sandbox
     config.PYTHON_TOOL_TIMEOUT = max(0.1, min(60.0, float(args.python_timeout)))
     config.PYTHON_TOOL_OUTPUT_BYTES = max(1024, min(16 * 1024 * 1024,
                                               int(args.python_output_bytes)))
     if PYTHON_TOOL_ENABLED:
         print(f"  Python calculations enabled (child timeout "
               f"{config.PYTHON_TOOL_TIMEOUT:g}s, output cap "
-              f"{config.PYTHON_TOOL_OUTPUT_BYTES} bytes)", flush=True)
+              f"{config.PYTHON_TOOL_OUTPUT_BYTES} bytes, sandbox "
+              f"{sandbox_status()['sandbox']})", flush=True)
     config.PROMPT_CACHE_GB = args.cache_size_gb
     if args.context_tokens is not None:
         raw = str(args.context_tokens).strip().lower()
