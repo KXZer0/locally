@@ -113,6 +113,40 @@ driver compiler (a known vpux bug — `"Found N duplicated names"`). If you
 convert your own models for the NPU, use `download-model.ps1 -Weight
 int4-cw` (or `int8-cw`), which encodes the working recipe.
 
+## GGUF models (GPU/CPU only)
+
+Point `--model-dir` at a `.gguf` file and it loads, no conversion step:
+
+```bash
+python locally.py --model-dir ~/models/gguf/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf --device GPU
+```
+
+They also appear in the model picker and in `/v1/models/available` alongside
+OpenVINO IR models, and they get the same treatment: the KV pool is sized from
+the file's own geometry, `--context-tokens` works, and prefix caching is on.
+
+**Two limits, both hard.**
+
+*GPU and CPU only.* GGUF is block-quantized (Q4_K_M is 32-wide super-blocks with
+their own scales) and the NPU compiler needs channel-wise weights, so a GGUF is
+ruled out of the NPU with that reason rather than failing on it later. For the
+NPU, export an IR instead: `download-model.ps1 <model> -Convert -Weight int4-cw`.
+
+*Dense llama, qwen2 and qwen3 only.* That is what OpenVINO's reader implements.
+Anything else — gemma, hybrid-attention models like Qwen3.5/3.8, any MoE — is
+refused in about 100 ms by reading the architecture out of the file header,
+because loading it instead produces `IndexError: invalid unordered_map<K, T>
+key` 12-35 seconds in, naming neither the model nor the problem. Unsupported
+files still appear in the listing, marked unloadable with the reason attached,
+so a file you put there on purpose never silently disappears.
+
+**An IR is faster if you have the choice.** Measured on the same weights, same
+GPU, same prompts (`docs/handoff-gguf.md`): the OpenVINO IR loads in 15.9 s and
+decodes at 31.7 tok/s; the GGUF loads in 39.3 s and decodes at 25.6, and is 6 %
+larger on disk. Both scored 20/20 on the same factual set. GGUF is here so the
+community-published models — the abliterated builds in particular, which Intel
+does not publish — can be run at all.
+
 ## Big MoE models on small GPUs (disk offload)
 
 OpenVINO 2026.3 can stream Mixture-of-Experts weights from disk instead of

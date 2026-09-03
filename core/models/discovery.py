@@ -5,6 +5,7 @@ import os
 from core import config, runtime
 from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx
 from core.models.availability import add_live_fit_data
+from core.models.gguf import unsupported_reason as gguf_unsupported_reason
 from core.models.describe import _model_dirs_under
 from core.models.geometry import _moe_expert_fraction
 from core.models.identity import _is_generative_dir, is_vlm, model_display_name
@@ -55,8 +56,17 @@ def _available_models():
             if real in seen or not _is_generative_dir(d):
                 continue
             seen.add(real)
-            out.append({"name": model_display_name(d), "path": d,
-                        "type": "vlm" if is_vlm(d) else "llm"})
+            entry = {"name": model_display_name(d), "path": d,
+                     "type": "vlm" if is_vlm(d) else "llm"}
+            # A GGUF the reader cannot open is still a file the user put there
+            # on purpose. Hiding it invites "where did my model go"; listing it
+            # silently invites a load that fails. Listed, with the reason
+            # attached, so the UI can show it disabled and say why.
+            unsupported = gguf_unsupported_reason(d)
+            if unsupported:
+                entry["loadable"] = False
+                entry["reason"] = unsupported
+            out.append(entry)
     return sorted(out, key=lambda m: m["name"].lower())
 
 
@@ -68,6 +78,13 @@ def _device_can_host(device_name, device_id, model_dir, vlm):
     driver fail ten minutes later.
     """
     if device_name == "NPU":
+        if str(model_dir).lower().endswith(".gguf"):
+            # GGUF quantization is block-wise (Q4_K_M is 32-wide super-blocks
+            # with their own scales); the vpux compiler needs channel-wise IR
+            # and crashes on group-quantized weights. Nothing about the file
+            # can be adjusted to change that -- it needs a different export.
+            return False, ("GGUF is block-quantized; the NPU needs a "
+                           "channel-wise OpenVINO IR (-Weight int4-cw)")
         if vlm:
             return False, "NPU has no working vision path"
         # Group-quantized int4 crashes the NPU driver compiler ("Found N

@@ -9,6 +9,16 @@ import re
 import xml.etree.ElementTree as ET
 
 
+def _file_or_dir_size(path):
+    """Bytes on disk, for a GGUF file as readily as for an IR directory."""
+    if str(path).lower().endswith(".gguf"):
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return None
+    return _dir_size_bytes(path)
+
+
 def _dir_size_bytes(model_dir):
     """Total size of a model directory (≈ weight bytes). None on failure."""
     try:

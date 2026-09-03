@@ -6,6 +6,7 @@ offload ratio, resolving the real context window, and the two generate paths
 
 import gc
 import json
+import os
 import openvino_genai as ovg
 import threading
 import time
@@ -16,7 +17,8 @@ from core.genai.results import explain_genai_error, extract_perf, extract_text
 from core.genai.tokens import _count_tokens
 from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx, _usable_gpu_bytes
 from core.metrics import record_turn
-from core.models.gguf import unsupported_reason as gguf_unsupported_reason
+from core.models.gguf import (chat_template as gguf_chat_template,
+                              unsupported_reason as gguf_unsupported_reason)
 from core.models.geometry import _kv_bytes_per_token, _model_max_context, _moe_expert_fraction, _text_config
 from core.models.identity import is_vlm, model_display_name
 from core.models.integrity import _dir_size_bytes, _verify_weights_integrity
@@ -179,6 +181,38 @@ class DeviceSlot(MemoryPlanning):
             else:
                 self.pipe = ovg.LLMPipeline(str(model_dir), device=self.device_id,
                                             **offload)
+        self._ensure_chat_template(model_dir)
+
+    def _ensure_chat_template(self, model_dir):
+        """Give a GGUF slot a chat template, because its tokenizer has none.
+
+        genai converts a GGUF's tokenizer on the fly and the result carries no
+        chat template, so the first ChatHistory generate dies with "Chat
+        template must not be empty" -- after a 34 s load, on a model that
+        answers a plain string prompt perfectly. Setting it once here keeps both
+        generate paths on the single ChatHistory route rather than growing a
+        second, GGUF-only way to build a prompt.
+
+        The template comes from the file when it has one (3 of the 4 measured
+        here do) and from the architecture when it does not. Only qwen2/qwen3
+        have an architecture default: "llama" spans Llama 2, Llama 3 and their
+        derivatives with different formats between them, and a wrong template
+        produces fluent, confidently wrong answers rather than an error.
+        """
+        if not str(model_dir).lower().endswith(".gguf"):
+            return
+        template = gguf_chat_template(model_dir)
+        if not template:
+            raise RuntimeError(
+                f"{os.path.basename(str(model_dir))} carries no chat template "
+                f"and locally has no safe default for its architecture. Pair it "
+                f"with a converted tokenizer from the matching OpenVINO repo, "
+                f"or use an OpenVINO IR export of this model.")
+        try:
+            self.pipe.get_tokenizer().set_chat_template(template)
+        except Exception as e:
+            raise RuntimeError(
+                f"could not apply a chat template to {os.path.basename(str(model_dir))}: {e}")
 
     def prefill_note(self, text_prompt):
         """' (prefill 2043 tok/s)' for the log line, or ''.

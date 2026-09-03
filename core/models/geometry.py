@@ -11,6 +11,10 @@ import os
 from core import config
 
 
+def _is_gguf(path):
+    return str(path).lower().endswith(".gguf")
+
+
 def _model_max_context(model_dir):
     """The model's own context ceiling, from config.json.
 
@@ -19,6 +23,9 @@ def _model_max_context(model_dir):
     exists when prefix caching is on -- which is why deriving the context
     window from the pool alone left GPU slots reporting nothing at all.
     """
+    if _is_gguf(model_dir):
+        from core.models import gguf
+        return gguf.max_context(model_dir)
     try:
         return int(_text_config(model_dir).get("max_position_embeddings") or 0) or None
     except Exception:
@@ -141,6 +148,14 @@ def _kv_bytes_for_context(model_dir, tokens):
       pool budgeted in f16 while the cache is written in u8 is twice the memory
       nobody asked for. Same factor `_effective_kv_bytes_per_token` applies.
     """
+    if _is_gguf(model_dir):
+        # No sliding-window or linear layers reach this path: the reader takes
+        # dense architectures only, so the total really is a straight line.
+        rate = _kv_bytes_per_token(model_dir)
+        if rate is None:
+            return None
+        total = rate * tokens
+        return total // 2 if config.KV_PRECISION == "u8" else total
     try:
         cfg = _text_config(model_dir)
         per_layer = _kv_bytes_per_layer_token(cfg)
@@ -164,6 +179,9 @@ def _kv_bytes_per_token(model_dir):
     holds only the vision/text split), so read through that when present —
     otherwise every VLM silently skipped the KV half of the preflight.
     """
+    if _is_gguf(model_dir):
+        from core.models import gguf
+        return gguf.kv_bytes_per_token(model_dir)
     try:
         cfg = _text_config(model_dir)
         return _kv_attention_layers(cfg) * _kv_bytes_per_layer_token(cfg)

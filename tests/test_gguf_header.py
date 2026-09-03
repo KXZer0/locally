@@ -20,7 +20,8 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.models.gguf import read_metadata, unsupported_reason
+from core.models.gguf import (chat_template, geometry, kv_bytes_per_token,
+                              max_context, read_metadata, unsupported_reason)
 
 
 def _kv_string(key, value):
@@ -148,6 +149,82 @@ class GgufHeaderTests(unittest.TestCase):
         # No architecture was reached, so the check has no opinion -- it must
         # not invent one in either direction.
         self.assertIsNone(unsupported_reason(p))
+
+
+class GgufGeometryTests(unittest.TestCase):
+    """The header carries what config.json carries, and every sizing helper
+    returned None for a .gguf before it was read."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def _write(self, name, pairs):
+        path = os.path.join(self.dir, name)
+        write_gguf(path, pairs)
+        return path
+
+    def test_kv_rate_matches_the_ir_of_the_same_weights(self):
+        # The real Huihui-Qwen3-8B GGUF: 36 blocks, 8 KV heads, key_length 128.
+        # 2 * 36 * 8 * 128 * 2 = 147,456 -- 144 KB/token, which is exactly what
+        # --scan reports for the OpenVINO export of the same model.
+        p = self._write("q3.gguf", [
+            _kv_string("general.architecture", "qwen3"),
+            _kv_u32("qwen3.block_count", 36),
+            _kv_u32("qwen3.attention.head_count", 32),
+            _kv_u32("qwen3.attention.head_count_kv", 8),
+            _kv_u32("qwen3.attention.key_length", 128),
+            _kv_u32("qwen3.context_length", 40960),
+        ])
+        self.assertEqual(kv_bytes_per_token(p), 147456)
+        self.assertEqual(max_context(p), 40960)
+
+    def test_head_dim_falls_back_to_embedding_width(self):
+        # Qwen2.5-Coder-7B ships no key_length: 3584 / 28 heads = 128, giving
+        # 56 KB/token against the ~57 KB CLAUDE.md recorded.
+        p = self._write("q2.gguf", [
+            _kv_string("general.architecture", "qwen2"),
+            _kv_u32("qwen2.block_count", 28),
+            _kv_u32("qwen2.attention.head_count", 28),
+            _kv_u32("qwen2.attention.head_count_kv", 4),
+            _kv_u32("qwen2.embedding_length", 3584),
+        ])
+        self.assertEqual(geometry(p)["head_dim"], 128)
+        self.assertEqual(kv_bytes_per_token(p) // 1024, 56)
+
+    def test_missing_geometry_is_none_not_a_guess(self):
+        p = self._write("bare.gguf", [_kv_string("general.architecture", "qwen3")])
+        self.assertIsNone(geometry(p))
+        self.assertIsNone(kv_bytes_per_token(p))
+
+
+class GgufChatTemplateTests(unittest.TestCase):
+    """A converted GGUF tokenizer has no chat template, so ChatHistory
+    generation fails after the load unless one is supplied."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def test_embedded_template_wins(self):
+        p = os.path.join(self.dir, "emb.gguf")
+        write_gguf(p, [_kv_string("general.architecture", "qwen3"),
+                       _kv_string("tokenizer.chat_template", "MINE")])
+        self.assertEqual(chat_template(p), "MINE")
+
+    def test_qwen_falls_back_to_chatml(self):
+        for arch in ("qwen2", "qwen3"):
+            p = os.path.join(self.dir, f"{arch}.gguf")
+            write_gguf(p, [_kv_string("general.architecture", arch)])
+            t = chat_template(p)
+            self.assertIn("<|im_start|>", t)
+            self.assertIn("add_generation_prompt", t)
+
+    def test_llama_gets_no_guess(self):
+        # "llama" spans Llama 2, Llama 3 and derivatives with different
+        # formats; a wrong template answers fluently and wrongly, which is
+        # worse than refusing.
+        p = os.path.join(self.dir, "llama.gguf")
+        write_gguf(p, [_kv_string("general.architecture", "llama")])
+        self.assertIsNone(chat_template(p))
 
 
 if __name__ == "__main__":

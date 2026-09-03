@@ -80,6 +80,32 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
   `--prewarm` with idle unload warns, since unload discards the warmed cache and the reload
   path deliberately does NOT re-warm (a synchronous re-warm would stall the triggering
   request pre-SSE and trip the client watchdogs the heartbeat exists to defeat).
+- **GGUF loads on GPU/CPU, and the header is read before the file is** (2026-09-03).
+  A `.gguf` path works anywhere a model directory does: it is listed by
+  `/v1/models/available`, its KV pool is sized from `<arch>.block_count` and
+  `attention.head_count_kv` in the header exactly as an IR is sized from
+  `config.json`, and prefix caching is on (measured: first turn 13.7 s, second
+  0.5 s). `core/models/gguf.py` reads the header. **Three things it must keep
+  doing.** (1) Refuse an architecture the reader does not implement -- dense
+  llama/qwen2/qwen3 only -- because loading one instead gives `IndexError:
+  invalid unordered_map<K, T> key` 12-35 s in, naming nothing; the check costs
+  ~100 ms. Match the safelist EXACTLY: Qwen3.8 reports `qwen35`, one character
+  from a supported name. (2) Never block on doubt -- a truncated, empty,
+  wrong-magic or unparsable file returns "no opinion", because refusing
+  something loadable is worse than the error being replaced. (3) Set a chat
+  template at load: genai converts the tokenizer on the fly and the result has
+  none, so ChatHistory generation dies with "Chat template must not be empty"
+  after a 27 s load on a model that answers a plain string fine. The file
+  usually carries one; qwen2/qwen3 fall back to ChatML. `llama` deliberately
+  has no default -- it spans three formats, and a wrong template answers
+  fluently and wrongly.
+  **The IR is better when you have the choice**: same weights, same GPU, IR
+  loads 15.9 s / 31.7 tok/s against GGUF 39.3 s / 25.6, and is 6% smaller.
+  That last number retracts the old "GGUF is 5-10% smaller" claim, which
+  compared against int4 g64 rather than the channel-wise export actually used.
+  Do **not** pass `enable_save_ov_model`: it wrote 5.3 GB into the directory
+  holding four unrelated GGUFs, unqualified by source model, and did not reuse
+  it. See docs/handoff-gguf.md.
 - **Anthropic Messages API** (`POST /v1/messages`, `/v1/messages/count_tokens`) — the
   same trick as the Ollama shim, for Claude Code: it speaks Anthropic, so locally does
   too, and the real CLI drives a local NPU/iGPU model with `ANTHROPIC_BASE_URL` +

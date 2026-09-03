@@ -81,6 +81,13 @@ def resolve_display_name(model_dir):
     directory is the one naming interface that needs no documentation, so it
     has to work.
     """
+    if str(model_dir).lower().endswith(".gguf"):
+        # The filename is the only name a GGUF has, and it is what the user
+        # will type as a model ID. Keep the quantization tag -- Q4_K_M and
+        # Q8_0 of one model are different models to anyone choosing between
+        # them -- and drop only the extension.
+        stem = os.path.basename(os.path.normpath(os.path.abspath(model_dir)))
+        return stem[:-5], "GGUF filename"
     given = _strip_name_suffixes(
         os.path.basename(os.path.normpath(os.path.abspath(model_dir))))
     if given.lower() not in _GENERIC_DIR_NAMES:
@@ -107,6 +114,10 @@ def model_display_name(model_dir):
 
 
 def _is_model_dir(path):
+    # A GGUF is one file, not a directory of them, so "is this a model" cannot
+    # be answered by looking for an .xml beside it.
+    if str(path).lower().endswith(".gguf"):
+        return os.path.isfile(path)
     return any(os.path.isfile(os.path.join(path, f)) for f in
                ("openvino_model.xml", "openvino_language_model.xml",
                 "openvino_encoder_model.xml"))
@@ -119,6 +130,10 @@ def _is_generative_dir(path):
     dirs, but they belong in the ASR/TTS slots. Offering them as chat models
     would just be a load that fails a minute later.
     """
+    if str(path).lower().endswith(".gguf"):
+        # The reader is text-only and refuses anything but dense llama/qwen2/
+        # qwen3, so a .gguf that gets this far is a chat model by construction.
+        return True
     if os.path.isdir(os.path.join(path, "voices")):
         return False                                   # Kokoro-style TTS
     try:

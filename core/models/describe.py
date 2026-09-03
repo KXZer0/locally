@@ -70,21 +70,33 @@ def describe_model(model_dir):
 
 
 def _model_dirs_under(path, depth):
-    """Model directories at or below `path`, searching `depth` levels down."""
+    """Models at or below `path`, searching `depth` levels of directories.
+
+    "Models", not "directories": a GGUF is a single FILE, and people keep them
+    together in one folder rather than one folder each. `~/models/gguf/` is
+    therefore a directory of four models, which the depth budget would spend
+    before looking inside -- so files are collected at every level and only the
+    recursion into subdirectories is charged against `depth`.
+    """
+    if str(path).lower().endswith(".gguf"):
+        return [path] if os.path.isfile(path) else []
     if not os.path.isdir(path):
         return []
     if _is_model_dir(path):
         return [path]
-    if depth <= 0:
-        return []
     found = []
     try:
-        for entry in sorted(os.listdir(path)):
-            sub = os.path.join(path, entry)
-            if os.path.isdir(sub) and not entry.startswith("."):
-                found.extend(_model_dirs_under(sub, depth - 1))
+        entries = sorted(os.listdir(path))
     except OSError:
-        pass
+        return found
+    for entry in entries:
+        if entry.startswith("."):
+            continue
+        sub = os.path.join(path, entry)
+        if entry.lower().endswith(".gguf") and os.path.isfile(sub):
+            found.append(sub)
+        elif depth > 0 and os.path.isdir(sub):
+            found.extend(_model_dirs_under(sub, depth - 1))
     return found
 
 
