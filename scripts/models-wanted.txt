@@ -1,0 +1,33 @@
+# Download queue for the REBUILD-PLAN agent tasks (2026-09-02).
+# Format: <hf_repo> <dest_dir> [basename_glob]
+# Serial by design — see scripts/fetch-models.sh for why.
+
+# --- AGENT TASK A: abliterated 8B for the NPU slot -------------------------
+# Dense Qwen3-8B, safetensors only, zero pickle, zero remote code, Apache-2.0.
+# Source for a self-export: -Weight int4-cw (channel-wise, the NPU-safe form).
+# Do NOT substitute mlabonne/* — fp32, 2-6x the bytes, identical after quant.
+huihui-ai/Huihui-Qwen3-8B-abliterated-v2  ~/models/src/Huihui-Qwen3-8B-abliterated-v2
+
+# --- AGENT TASK B: the GPU default candidate ------------------------------
+# Already OpenVINO IR, int8, official Intel, published 2026-06-11. No convert.
+OpenVINO/Qwen3.5-9B-int8-ov  ~/models/Qwen3.5-9B-int8-ov
+
+# --- Abliterated test set --------------------------------------------------
+# 1. Abliterated twin of the Task B model. Hybrid attention (Gated DeltaNet):
+#    int4 corrupts it (optimum-intel #1722), so export int8 only. GPU/CPU only,
+#    never NPU.
+huihui-ai/Huihui-Qwen3.5-9B-abliterated  ~/models/src/Huihui-Qwen3.5-9B-abliterated
+
+# 2. Same weights as Task A, but GGUF — the A/B that tells us whether the
+#    openvino-genai GGUF reader (dense llama/qwen2/qwen3 only) is worth a path
+#    of its own, measured against our own IR export of the identical model.
+mradermacher/Huihui-Qwen3-8B-abliterated-v2-GGUF  ~/models/gguf  *Q4_K_M.gguf
+
+# 3. gemma-4-12b heretic — unsupported arch for both the GGUF reader and a
+#    clean OV export, so this one only ever runs behind --proxy-url (llama.cpp).
+#    Small enough (6.9 GB) to stay resident next to everything else.
+culturerevolt/gemma-4-12b-heretic-abliterated-GGUF  ~/models/gguf  *Q4_K_M.gguf
+
+# 4. The clean-boot big model: 27B heretic at 15.4 GB. Fits only when the
+#    machine is not loaded (REBUILD-PLAN 3.2g). Proxy route as well.
+0bserverx/Qwen3.8-27B-Heretic-Abliterated-Uncensored-GGUF  ~/models/gguf  Qwen3.8-27B-Heretic-Q4_K_M.gguf

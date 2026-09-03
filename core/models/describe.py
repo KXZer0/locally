@@ -7,7 +7,7 @@ No server, no device init, no model load."""
 import json
 import os
 
-from .geometry import (_kv_bytes_per_token, _model_max_context,
+from .geometry import (_kv_attention_layers, _kv_bytes_per_token, _model_max_context,
                        _text_config)
 from .identity import (_is_generative_dir, _is_model_dir, is_vlm,
                        resolve_display_name)
@@ -61,6 +61,7 @@ def describe_model(model_dir):
         "precision": weight_precision(model_dir, rt),
         "size_bytes": _dir_size_bytes(model_dir),
         "kv_per_token": _kv_bytes_per_token(model_dir),
+        "kv_layers": _kv_attention_layers(geo) if geo.get("num_hidden_layers") else None,
         "integrity": _verify_weights_integrity(model_dir),
         "openvino_version": rt.get("Runtime_version"),
         "optimum_intel_version": rt.get("optimum/optimum_intel_version"),
@@ -143,7 +144,15 @@ def scan_models(paths):
                   f"{active} active per token")
         geometry = []
         if info["layers"]:
-            geometry.append(f"{info['layers']} layers")
+            # Say the split when it exists: "32 layers, 32 KB/token KV" reads
+            # like an error on a model whose 24 linear-attention layers hold no
+            # cache at all, and that arithmetic is what sizes the KV pool.
+            if info["kv_layers"] and info["kv_layers"] != info["layers"]:
+                geometry.append(f"{info['layers']} layers "
+                                f"({info['kv_layers']} full-attention, "
+                                f"{info['layers'] - info['kv_layers']} linear)")
+            else:
+                geometry.append(f"{info['layers']} layers")
         if info["context"]:
             geometry.append(f"{info['context']:,}-token context")
         if info["kv_per_token"]:

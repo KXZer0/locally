@@ -20,7 +20,8 @@ import openvino as ov
 from core import config
 from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx, _usable_gpu_bytes
 from core.hardware.memory import _mem_status
-from core.models.geometry import (_kv_bytes_per_token, _model_max_context,
+from core.models.geometry import (_kv_bytes_for_context, _kv_bytes_per_token,
+                                  _model_max_context,
                                   _moe_expert_fraction, _text_config)
 from core.models.integrity import _dir_size_bytes
 
@@ -81,11 +82,16 @@ class MemoryPlanning:
             gb = max(1, int(spare // gib))
             note = " (auto)"
         else:
-            gb = max(1, -(-config.CONTEXT_TOKENS * per_tok // gib))  # ceil
+            # Not tokens * per_tok: on a sliding-window model the total is a
+            # line plus a constant, and the constant is what a short context is
+            # almost entirely made of. See _kv_bytes_for_context.
+            need = _kv_bytes_for_context(self.model_dir, config.CONTEXT_TOKENS)                 or config.CONTEXT_TOKENS * per_tok
+            gb = max(1, -(-need // gib))  # ceil
             note = f" (for --context-tokens {config.CONTEXT_TOKENS})"
 
         if max_ctx:
-            cap = max(1, -(-max_ctx * per_tok // gib))
+            cap_bytes = _kv_bytes_for_context(self.model_dir, max_ctx) or max_ctx * per_tok
+            cap = max(1, -(-cap_bytes // gib))
             if gb > cap:
                 gb, note = cap, note + f", capped at the model's {max_ctx // 1024}k context"
         return int(gb), note

@@ -474,8 +474,9 @@ def _hand_edited(path: pathlib.Path, manifest: dict) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--order", default="templates/index.html",
-                    help="the HTML whose <link> order defines the cascade")
+    ap.add_argument("--order", default="scripts/css-load-order.txt",
+                    help="what defines the cascade: the recorded filename list, "
+                         "or an HTML file whose <link> order to read")
     ap.add_argument("--write")
     ap.add_argument("--split", metavar="DIR",
                     help="write the nine concern sheets into DIR")
@@ -489,15 +490,32 @@ def main() -> int:
                          "by hand since (their rules are lost)")
     args = ap.parse_args()
 
-    # The load order IS the cascade, so it has to come from the page that
-    # declared it. Once the template points at the generated sheets, pass the
-    # saved copy of the 39-link version with --order.
-    order_file = pathlib.Path(args.order).read_text(encoding="utf-8")
-    hrefs = re.findall(r'href="/static/css/([^"]+\.css)"', order_file)
+    # The load order IS the cascade, so it has to be read rather than assumed.
+    # It used to default to templates/index.html, which stopped being the truth
+    # the moment that template started pointing at the sheets this tool WRITES:
+    # re-running it would have read nine generated files and quietly rebuilt
+    # them from themselves. scripts/css-load-order.txt is the recorded order and
+    # cannot drift that way; an HTML file still works if one is passed.
+    order_text = pathlib.Path(args.order).read_text(encoding="utf-8")
+    hrefs = re.findall(r'href="/static/css/([^"]+\.css)"', order_text)
+    if not hrefs:
+        hrefs = [ln.strip() for ln in order_text.splitlines()
+                 if ln.strip().endswith(".css") and not ln.startswith("#")]
+    if not hrefs:
+        print(f"no stylesheet order found in {args.order}")
+        return 1
     files = [CSS_DIR / h for h in hrefs]
-    missing = [f for f in files if not f.exists()]
+    missing = [f.name for f in files if not f.exists()]
     if missing:
-        print("missing:", missing)
+        # The 39 sources are deliberately not in the tree any more -- they were
+        # replaced by what this tool produced. Say where they are rather than
+        # printing a list of paths and leaving the reader to work it out.
+        print(f"{len(missing)} of the {len(files)} source sheets are not in "
+              f"{CSS_DIR}: {', '.join(missing[:4])}"
+              + (" ..." if len(missing) > 4 else ""))
+        print("They were replaced by the sheets this tool generates. Recover "
+              "them first:")
+        print(f"    git checkout c6a8c9d -- {CSS_DIR.as_posix()}")
         return 1
 
     items, stats = resolve(files)
