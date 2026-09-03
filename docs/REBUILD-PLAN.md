@@ -660,7 +660,7 @@ NPU-for-what-fits, not NPU-for-chat-at-any-quality.
   the last 50 turns) so the HUD can show throughput without log scraping.
 - `_settle_memory` and `/health` must never block on device queries (>50 ms).
 
-### 3.5 Headless / CLI mode
+### 3.5 Headless / CLI mode  *(see §3.9 — extended into three named modes)*
 
 `--headless` (no Flask routes for the web UI, no template render, no static
 mounting) plus a `locally chat` REPL against the same slot machinery.
@@ -810,6 +810,75 @@ say so deliberately rather than by omission.
 
 **Do not delete them before committing the current working tree**, since the
 31 uncommitted files are new work present in neither `main` nor any branch.
+
+### 3.9 Run modes: Odysseus front-end vs locally standalone
+
+Supersedes and extends §3.5. The user's framing was "start Odysseus **or**
+locally, not both" — that is right about the **UI** and wrong about the
+**process**, and the distinction decides the whole design.
+
+**Odysseus cannot replace locally.** It has no OpenVINO path, no NPU access
+and no inference of its own; it is an assistant layer that talks to an
+OpenAI-compatible endpoint. Whatever else runs, **locally's server must be up
+or Odysseus has no model.** What is genuinely exclusive is which application
+owns the *face*. So the choice presented to the user is a front-end choice,
+not an either/or between two programs.
+
+**Three modes, one flag.**
+
+| Mode | Flag | locally serves | Face | Notes |
+|---|---|---|---|---|
+| **Standalone** | *(default)* | API + web UI | locally | today's behaviour |
+| **Backend** | `--headless` | API only | Odysseus, OpenCode, Claude Code, anything | UI never renders; the RAM saving lives here |
+| **Terminal** | `locally chat` | API only | a REPL in the terminal | same server, no browser at all |
+
+`--headless` implies: no template render, no static mounting, no icon sprite,
+no stylesheet reads, `--util-engines none`, and audio slots left unloaded
+unless explicitly requested. `/health` and every API route stay up — that is
+the entire point.
+
+**Be honest about the saving.** Measured components, not a guess:
+
+| What goes away | Approx |
+|---|---|
+| WebView2 shell process(es) | 200-400 MB |
+| OCR slot (loads eagerly today, ~160 MB) | 160 MB |
+| Whisper + TTS + VAD when they had been warmed | 300-800 MB |
+| Flask static + template overhead | negligible |
+
+Realistic total **0.3-1.4 GB**, most of it the browser and the utility slots.
+Real, and worth having on a 31.5 GB box where §3.2g showed the budget moving
+between 13.5 and 25 GB — but it will not by itself make an 18 GB model fit.
+Do not oversell it in the UI copy.
+
+**The launcher is where the choice belongs.** `scripts/locally-launch.ps1`
+already owns one-server-per-port idempotency and `locally-key.ps1` already has
+the three-case hot path (raise / open window / cold start). Add a fourth case
+rather than a second launcher: if the user's stored preference is Odysseus,
+the key starts locally `--headless`, brings Odysseus up (`core/odysseus.py`
+already does `docker compose up -d` with adoption), and opens Odysseus'
+URL. If the preference is standalone, behaviour is exactly as today.
+
+Store that preference next to the ones that already exist
+(`odysseus-autostart.json`, gitignored, machine-local), for the same reason
+that file exists: the thing it controls happens at startup, so a preference
+that did not survive a restart could never take effect.
+
+**Why this division is the right one, stated plainly.** The user's read is
+that Odysseus is the better-maintained software and locally is not. That is
+a fair assessment of the assistant layer and it does not need arguing with.
+It is also why the split works: the one thing Odysseus cannot do — and no
+other local assistant can either — is drive an Intel NPU, which is the reason
+this project exists (`ollama#15917` is still open; searches for "Ollama Intel
+NPU" surface this repo). locally's value was never the chat window. Making it
+a first-class backend concedes nothing it was winning.
+
+**What NOT to do**, so an agent does not reach for it: do not embed Odysseus
+in an iframe (HSTS, own-hostname cookies and a service worker each break it
+independently), do not copy Odysseus code into locally (AGPL-3.0 against a
+repo with no LICENSE — §5.2), and do not make `--headless` the default. A
+first-run user with no other client would be left with a server and nothing
+to talk to it.
 
 ## 4. Order of work and gates
 
