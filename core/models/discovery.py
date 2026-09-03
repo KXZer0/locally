@@ -1,0 +1,175 @@
+"""Discover loadable models and choose the device that can host one."""
+
+import os
+
+from core import config, runtime
+from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx
+from core.models.describe import _model_dirs_under
+from core.models.geometry import _moe_expert_fraction
+from core.models.identity import _is_generative_dir, is_vlm, model_display_name
+from core.models.integrity import _dir_size_bytes
+from core.models.irinfo import read_ir_rt_info
+
+def _models_data():
+    data = []
+    for slot in (runtime.primary, runtime.secondary):
+        if slot and slot.status == "ready":
+            data.append({
+                "id": f"{slot.model_name}@{slot.device_name}",
+                "object": "model",
+                "created": 0,
+                "owned_by": f"local-{slot.device_name.lower()}",
+            })
+    if runtime.whisper_slot and runtime.whisper_slot.status == "ready":
+        data.append({
+            "id": f"whisper@{runtime.whisper_slot.device_name}",
+            "object": "model",
+            "created": 0,
+            "owned_by": f"local-{runtime.whisper_slot.device_name.lower()}",
+        })
+    return {"object": "list", "data": data}
+
+
+def _available_models():
+    """Model directories on disk that could be loaded into a slot.
+
+    Searched: --models-dir if given, else the parents of whatever is already
+    loaded (so `--model-dir ~/models/foo` makes all of ~/models visible)
+    plus the script dir and ~/models. One model reached by two paths is one
+    model — install.ps1 links model/ at a directory in ~/models.
+    """
+    roots = []
+    if runtime.MODELS_DIR:
+        roots.append(runtime.MODELS_DIR)
+    else:
+        for slot in (runtime.primary, runtime.secondary):
+            if slot and slot.model_dir:
+                roots.append(os.path.dirname(os.path.abspath(slot.model_dir)))
+        roots += [config.SCRIPT_DIR, os.path.expanduser("~/models")]
+
+    seen, out = set(), []
+    for root in roots:
+        for d in _model_dirs_under(os.path.normpath(os.path.expanduser(root)), 1):
+            real = os.path.realpath(d)
+            if real in seen or not _is_generative_dir(d):
+                continue
+            seen.add(real)
+            out.append({"name": model_display_name(d), "path": d,
+                        "type": "vlm" if is_vlm(d) else "llm"})
+    return sorted(out, key=lambda m: m["name"].lower())
+
+
+def _device_can_host(device_name, device_id, model_dir, vlm):
+    """(ok, reason) — whether this device can serve this model at all.
+
+    Capability first, memory second: a model that the NPU cannot execute is
+    not "a tight fit", it's the wrong device, and saying so beats letting the
+    driver fail ten minutes later.
+    """
+    if device_name == "NPU":
+        if vlm:
+            return False, "NPU has no working vision path"
+        # Group-quantized int4 crashes the NPU driver compiler ("Found N
+        # duplicated names") — channel-wise is required. Read what the
+        # weights actually are, not what the folder is called.
+        try:
+            rt = read_ir_rt_info(model_dir)
+            gs = rt.get("nncf/weight_compression/group_size")
+            mode = (rt.get("nncf/weight_compression/mode") or "")
+            if "int4" in mode and gs not in (None, "", "-1", -1):
+                return False, f"NPU needs channel-wise int4 (this is group_size {gs})"
+        except Exception:
+            pass
+
+    mem = _device_mem_bytes(device_name, device_id)
+    weights = _dir_size_bytes(model_dir)
+    if not mem or not weights:
+        # The NPU exposes no memory-budget property — it allocates from system
+        # RAM on demand — so "unknown" here is normal, not a warning sign.
+        return True, ("no budget reported (allocates from system RAM)"
+                      if device_name == "NPU" else "fit unknown")
+    kv = (config.PROMPT_CACHE_GB * 2 ** 30
+          if config.PROMPT_CACHE and not vlm and device_name in ("GPU", "CPU") else 0)
+    need = (weights + kv) * 1.1
+    if need > mem:
+        # MoE disk offload keeps only part of the experts resident, so a model
+        # over budget can still fit — don't rule the device out on size alone.
+        # Only where offload actually does something, though: a dense model or
+        # a non-XMX GPU would sail past this check and then fail to load.
+        if (config.OFFLOAD_RATIO and device_name == "GPU"
+                and _moe_expert_fraction(model_dir) and _gpu_has_xmx(device_id)):
+            return True, ("over budget, fits by streaming expert weights"
+                          if config.OFFLOAD_RATIO == "auto" else
+                          f"over budget but --offload-ratio {config.OFFLOAD_RATIO} is on")
+        return False, (f"needs ~{need / 2**30:.1f} GB, "
+                       f"{device_name} budget is {mem / 2**30:.1f} GB")
+    return True, f"fits ({need / 2**30:.1f}/{mem / 2**30:.1f} GB)"
+
+
+def _choose_device(model_dir, preferred=None):
+    """Pick which DEVICE should host a model. Returns (name, id, why).
+
+    Considers every device on the machine, not only ones that already hold a
+    slot — otherwise a single-slot ("one model at a time") setup could never
+    use the NPU, and the one model the NPU can actually run would be stuck on
+    the GPU. The slot is moved to the chosen device by the caller.
+    """
+    vlm = is_vlm(model_dir)
+    # CPU is a legal target but a poor default (see TODONT.md), so it's only
+    # considered when nothing else can host the model.
+    order = [k for k in ("GPU", "NPU", "CPU") if k in runtime.DEVICES]
+    notes = []
+
+    def dev_id(kind):
+        return runtime.DEVICES.get(kind, {}).get("id", kind)
+
+    if preferred:
+        if preferred not in runtime.DEVICES:
+            return None, None, f"no device '{preferred}' on this machine"
+        ok, why = _device_can_host(preferred, dev_id(preferred), model_dir, vlm)
+        if ok:
+            return preferred, dev_id(preferred), why
+        notes.append(f"{preferred}: {why}")
+
+    # NPU first when it can actually run the model. locally is NPU-first by
+    # design, and the NPU is the low-power engine — a text model it can host
+    # belongs there, leaving the GPU free. _device_can_host has already ruled
+    # the NPU out for vision and group-quantized int4, so anything reaching
+    # here genuinely runs. GPU next (it does vision and tool calling), CPU
+    # last (see TODONT.md — Ollama is the better tool for CPU-only).
+    rank = {"NPU": 0, "GPU": 1, "CPU": 2}
+
+    for kind in sorted(order, key=lambda k: rank.get(k, 9)):
+        if preferred and kind == preferred:
+            continue
+        ok, why = _device_can_host(kind, dev_id(kind), model_dir, vlm)
+        if ok:
+            if not notes:
+                prefix = ""
+            elif preferred:
+                prefix = f"moved from {preferred} ({'; '.join(notes)}); "
+            else:
+                # No device was asked for — the notes explain what was skipped
+                # on the way here, which is the useful part.
+                prefix = f"ruled out {'; '.join(notes)}; "
+            return kind, dev_id(kind), f"{prefix}{kind}: {why}"
+        notes.append(f"{kind}: {why}")
+
+    return None, None, "; ".join(notes) or "no device can host this model"
+
+
+def _available_models_data():
+    """Models on disk, loaded or not — the menu for POST /v1/models/load."""
+    loaded = {}
+    for slot in (runtime.primary, runtime.secondary):
+        if slot and slot.model_dir:
+            loaded[os.path.realpath(slot.model_dir)] = slot.device_name
+    data = []
+    for m in _available_models():
+        entry = dict(m)
+        entry["loaded_on"] = loaded.get(os.path.realpath(m["path"]))
+        data.append(entry)
+    return {"object": "list", "data": data,
+            "devices": [s.device_name for s in (runtime.primary, runtime.secondary) if s]}
+
+

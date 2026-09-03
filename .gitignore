@@ -5,10 +5,15 @@
 # how the project works and why. Nothing below does.
 
 # --- models (huge, and yours) ----------------------------------------------
-model/
-gpu-model/
-npu-model/
-models/
+# Anchored with a leading slash, all four of them. Unanchored, `models/`
+# matches at ANY depth -- including `core/models/`, this project's own
+# package -- so `git add -A` silently skipped two new modules there and the
+# commit that "finished" the backend split imported a file that was never
+# added. An ignore rule that can swallow source is worse than no rule.
+/model/
+/gpu-model/
+/npu-model/
+/models/
 
 # --- Python environments ---------------------------------------------------
 venv/
