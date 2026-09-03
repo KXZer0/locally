@@ -23,6 +23,14 @@ SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER_PORT = 8000                     # set from --port; used to tell clients our URL
 MAX_REQUEST_BYTES = 50 * 1024 * 1024   # enough for large base64 images
 HEARTBEAT_SECS = 15                    # SSE keep-alive during a long prefill
+MAX_IMAGE_DIM = 768                    # --max-dim
+DEBUG_REQUESTS = False                 # --debug
+VSCODE_COMPAT = False                  # --vscode-compat
+OLLAMA_COMPAT_PORT = 0                 # --ollama-port after availability checks
+CHECK_UPDATES = False                  # --check-updates
+SEARXNG_ROOT = None                    # --searxng-root, or detected checkout
+SEARXNG_IDLE = 600                     # --searxng-idle
+PYTHON_TOOL_ENABLED = False            # --python-tool
 
 
 # --- the NPU's ceiling ------------------------------------------------------
