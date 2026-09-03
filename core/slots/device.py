@@ -425,7 +425,17 @@ class DeviceSlot(MemoryPlanning):
                     # Clear inside the lock, just before generation, to avoid
                     # racing with the previous request's finally: _cancel.set()
                     self._cancel.clear()
-                    self.pipe.generate(history, gen, streamer_callback)
+                    # Keyword, not positional. LLMPipeline takes
+                    # (history, config, streamer) positionally, but VLMPipeline's
+                    # ChatHistory overload is `(history, **kwargs)` — there is no
+                    # positional form for it — so the positional call raised
+                    # "incompatible function arguments" for every streamed text
+                    # turn on a VLM slot. Non-streaming worked, which is why this
+                    # stayed hidden: the model answered fine until you asked it
+                    # to stream, which is what the web UI and every agent client
+                    # actually do.
+                    self.pipe.generate(history, generation_config=gen,
+                                       streamer=streamer_callback)
                     self.last_used = time.time()
             except Exception as e:
                 gen_error[0] = e
