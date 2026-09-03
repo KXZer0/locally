@@ -873,6 +873,68 @@ this project exists (`ollama#15917` is still open; searches for "Ollama Intel
 NPU" surface this repo). locally's value was never the chat window. Making it
 a first-class backend concedes nothing it was winning.
 
+#### 3.9a Backend mode rules out the NPU
+
+**In backend mode the NPU is not offered and models do not land on it.** The
+user asked for this as "if Odysseus is spun up, only GPU models" and the
+instinct is right, with one refinement below.
+
+**Why, in numbers already measured here.** An assistant front-end sends a
+large system prompt plus tool schemas every turn, and the NPU has a hard
+`MAX_PROMPT_LEN` of 8192 — a vpux compiler ceiling, not a memory limit, so no
+flag lifts it. Against that budget:
+
+| Client shape | Rendered tool block | Share of the NPU window |
+|---|---|---|
+| 8-tool assistant set | 735 tokens | 9.0 % |
+| 30-tool coding agent | 4,553 tokens | 55.6 % |
+
+`NPU_TOOL_BUDGET` (`core/config.py:106`) already caps a request's schema block
+at 1200 tokens and `_npu_tools_affordable` (`core/slots/capability.py:34`)
+refuses anything over it. Odysseus **does** send `tools`, and locally honours
+them. So an NPU model behind Odysseus either refuses the turn or spends its
+window on schemas before the user has typed anything. The failure is
+guaranteed, not probabilistic, which is what makes this a placement rule
+rather than a warning.
+
+This is the same reasoning `/api/show` already applies when it advertises
+`tools` only for `_tools_supported` slots — deliberately, so that a client
+cannot pick an NPU model and then send it thirty schemas. Backend mode extends
+that from advertisement to placement.
+
+**The refinement: the rule is "not NPU", not "GPU only".** CPU is a legitimate
+agent device — CLAUDE.md records it as viable on strong desktops where prefill
+beats a weak iGPU, and a `--proxy-url` machine has no local accelerator at all.
+Writing "GPU only" would break locally on exactly the hardware `ProxySlot` was
+added to serve. On *this* box the two are the same thing, because GPU is the
+only non-NPU accelerator; on someone else's they are not.
+
+**Implementation:**
+- `_choose_device(model_dir, preferred=None)` (`locally.py:1599`) takes the
+  mode into account and skips NPU when backend mode is active, returning the
+  existing `placement` string with a reason: `"ruled out NPU: backend mode —
+  an agent front-end's tool schemas exceed the 8192-token NPU window"`. It
+  already emits reasons in this shape for VLM and group-quantized cases; add
+  one more.
+- `/v1/models/available` marks NPU-only builds (channel-wise int4 exports with
+  no GPU-viable sibling) as unselectable **with that reason shown**, rather
+  than hiding them. A model that silently vanishes from the picker reads as a
+  bug; one that says why reads as a rule.
+- An explicit `device: "NPU"` on `POST /v1/models/load` is still honoured —
+  `device` is documented as a *preference*, and someone testing the NPU
+  deliberately must not be blocked by a mode flag. Log that the mode advised
+  against it.
+
+**Scope it to backend mode, not to Odysseus.** OpenCode, Claude Code and the
+VS Code extension have the same prompt shape and the same problem; Odysseus is
+one instance of the class. Keying the rule to the mode covers all of them and
+keeps `core/odysseus.py` from growing a special case that belongs in device
+selection.
+
+In standalone mode nothing changes: the NPU stays the default for ordinary
+chat, which is the project's whole reason to exist.
+
+
 **What NOT to do**, so an agent does not reach for it: do not embed Odysseus
 in an iframe (HSTS, own-hostname cookies and a service worker each break it
 independently), do not copy Odysseus code into locally (AGPL-3.0 against a
