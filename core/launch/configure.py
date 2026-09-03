@@ -5,6 +5,7 @@ import os
 import flask.cli
 
 from core import config, odysseus
+from core.sandbox.python_exec import sandbox_status
 from core.hardware.devices import _gpu_has_xmx
 from core.models.describe import scan_models
 from core.system.setup import _read_setup_config
@@ -109,13 +110,15 @@ def configure(args):
                                  if args.odysseus_autostart is not None
                                  else odysseus.load_autostart())
     config.PYTHON_TOOL_ENABLED = bool(args.python_tool)
+    config.PYTHON_SANDBOX = args.python_sandbox
     config.PYTHON_TOOL_TIMEOUT = max(0.1, min(60.0, float(args.python_timeout)))
     config.PYTHON_TOOL_OUTPUT_BYTES = max(1024, min(16 * 1024 * 1024,
                                               int(args.python_output_bytes)))
     if config.PYTHON_TOOL_ENABLED:
         print(f"  Python calculations enabled (child timeout "
               f"{config.PYTHON_TOOL_TIMEOUT:g}s, output cap "
-              f"{config.PYTHON_TOOL_OUTPUT_BYTES} bytes)", flush=True)
+              f"{config.PYTHON_TOOL_OUTPUT_BYTES} bytes, sandbox "
+              f"{sandbox_status()['sandbox']})", flush=True)
     config.PROMPT_CACHE_GB = args.cache_size_gb
     if args.context_tokens is not None:
         raw = str(args.context_tokens).strip().lower()

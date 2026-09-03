@@ -13,6 +13,7 @@ from core.chat.images import _image_urls_in, _ocr_for_text_model
 from core.errors import _TurnError, openai_error
 from core.genai.results import explain_genai_error
 from core.genai.tokens import _count_tokens
+from core.sandbox.python_exec import sandbox_status
 from core.slots.capability import _tool_capable, _tools_refused_note
 from core.slots.route import _route_request
 from core.tools.builtin import (BUILTIN_TOOLS, _builtin_runs,
@@ -342,7 +343,12 @@ def python_tool_status():
         "max_rounds": BUILTIN_TOOL_MAX_ROUNDS,
         "prompt_bytes": len(prompt.encode("utf-8")),
         "prompt_tokens": token_count,
-        "network": "blocked imports only; not a hostile-code jail on Windows",
+        **sandbox_status(),
+        # A user must never think they are containerised when they are not,
+        # so the boundary in force is reported, not the best one available.
+        "network": ("none (Podman --network=none)"
+                    if sandbox_status()["sandbox"] == "podman"
+                    else "subprocess import guardrails only"),
         "reason": None if config.PYTHON_TOOL_ENABLED else
                   "start with --python-tool to enable local calculations",
     }

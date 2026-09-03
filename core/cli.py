@@ -238,6 +238,11 @@ def parse_args():
                    help="SearXNG base URL for web search, e.g. "
                         "http://localhost:8080. Unset (the default) means the "
                         "server makes no outbound connections at all.")
+    p.add_argument("--python-sandbox", choices=("auto", "podman", "subprocess"),
+                   default="auto",
+                   help="Boundary for Python calculations: a Podman container, "
+                        "subprocess guardrails, or auto (default: Podman when it "
+                        "is available, with an explicit subprocess fallback).")
     p.add_argument("--python-tool", action="store_true",
                    help="Enable the server-side local Python calculation tool "
                         "(off by default; use only for local model turns).")

@@ -716,10 +716,14 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 - Server-side exact calculations are a separate opt-in path: `--python-tool` enables
   `POST /v1/util/python` and the `python_tool: true` chat mode. It injects one fixed
   schema and owns at most two tool rounds, so it works on the NPU without putting
-  Python in a client's `tools` array. Each run is a killed `sys.executable -I`
-  child in a fresh temporary directory with capped stdout/stderr. This is
-  defence-in-depth for small-model mistakes and prompt-injected pages, not a
-  hostile-code sandbox on Windows; `/health` reports the caps and prompt cost.
+  Python in a client's `tools` array. `--python-sandbox auto` (the default) uses
+  a disposable Podman container with no network, a read-only root, 512 MiB memory,
+  64 PIDs, all capabilities dropped and no privilege escalation; only the workspace
+  is mounted read-write. The machine starts on demand and is stopped after a cold
+  run. If Podman is absent, the result and `/health` plainly name the old
+  `sys.executable -I` subprocess fallback as guardrails rather than a security
+  boundary. Machine liveness uses `CachedProbe`, so `/health` never pays for
+  `podman machine inspect` on its request thread.
 
 ## Environment
 
