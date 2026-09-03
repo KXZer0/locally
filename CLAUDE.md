@@ -763,6 +763,13 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
   - Splitting is mechanical enough to be done with an AST tool rather than by
     hand: line-slicing goes wrong the moment a constant sits between two
     functions you wanted together, which in this file it did, repeatedly.
+- **Commits carry no `Co-Authored-By` and no "Generated with" line.** The work is
+  Camilo's and so is the metadata. Written down here because nothing else in the
+  repo says so and the history argues the other way: every commit up to `c6a8c9d`
+  **does** carry the trailer, so an agent copying the local style — or following an
+  assistant harness's default attribution rule — adds one. Strip it. Message style
+  is a one-line subject, then prose explaining the reasoning and the measurement,
+  not a bullet-point changelog; `c6a8c9d` and `2143a12` are the model.
 - PowerShell for install/launch scripts (Windows-native users).
 - Runtime flags over hardcoded config (e.g. `--port`, `--device`).
 - When testing, use small payloads / short prompts. Don't run full model loads unless needed.
