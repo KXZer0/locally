@@ -16,6 +16,7 @@ from core.genai.results import explain_genai_error, extract_perf, extract_text
 from core.genai.tokens import _count_tokens
 from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx, _usable_gpu_bytes
 from core.metrics import record_turn
+from core.models.gguf import unsupported_reason as gguf_unsupported_reason
 from core.models.geometry import _kv_bytes_per_token, _model_max_context, _moe_expert_fraction, _text_config
 from core.models.identity import is_vlm, model_display_name
 from core.models.integrity import _dir_size_bytes, _verify_weights_integrity
@@ -67,6 +68,15 @@ class DeviceSlot(MemoryPlanning):
         self.context_tokens = None
         self.context_limit_by = None
         self.model_dir = model_dir
+        # Before anything else, and before anything expensive: a GGUF whose
+        # architecture the reader does not implement fails 12-35 s in with a raw
+        # C++ map error naming neither the model nor the problem. The
+        # architecture is a string in the file's first bytes, so the refusal
+        # costs ~100 ms and can say what to do instead. Silent for every other
+        # kind of model, and silent for a GGUF it cannot parse.
+        gguf_err = gguf_unsupported_reason(model_dir)
+        if gguf_err:
+            raise RuntimeError(gguf_err)
         self.model_name = model_display_name(model_dir)
         vlm = is_vlm(model_dir)
         self.model_type = "vlm" if vlm else "llm"
