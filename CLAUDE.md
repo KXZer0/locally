@@ -80,6 +80,36 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
   `--prewarm` with idle unload warns, since unload discards the warmed cache and the reload
   path deliberately does NOT re-warm (a synchronous re-warm would stall the triggering
   request pre-SSE and trip the client watchdogs the heartbeat exists to defeat).
+- **Decode speed tracks BYTES MOVED PER TOKEN, not parameter count** (measured
+  2026-09-03, all on this box). 4.4 GB of int4 weights give ~21 tok/s and 8.8 GB
+  of int8 give 11.8 — exactly double the bytes, exactly half the speed, because
+  decode is bandwidth-bound. The counter-intuitive one proves the rule:
+  **gemma-4-26b is the LARGEST file at 14.3 GB and still runs ~20 tok/s**,
+  because A4B moves only ~4B of weights per token. So the ranking to reason
+  with is int4-dense ≈ MoE-active-size > int8, and "bigger model" says nothing
+  on its own.
+  Consequence for the 2026 shortlist: **Qwen3.5-9B is stuck at ~12 tok/s and it
+  is not tunable.** There is no int4 export — optimum-intel #1722 corrupts its
+  Gated DeltaNet layers at int4, which is exactly why Intel published int8 only
+  — and it is a VLM, so it takes the plain pipeline and gets no prefix cache to
+  win the loss back across turns. If speed is the goal on this hardware the
+  answer is an int4-cw dense 8B, which is also the only thing the NPU accepts.
+- **The NPU model can be an abliterated one** (verified 2026-09-03).
+  `Qwen3-8B-abliterated-int4-cw-ov`, self-exported from
+  `huihui-ai/Huihui-Qwen3-8B-abliterated-v2`, is a drop-in for the stock
+  Qwen3-8B: 4.4 GB, 5.0 s warm load against 5.9, 21.6-22.0 tok/s against 20.1,
+  and 20/20 against 20/20 on the same factual set. This matters because none of
+  the newer models can go there — Qwen3.5/3.6 and Muse-Glimmer are all hybrid
+  linear attention, which §3.3 establishes the vpux compiler cannot legalize —
+  so a dense int4-cw 8B is the NPU's ceiling, and abliteration costs nothing
+  measurable against it.
+- **Qwen3.5 does not honour `/no_think`** (user-reported 2026-09-03, NOT yet
+  measured here). `/no_think` is a **Qwen3** control token, and Qwen3.5 reports
+  a different architecture entirely (`qwen35` in GGUF metadata). If it ignores
+  the token then the voice path, which forces no-think by default and caps at
+  VOICE_MAX_TOKENS, would spend that whole budget inside a think block and
+  answer nothing — the exact failure CLAUDE.md already records for Qwen3-8B
+  before the token was added. Measure before putting Qwen3.5 on the voice path.
 - **GGUF loads on GPU/CPU, and the header is read before the file is** (2026-09-03).
   A `.gguf` path works anywhere a model directory does: it is listed by
   `/v1/models/available`, its KV pool is sized from `<arch>.block_count` and
