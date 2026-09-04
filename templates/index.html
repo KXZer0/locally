@@ -456,6 +456,10 @@
      the server's curated catalog; model repositories and download paths never
      come from browser input. The dots are navigation as well as progress, like
      the reference onboarding flow. -->
+<!-- Parsed but inert until first use. A returning user never opens setup,
+     and 30 elements of it were being built into every boot. onboarding.js
+     clones this on demand; see ensureShell(). -->
+<template id="setup-template">
 <section class="setup-shell" id="setup-shell" hidden aria-hidden="true">
     <div class="setup-dialog" id="setup-dialog" role="dialog" aria-modal="true"
          tabindex="-1" aria-labelledby="setup-title" aria-describedby="setup-lede">
@@ -489,6 +493,7 @@
         </footer>
     </div>
 </section>
+</template>
 
 <main class="panel" id="panel-chat" role="tabpanel" aria-labelledby="tab-chat">
     <div class="chat" id="chat">

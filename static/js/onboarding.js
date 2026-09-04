@@ -2,20 +2,36 @@
 // file only presents choices and sends catalog IDs back. No repository, URL,
 // filename, command, or filesystem path is accepted from the browser.
 (() => {
-    const shell = document.getElementById('setup-shell');
-    const dialog = document.getElementById('setup-dialog');
-    const stage = document.getElementById('setup-stage');
-    const stepStatus = document.getElementById('setup-step-status');
-    const kicker = document.getElementById('setup-kicker');
-    const title = document.getElementById('setup-title');
-    const lede = document.getElementById('setup-lede');
-    const dots = document.getElementById('setup-dots');
-    const back = document.getElementById('setup-back');
-    const next = document.getElementById('setup-next');
-    const close = document.getElementById('setup-close');
-    const status = document.getElementById('setup-status');
+    // The overlay lives in a <template> until someone needs it: most boots
+    // are a returning user who never opens setup, and parsing 30 elements
+    // for a dialog nobody sees is the §2.5 cost in miniature.
     const openButton = document.getElementById('setup-open-btn');
-    if (!shell || !stage || !openButton) return;
+    const template = document.getElementById('setup-template');
+    if (!template || !openButton) return;
+
+    let shell, dialog, stage, stepStatus, kicker, title, lede, dots, back, next, close, status;
+
+    // Idempotent, and every entry point calls it first. Binding cannot
+    // happen at module scope any more -- the elements do not exist yet.
+    function ensureShell() {
+        if (shell) return true;
+        document.body.append(template.content.cloneNode(true));
+        shell = document.getElementById('setup-shell');
+        dialog = document.getElementById('setup-dialog');
+        stage = document.getElementById('setup-stage');
+        stepStatus = document.getElementById('setup-step-status');
+        kicker = document.getElementById('setup-kicker');
+        title = document.getElementById('setup-title');
+        lede = document.getElementById('setup-lede');
+        dots = document.getElementById('setup-dots');
+        back = document.getElementById('setup-back');
+        next = document.getElementById('setup-next');
+        close = document.getElementById('setup-close');
+        status = document.getElementById('setup-status');
+        if (!shell || !stage) return false;
+        wireShell();
+        return true;
+    }
 
     const steps = [
         { kicker: 'WELCOME', title: 'Made for this machine',
@@ -531,6 +547,23 @@
     }
 
     async function openSetup(force = false) {
+        // Ask BEFORE building. The old order opened the dialog, fetched, then
+        // closed it again when setup was not needed -- which on a returning
+        // user's boot meant parsing the whole overlay, showing it for a frame
+        // and throwing it away. Deciding first is why the elements can stay in
+        // the template on the common path, and it removes that flash as well.
+        if (!force && localStorage.getItem('locally-onboarding-complete') === '1') {
+            try {
+                const probe = await fetch('/v1/setup', { cache: 'no-store' });
+                const data = await probe.json();
+                if (probe.ok && !data.first_run && !data.needs_assistant) return;
+                setup = null;                 // re-fetched below, on the open path
+            } catch {
+                // Unreachable /v1/setup is the fallback boot path, and the
+                // overlay is how the user is told. Fall through and open.
+            }
+        }
+        if (!ensureShell()) return;
         setOpen(true);
         busy = true;
         next.disabled = true;
@@ -560,27 +593,30 @@
         }
     }
 
-    back.addEventListener('click', () => {
-        if (!busy && step > 0) { step -= 1; render(); }
-    });
-    next.addEventListener('click', async () => {
-        if (busy) return;
-        if (finished) {
-            setOpen(false);
-            window.dispatchEvent(new Event('focus'));
-        } else if (step < steps.length - 1) {
-            step += 1;
-            render();
-        } else {
-            await installAndFinish();
-        }
-    });
-    close.addEventListener('click', () => {
-        if (!busy && (!setup?.needs_assistant || finished)) setOpen(false);
-    });
+    function wireShell() {
+        back.addEventListener('click', () => {
+            if (!busy && step > 0) { step -= 1; render(); }
+        });
+        next.addEventListener('click', async () => {
+            if (busy) return;
+            if (finished) {
+                setOpen(false);
+                window.dispatchEvent(new Event('focus'));
+            } else if (step < steps.length - 1) {
+                step += 1;
+                render();
+            } else {
+                await installAndFinish();
+            }
+        });
+        close.addEventListener('click', () => {
+            if (!busy && (!setup?.needs_assistant || finished)) setOpen(false);
+        });
+    }
+
     openButton.addEventListener('click', () => openSetup(true));
     document.addEventListener('keydown', event => {
-        if (shell.hidden || event.key !== 'Escape') return;
+        if (!shell || shell.hidden || event.key !== 'Escape') return;
         if (!busy && (!setup?.needs_assistant || finished)) setOpen(false);
     }, true);
 
