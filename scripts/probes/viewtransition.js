@@ -47,10 +47,14 @@ results.sameModeIsNoop = { calls, visible: visible() };
 
 // --- 3. streaming suppresses it, and the switch still happens ------------
 calls = 0;
-document.body.setAttribute('data-busy', '1');
+// Exactly what setGenerating() does. Setting the attribute some other way
+// is how the first version of this probe passed while the real app had every
+// transition disabled from its first turn onward: it tested the assumption
+// rather than the convention.
+document.body.dataset.busy = '1';
 setMode('chat');
 await settle();
-document.body.removeAttribute('data-busy');
+document.body.dataset.busy = '0';   // setGenerating never removes it
 results.whileBusy = { calls, visible: visible(), bodyMode: document.body.dataset.mode };
 
 // --- 4. and it comes back afterwards -------------------------------------

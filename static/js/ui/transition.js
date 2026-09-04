@@ -17,10 +17,18 @@
 // thread while the iGPU is mid-inference is exactly the compositing cost the
 // project's motion rules exist to avoid. A tab switch during a turn therefore
 // happens instantly, which is also what a user pressing it mid-answer wants.
+//
+// Read the VALUE, not the attribute's presence. setGenerating writes
+// `dataset.busy = on ? '1' : '0'` -- it never removes it -- so the
+// hasAttribute() form the §2.4a recipe suggests is true forever after the
+// first turn, and silently disabled every transition for the rest of the
+// session. The CSS already keys on `body[data-busy="1"]`; this now agrees
+// with it. Caught by running a real turn: the probe set and removed the
+// attribute itself, so it tested my assumption rather than the app.
 export function transition(mutate) {
     const skip = !document.startViewTransition
         || matchMedia('(prefers-reduced-motion: reduce)').matches
-        || document.body.hasAttribute('data-busy');
+        || document.body.dataset.busy === '1';
     if (skip) {
         mutate();
         return null;
