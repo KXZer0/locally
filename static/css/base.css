@@ -945,8 +945,10 @@ kbd {
 }
 
 .welcome-mark .mark {
+    /* The mark enters by fading only -- --enter-y is 0 here. --enter-blur went
+       with the blur it fed; this was its only caller, so leaving the token
+       would be a knob wired to nothing. */
     --enter-y: 0px;
-    --enter-blur: 10px;
     animation: enter 900ms var(--ease-out) backwards;
 }
 

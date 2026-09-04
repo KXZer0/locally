@@ -62,7 +62,11 @@ function parseArgs() {
     for (let i = 0; i < argv.length; i++) {
         const key = argv[i].replace(/^--/, '');
         if (key === 'set') out.set.push(argv[++i]);
+        // Boolean flags have to be named: the default branch below consumes
+        // the NEXT argv entry as a value, so a bare flag would silently eat
+        // whatever followed it (or land as undefined at the end of the line).
         else if (key === 'oracle') out.oracle = true;
+        else if (key === 'reduced-motion') out.reducedMotion = true;
         else {
             const value = argv[++i];
             out[key] = /^\d+$/.test(value || '') ? Number(value) : value;
@@ -164,6 +168,26 @@ async function main() {
             width: Number(args.width), height: Number(args.height),
             deviceScaleFactor: 1, mobile: false,
         });
+
+        // --reduced-motion makes prefers-reduced-motion match, which is the
+        // only way to test an accessibility gate that lives in a media query:
+        // it cannot be forced from inside the page.
+        if (args.reducedMotion) {
+            await call('Emulation.setEmulatedMedia', {
+                features: [{ name: 'prefers-reduced-motion', value: 'reduce' }],
+            });
+        }
+
+        // --cpu N throttles the renderer N times. The motion rules exist for a
+        // machine whose GPU is busy running inference, and an idle laptop will
+        // not reproduce that: a paint-per-frame animation costs nothing
+        // measurable until something else wants the frame. This is the closest
+        // honest stand-in the rig can offer -- it slows the main thread, not
+        // the GPU, so treat it as "is this animation cheap under contention",
+        // not as a simulation of inference.
+        if (args.cpu) {
+            await call('Emulation.setCPUThrottlingRate', { rate: Number(args.cpu) });
+        }
 
         for (const pair of args.set) {
             const [k, ...rest] = pair.split('=');

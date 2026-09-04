@@ -7,6 +7,7 @@
 // and its own state between visits.
 
 import { input, panelChat, panelCode, panelUtil, panelVoice, tabChat, tabCode, tabUtil, tabVoice, utilNavBtns, utilViews } from '../core/dom.js';
+import { transition } from './transition.js';
 import { revealSurface } from '../core/paint.js';
 import { asrReady, ttsReady } from '../core/state.js';
 import { enterCodeTab } from './code-tab.js';
@@ -21,6 +22,16 @@ export let mode = 'chat';
 // while Util keeps its selected file and result intact between visits.
 export function setMode(next) {
     if (!['chat', 'voice', 'util', 'code'].includes(next)) return;
+    if (next === mode) return;          // nothing to cross-fade to
+    // The whole switch is the mutation: the four panels share one
+    // view-transition-name, so hiding one and revealing another pairs them
+    // into a cross-fade automatically. transition() skips itself when tokens
+    // are streaming or motion is reduced.
+    transition(() => applyMode(next));
+}
+
+
+function applyMode(next) {
     mode = next;
     document.body.dataset.mode = next;
     const isChat = next === 'chat';

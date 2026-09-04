@@ -41,12 +41,19 @@
 @keyframes enter {
 
 
+        /* opacity and transform only. A `filter: blur()` here was the app's
+           ONLY keyframe animating anything else, and it ran on three elements
+           per message. Honest about the evidence: it could not be shown to cost
+           a frame on this machine -- median 16.7 ms and zero late frames both
+           idle and at 6x CPU throttling -- because throttling slows the main
+           thread and blur is paid on the compositor. It goes because the rule
+           is the rule and the machine this runs on may be mid-inference, not
+           because a dropped frame was caught. */
         from {
             opacity: 0;
             transform: translateY(var(--enter-y, 14px));
-            filter: blur(var(--enter-blur, 6px));
         }
-        to { opacity: 1; transform: none; filter: blur(0); }
+        to { opacity: 1; transform: none; }
 
 
 }
@@ -75,3 +82,31 @@
 
 
 }
+
+/* View transitions (2.4a) ---------------------------------------------------
+   One name across all four panels. Only one is ever un-rendered-to-visible at
+   a time -- the others carry `hidden` -- so the outgoing and incoming panel
+   pair up and the browser cross-fades them with no per-panel wiring.
+
+   No directional slide. A tab switch is lateral and has no depth to
+   communicate; a slide would falsely imply one.
+
+   The trap, written down because it is silent: a view-transition-name must be
+   unique among RENDERED elements when the snapshot is taken. Hidden panels do
+   not count, which is exactly what makes one shared name safe here -- but the
+   moment two panels are visible together (a bug, or a future split view) the
+   transition throws. transition() catches that and still performs the switch. */
+#panel-chat,
+#panel-voice,
+#panel-util,
+#panel-code { view-transition-name: panel; }
+
+::view-transition-old(panel) { animation: var(--dur-fast) var(--ease-out) both fade-out; }
+::view-transition-new(panel) { animation: var(--dur-base) var(--ease-out) both fade-in; }
+
+@keyframes fade-out { to { opacity: 0; } }
+@keyframes fade-in { from { opacity: 0; } }
+
+/* Reduced motion is gated in transition() rather than here: overriding the
+   UA sheet on ::view-transition-* needs !important, and the count is going
+   down, not up. */
