@@ -3,7 +3,10 @@
 Separate from core/tools/builtin.py, which RUNS them: a schema is answered
 before any slot exists, so the registry has to be importable without one."""
 
-PYTHON_TOOL_ENABLED = False       # --python-tool; opt-in because code runs
+# PYTHON_TOOL_ENABLED deliberately does NOT live here. It is config.py's, and
+# a second copy in this module was written by nothing and read by builtin.py,
+# so --python-tool set the real one while the tool consulted the duplicate and
+# stayed off forever. One mutable value, one home.
 
 
 PYTHON_TOOL = {

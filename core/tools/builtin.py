@@ -22,9 +22,9 @@ import threading
 from core import config
 from core.documents.inputs import _util_chunks
 from core.errors import _TurnError, openai_error
-from core.tools.registry import PYTHON_TOOL, PYTHON_TOOL_ENABLED, WEB_SEARCH_TOOL
+from core.tools.registry import PYTHON_TOOL, WEB_SEARCH_TOOL
 from core.web.fetch_page import _web_search_answer
-from core.web.search import WEB_SEARCH_URL
+from core.web import search as web_search_mod
 from core.slots.select import _slot_serviceable
 from core.tools.render import _tool_calls_to_text
 from core.web.fetch_page import _web_search_run
@@ -65,7 +65,7 @@ def _run_web_search_tool(args):
     query = (args.get("query") or "").strip() if isinstance(args, dict) else ""
     if not query:
         return "No query was given."
-    if not WEB_SEARCH_URL:
+    if not web_search_mod.WEB_SEARCH_URL:
         return ("Web search is not configured on this server. Answer from what "
                 "you know, and say you could not check.")
     payload = None
@@ -332,8 +332,13 @@ def _builtin_generator(slot, gen, turn):
 
 
 BUILTIN_TOOLS = {
+    # Read through the module every time. Both of these are set AFTER import,
+    # by core/launch/configure.py from the command line, so a bound copy is
+    # frozen at the default and the tool can never turn on -- which is exactly
+    # what happened: /health reported `builtin_tools: []` no matter what was
+    # passed, and neither --python-tool nor --search-url did anything at all.
     "python": {"spec": PYTHON_TOOL, "run": _run_python_tool,
-               "enabled": lambda: PYTHON_TOOL_ENABLED},
+               "enabled": lambda: config.PYTHON_TOOL_ENABLED},
     "web_search": {"spec": WEB_SEARCH_TOOL, "run": _run_web_search_tool,
-                   "enabled": lambda: bool(WEB_SEARCH_URL)},
+                   "enabled": lambda: bool(web_search_mod.WEB_SEARCH_URL)},
 }
