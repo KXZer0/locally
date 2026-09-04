@@ -12,8 +12,21 @@ from core.errors import openai_error
 from core.genai.results import explain_genai_error
 from core.hardware.memory import _memory_snapshot, _settle_memory
 from core.models.discovery import _available_models, _choose_device
+from core.models.gguf import unsupported_reason as gguf_unsupported_reason
 from core.models.identity import _is_model_dir, model_display_name
 from core.models.integrity import _dir_size_bytes, _verify_weights_integrity
+
+def _is_transient_load_error(e):
+    """Whether loading again could plausibly succeed.
+
+    Only the tokenizers-extension race is known to pass on a second
+    try; everything else is a property of the model or the machine and
+    reproduces exactly.
+    """
+    msg = str(e).lower()
+    return ("openvino_tokenizers" in msg
+            or "failed to load shared object" in msg)
+
 
 def load_model():
     """Swap the model in a slot without restarting the server.
@@ -79,6 +92,19 @@ def load_model():
     if err:
         return openai_error(err)
 
+    # Refuse before touching the running model. The swap unloads first so peak
+    # memory stays at one model, which means a load that was never going to
+    # succeed costs the user the model they had: a GGUF whose architecture the
+    # reader does not implement is refused in ~90 ms, and doing that AFTER the
+    # unload turned a working NPU slot into an error state for a file the
+    # server already knew it could not open. Anything knowable from the file
+    # alone belongs on this side of the unload.
+    refusal = gguf_unsupported_reason(target)
+    if refusal:
+        print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] "
+              f"refused before unload: {refusal}", flush=True)
+        return openai_error(refusal, "invalid_request_error", 400)
+
     # Hold the lock across unload+load so a concurrent request can't reach a
     # half-swapped slot. A generation in flight keeps the lock, so we wait
     # for it rather than yanking the pipeline out from under it.
@@ -123,6 +149,13 @@ def load_model():
                       flush=True)
                 slot.pipe = None
                 gc.collect()
+                # The retry exists for one specific flake: the tokenizers
+                # extension failing to re-register while the previous pipeline
+                # is still being collected. A model this build cannot open
+                # fails identically three times, so retrying only makes the
+                # user wait to read the same sentence twice more.
+                if not _is_transient_load_error(e):
+                    break
                 time.sleep(1.5 * attempt)
         if last_err is not None:
             slot.status = "error"

@@ -91,13 +91,29 @@ export function renderContextModelMenu() {
         option.setAttribute('aria-checked', String(selected));
         option.tabIndex = -1;
 
+        // The server already knows some models cannot be opened by this build
+        // -- a GGUF whose architecture the reader does not implement -- and
+        // says so with `loadable: false` and a reason. Offering it anyway is
+        // how a click cost a working model: the swap unloads before it loads.
+        // Listed, not hidden, because a file the user put there on purpose
+        // should not silently vanish from the picker.
+        const blocked = model.loadable === false;
+        if (blocked) {
+            option.disabled = true;
+            option.classList.add('is-unavailable');
+            option.setAttribute('aria-disabled', 'true');
+            if (model.reason) option.title = model.reason;
+        }
+
         const copy = document.createElement('span');
         const name = document.createElement('strong');
         const meta = document.createElement('small');
         name.textContent = model.name;
-        meta.textContent = model.loaded_on
-            ? `${model.loaded_on} · loaded`
-            : `${(model.type || 'model').toUpperCase()} · available`;
+        meta.textContent = blocked
+            ? 'cannot be loaded — hover for why'
+            : model.loaded_on
+                ? `${model.loaded_on} · loaded`
+                : `${(model.type || 'model').toUpperCase()} · available`;
         copy.append(name, meta);
 
         const check = document.createElement('span');
@@ -116,7 +132,12 @@ export function syncModelControlState() {
     contextModelPicker.classList.toggle('loading', modelSwapBusy);
     contextModelPicker.setAttribute('aria-busy', String(modelSwapBusy));
     for (const option of contextModelMenu.querySelectorAll('.context-model-option')) {
-        option.disabled = disabled;
+        // Two independent reasons to be disabled, and this one used to clobber
+        // the other: a model this build cannot open is permanently unusable,
+        // while `disabled` here is the transient busy state. Assigning the
+        // transient one alone re-enabled every blocked model as soon as a swap
+        // finished, which is exactly when the menu is next opened.
+        option.disabled = disabled || option.classList.contains('is-unavailable');
     }
 }
 

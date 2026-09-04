@@ -2579,3 +2579,14 @@
     }
 
 }
+
+/* A model this build cannot open. Listed rather than hidden -- the file is
+   there on purpose -- but not clickable, because the swap unloads the running
+   model before it loads the new one, so a click on an impossible model costs
+   the one you had. */
+.context-model-option.is-unavailable {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+.context-model-option.is-unavailable strong { text-decoration: line-through; }
