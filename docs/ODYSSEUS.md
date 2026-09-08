@@ -24,12 +24,13 @@ the network except your phone, and that goes over Tailscale (§6).
 ```
 Machine A — Intel laptop (Core Ultra X7 358H)
   ┌──────────────────────────────────────────────────────────┐
-  │  Odysseus (Docker Compose)      127.0.0.1:7000           │
+  │  Odysseus (Podman Compose)      127.0.0.1:7000           │
   │    ├── chromadb  127.0.0.1:8100                          │
   │    ├── searxng   127.0.0.1:8080   ← port clash, see §5   │
   │    └── ntfy      127.0.0.1:8091                          │
   │            │                                             │
-  │            │  http://host.docker.internal:8000/v1        │
+  │            │  http://172.17.96.1:8000/v1  ← §4, NOT      │
+  │            │  localhost and NOT host.docker.internal     │
   │            ▼                                             │
   │  locally (native, venv)          0.0.0.0:8000           │
   │    ├── chat slot   → NPU   (Qwen3-8B int4-cw)           │
@@ -249,24 +250,99 @@ authoritative place.
 
 ### The URL
 
+On Machine A — Podman on Windows, which is the setup here:
+
 ```
-http://host.docker.internal:8000/v1
+http://172.17.96.1:8000/v1
 ```
 
-Three things about that string, each of which is a way people get it wrong:
+Under **Docker Desktop** it is `http://host.docker.internal:8000/v1` instead.
+Four things about that string, each of which is a way people get it wrong:
 
-1. **`host.docker.internal`, not `localhost`.** Inside a container, `localhost`
-   is the container. This is the single most common failure — see §7.
-2. **Port 8000** is `locally`'s OpenAI API (`--port`, default 8000). Not 11434,
+1. **Not `localhost`.** Inside a container, `localhost` is the container. This
+   is the single most common failure and it was the last thing standing in the
+   way here — measured 2026-09-08 from inside `odysseus_odysseus_1`:
+   `localhost:8000` → HTTP 000, `172.17.96.1:8000` → HTTP 200.
+2. **Not `host.docker.internal` under Podman.** Docker Desktop special-cases
+   that name; Podman does not, and under Podman it resolves to the WSL VM's own
+   gateway rather than the Windows host. Use the numeric address.
+3. **Port 8000** is `locally`'s OpenAI API (`--port`, default 8000). Not 11434,
    unless you are deliberately using the Ollama shim (below).
-3. **The `/v1` suffix is required.** Odysseus's setup guide states this for
-   OpenAI-compatible endpoints, and its own Docker example for host Ollama is
-   `http://host.docker.internal:11434/v1`. `locally` serves
-   `/v1/models` and `/v1/chat/completions`, so the base is `.../v1`.
+4. **The `/v1` suffix is required.** `locally` serves `/v1/models` and
+   `/v1/chat/completions`, so the base is `.../v1`.
 
-`locally` binds `0.0.0.0` on both its ports (`app.run(host="0.0.0.0", ...)`, no
-flag to change it), which is *why* a container can reach it at all. A
-127.0.0.1-bound server would be invisible from Docker. It is also why §6 matters.
+`locally` binds `0.0.0.0` by default (`--host`, `core/cli.py:58`), which is *why*
+a container can reach it at all. A 127.0.0.1-bound server is invisible from a
+container no matter how the firewall is set — which is exactly what
+`chat.ps1 --start` gives you, since `core/terminal.py:270` pins the host. Use
+`api.ps1` or `scripts/locally-launch.ps1` for anything Odysseus will talk to.
+
+### Setup, start to finish
+
+Verified end to end on Machine A, 2026-09-08.
+
+**1. Start `locally` so it survives and stays advertised.**
+
+```powershell
+pwsh -File scripts/locally-launch.ps1 -IdleTimeout 0
+```
+
+`-IdleTimeout 0` is no longer required for Odysseus to see the model — an
+idle-unloaded slot is advertised now — but it keeps the prefix cache warm, which
+is the real win for a client re-sending a fixed system prompt every turn.
+
+**2. Open the firewall to the WSL subnet only, once, elevated.**
+
+```powershell
+New-NetFirewallRule -DisplayName 'locally API (WSL/Podman only)' -Direction Inbound `
+  -Action Allow -Protocol TCP -LocalPort 8000 -RemoteAddress 172.17.96.0/20 -Profile Any
+```
+
+Then check nothing is *blocking* it, because block beats allow and a cancelled
+Windows prompt leaves a block rule behind:
+
+```powershell
+$target = (Get-Process -Id (Get-NetTCPConnection -State Listen -LocalPort 8000).OwningProcess).Path
+Get-NetFirewallRule -Direction Inbound -Action Block |
+  Where-Object { ($_ | Get-NetFirewallApplicationFilter -EA SilentlyContinue).Program -eq $target }
+```
+
+Anything that returns must go. See §7 for why `$target` is read that way and not
+from the command line.
+
+**3. Point Odysseus at the gateway address.** Settings → Added Models → the
+endpoint's URL:
+
+```
+http://172.17.96.1:8000/v1
+```
+
+Press **Probe**. It should report 1/1 and the model list should fill.
+
+**4. Check the whole path in one command.**
+
+```powershell
+pwsh -File scripts/diagnose-odysseus-link.ps1
+```
+
+Green all the way down looks like this:
+
+```
+  WSL gateway                      172.17.96.1
+  listening on :8000               0.0.0.0 (all interfaces)
+  host via 127.0.0.1               HTTP 200
+  host via WSL gateway             HTTP 200
+  podman VM -> host                HTTP 200 in 0.54s
+  Odysseus container -> host       HTTP 200 in 0.50s
+  models advertised                Qwen3-8B-abliterated-int4-cw@NPU, gemma-4-26b-a4b-it, Ornith-1.5-9B-abliterated
+  block rule on serving exe        none
+  active allow rule for :8000      locally API (WSL/Podman only)
+```
+
+**5. Pick a model in Odysseus and type.** Every loadable model on disk is
+advertised, and naming one that is not resident loads it — measured 19.1 s for a
+cold NPU swap plus the answer, from inside the container. See "Changing models
+from Odysseus" below.
 
 ### The model id must match what `/v1/models` advertises
 
@@ -687,19 +763,23 @@ loopback-only and Odysseus can never reach it no matter what the firewall says.
 Use `api.ps1`, which goes through the launcher and keeps the `0.0.0.0` default
 from `core/cli.py:58`.
 
-#### What this actually was, 2026-09-08
+#### What this actually was, 2026-09-08 — resolved
 
-Two stale `Block` rules on `pythoncore-3.14-64\python.exe`, Public profile, all
-ports — the residue of cancelling a Windows firewall prompt at some point. They
-beat the correct, active, correctly scoped allow rule for port 8000, because
-block always wins.
+**Three independent causes, stacked.** Each one on its own produces the identical
+symptom — Odysseus offline, no models — which is why fixing one at a time looked
+like it had changed nothing, twice. Anyone debugging this again should assume
+there is more than one.
 
-It stayed hidden because every process listing showed the server running as
+**Cause 1: two stale `Block` rules** on `pythoncore-3.14-64\python.exe`, Public
+profile, all ports — the residue of cancelling a Windows firewall prompt at some
+point. They beat the correct, active, correctly scoped allow rule for port 8000,
+because block always wins.
+
+They stayed hidden because every process listing showed the server running as
 `venv\Scripts\python.exe`, which no block rule named. The venv path is the
 command line; the image is the system Python (trap 1 above). The allow rule and
-the block rules were pointed at the same executable all along.
-
-Removing them, elevated:
+the block rules had been pointed at the same executable all along. Removing them,
+elevated:
 
 ```powershell
 $target = (Get-Process -Id (Get-NetTCPConnection -State Listen -LocalPort 8000).OwningProcess).Path
@@ -708,18 +788,39 @@ Get-NetFirewallRule -Direction Inbound -Action Block |
   Remove-NetFirewallRule
 ```
 
-Then re-run `scripts/diagnose-odysseus-link.ps1` — rung 4 flipping from
-`DROPPED - timed out after 6.0s` to `HTTP 200` is the confirmation. Do not
-confirm by re-reading the rule list; a rule that exists is not a rule that is
-being matched, which is the mistake that cost most of the session.
+Confirmation is rung 4 of the ladder flipping from `DROPPED - timed out after
+6.0s` to `HTTP 200 in 0.54s`. Do not confirm by re-reading the rule list; a rule
+that exists is not a rule that is being matched, and that mistake cost most of a
+session.
 
-If it is still dropped after that, enable drop logging and read which rule
-actually matched, rather than guessing again:
+**Cause 2: the idle-unload listing bug.** `/v1/models` listed a slot only while
+its status was `ready`, so after the default 900-second idle timeout the server
+answered chat requests while advertising an empty list. Fixed — the endpoint now
+asks `_slot_serviceable`, the same predicate routing uses. Full account under
+"Reachable, but the model list is empty" below.
 
-```powershell
-Set-NetFirewallProfile -All -LogBlocked True
-Get-Content "$env:SystemRoot\system32\LogFiles\Firewall\pfirewall.log" -Tail 20 -Wait
+**Cause 3: Odysseus was pointed at `http://localhost:8000/v1`.** This was the
+last one standing, and no amount of server-side work could have fixed it:
+`localhost` inside a container is the container. Measured from inside
+`odysseus_odysseus_1` with everything else already healthy:
+
 ```
+container -> localhost:8000     = 000
+container -> 172.17.96.1:8000   = 200
+```
+
+Changing the endpoint in Odysseus's Settings to the gateway address is what
+finally made it work.
+
+**What working looks like.** Six models advertised, the container getting a
+byte-identical list, and an unloaded model loading on demand from a chat request
+— 19.1 s for the swap plus the answer, correctly labelled with the requested
+model. `scripts/diagnose-odysseus-link.ps1` reports green on every rung; §4 has
+the expected output.
+
+**If you are here again**, run the script first. It walks all three causes in
+order and names the one that is broken, which is the thing nobody could do while
+debugging this by hand.
 
 
 ### Reachable, but the model list is empty
@@ -870,12 +971,17 @@ Everything about `locally` in this document was read out of `locally.py` and
 - The `odysseus` service already defines
   `extra_hosts: ["host.docker.internal:host-gateway"]`.
 - The service builds from source (`build: .`), so there is no image tag to pin.
+- **`OLLAMA_BASE_URL` in `.env` is NOT sufficient on its own** (measured
+  2026-09-08). `.env` carried the correct `http://172.17.96.1:8000/v1` while the
+  endpoint stored in Settings still said `http://localhost:8000/v1`, and
+  Odysseus used the Settings value: it reported "Probed 0/1 endpoints; 1 failed"
+  and listed no models against a server that was healthy and reachable from
+  inside its own container. Settings is authoritative; treat the env var as a
+  pre-seed for the *first* run only, and edit the endpoint in the UI when
+  changing it later.
 
 **Not confirmed — verify against your Odysseus version:**
 
-- Whether setting `OLLAMA_BASE_URL` alone is sufficient, or whether the endpoint
-  must also be entered in Settings. The setup guide points at Settings; the env
-  var is best treated as a pre-seed.
 - Whether `SEARXNG_INSTANCE` is set on the `odysseus` service in
   `docker-compose.yml` or applied elsewhere. `.env.example` says Compose
   overrides it; the override was not read directly.
