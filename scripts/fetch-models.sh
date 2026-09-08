@@ -26,12 +26,28 @@ CURL=(curl -sS -L --fail
       --speed-limit 2000 --speed-time 20
       --connect-timeout 20)
 
+# A gated repo answers 401 with X-Error-Code: GatedRepo, and the API will
+# still LIST it happily -- so the failure looks like a download problem
+# rather than an access one. `hf auth login` leaves a token in the standard
+# cache path; read it when HF_TOKEN is not exported, which is what the
+# huggingface CLI itself does. The value is never printed.
+if [ -z "${HF_TOKEN:-}" ]; then
+  for _t in "$HOME/.cache/huggingface/token" "$HOME/.huggingface/token"; do
+    [ -f "$_t" ] && HF_TOKEN=$(tr -d "
+" < "$_t") && break
+  done
+fi
 [ -n "${HF_TOKEN:-}" ] && CURL+=(-H "Authorization: Bearer $HF_TOKEN")
 
 # Print "path<TAB>size" for every file in a repo, optionally filtered by glob.
 list_repo() {
   local repo="$1" glob="${2:-}"
-  curl -sS --retry 10 --retry-all-errors --retry-delay 1 -m 60 \
+  # -L matters. A renamed repo answers the API with a 307, and without it
+  # the listing came back EMPTY and the model was reported as "skipping"
+  # rather than as moved: Comfy-Org/flux2-klein redirects to a repo with a
+  # different name and three files went silently undownloaded. The download
+  # URLs below always followed redirects; only the listing was blind.
+  curl -sSL --retry 10 --retry-all-errors --retry-delay 1 -m 60 \
        ${HF_TOKEN:+-H "Authorization: Bearer $HF_TOKEN"} \
        "https://huggingface.co/api/models/$repo/tree/main?recursive=1" |
   GLOB="$glob" python -c '
@@ -67,7 +83,13 @@ while read -r repo dest glob; do
   while IFS=$'\t' read -r path size; do
     [ -z "$path" ] && continue
     n=$((n+1))
-    out="$dest/$path"
+    # A basename glob means the caller wants THOSE FILES AT dest, not the
+    # repo tree rebuilt underneath it. Comfy-Org nests everything under
+    # split_files/, so preserving the path put the model in
+    # models/diffusion_models/split_files/diffusion_models/ -- invisible to
+    # ComfyUI, and it restarted a 6 GB download because the resume target
+    # was a different path than the one already on disk.
+    if [ -n "${glob:-}" ]; then out="$dest/$(basename "$path")"; else out="$dest/$path"; fi
     mkdir -p "$(dirname "$out")"
 
     have=$(stat -c %s "$out" 2>/dev/null || echo 0)

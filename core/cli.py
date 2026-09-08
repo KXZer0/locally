@@ -21,7 +21,6 @@ from core.slots.vad import VadSlot
 from core.slots.whisper import WhisperSlot
 from core.startup import check_port, detect_devices, _idle_watchdog, _load_in_background
 from core.routes import audio as audio_routes
-from core.system.setup import _read_setup_config
 from core.system.updates import _schedule_update_refresh
 from core.launch.configure import configure
 from core.launch.slots import build_slots
@@ -48,12 +47,18 @@ Usage:
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(
         description=DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     default_model = str(Path(config.SCRIPT_DIR) / "model")
+    p.add_argument("--headless", action="store_true",
+                   help="API-only operation (always enabled; retained for launch scripts)")
+    p.add_argument("--host", default="0.0.0.0",
+                   help="Bind address (default: 0.0.0.0 for container clients; use 127.0.0.1 for local-only)")
+    p.add_argument("--auto-util", action="store_true",
+                   help="Discover and load utility models at startup (otherwise opt-in)")
     p.add_argument("--model-dir", default=default_model,
                    help="Primary model directory (default: model/)")
     p.add_argument("--device", default="auto",
@@ -134,8 +139,8 @@ def parse_args():
                    help="Directory of utility models holding ocr-det/, "
                         "ocr-rec/, and optional background/, upscale/, "
                         "detect-rfdetr/, and embed/ folders. Enables the "
-                        "Utilities sidebar and /v1/util/* endpoints. Auto-detected "
-                        "from ~/models/util when omitted. Fetch OCR with "
+                        "/v1/util/* endpoints. Use --auto-util to discover "
+                        "~/models/util when omitted. Fetch OCR with "
                         "`python scripts/npu-probe.py --all`.")
     p.add_argument("--no-util", action="store_true",
                    help="Don't load utility models even if they are found.")
@@ -286,7 +291,12 @@ def parse_args():
                         "(name, precision, architecture, integrity) and exit. "
                         "Searches the locally directory and ~/models by "
                         "default; pass directories to search those instead.")
-    return p.parse_args()
+    p.add_argument("--list-models", nargs="*", default=None, metavar="DIR",
+                   help="Print every loadable chat model as "
+                        "path<TAB>name<TAB>llm|vlm and exit. The scriptable "
+                        "form of --scan: launchers and tooling read this "
+                        "instead of keeping their own list of model names.")
+    return p.parse_args(argv)
 
 
 def main(app=None, ollama_app=None):

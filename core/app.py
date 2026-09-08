@@ -1,7 +1,5 @@
 """Flask application factories for the OpenAI and Ollama surfaces."""
 
-import os
-
 from flask import Flask
 
 from core import config
@@ -15,11 +13,8 @@ from core.system.status import _log_request
 
 
 def create_app():
-    app = Flask("locally",
-                template_folder=os.path.join(config.SCRIPT_DIR, "templates"),
-                static_folder=os.path.join(config.SCRIPT_DIR, "static"))
+    app = Flask("locally", static_folder=None, template_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = config.MAX_REQUEST_BYTES
-    app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.register_blueprint(chat_bp)
     app.register_blueprint(models_bp)
     app.register_blueprint(audio.bp)
@@ -38,7 +33,7 @@ def create_app():
 
 
 def create_ollama_app():
-    app = Flask("locally-Ollama")
+    app = Flask("locally-Ollama", static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = config.MAX_REQUEST_BYTES
     app.register_blueprint(ollama_chat_bp)
     app.register_blueprint(ollama_models_bp)

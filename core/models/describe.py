@@ -100,6 +100,36 @@ def _model_dirs_under(path, depth):
     return found
 
 
+def list_models(paths):
+    """One loadable chat model per line: path, display name, llm|vlm.
+
+    The machine-readable twin of scan_models, for scripts. It exists so that
+    nothing outside this file has to keep its own idea of which model
+    directories are real -- the launcher used to name two by hand, so deleting
+    one of them (entirely the user's business) silently changed which model
+    started. Same discovery the server does, including `_is_generative_dir`,
+    which is what keeps Whisper and Kokoro out of a chat model listing.
+
+    No device init and no model load, exactly like --scan.
+    """
+    searched = [os.path.normpath(os.path.expanduser(p)) for p in
+                (paths or [config.SCRIPT_DIR, "~/models"])]
+    seen = set()
+    for path in searched:
+        # depth=1, like the server's own _available_models -- this has to
+        # answer "what would /v1/models/available offer me", and depth 2 walks
+        # into a diffusion pipeline and reports its vae_encoder and unet as
+        # chat models. --scan keeps depth 2 because a report about what is on
+        # disk should show everything that is on disk.
+        for d in _model_dirs_under(path, depth=1):
+            real = os.path.realpath(d)
+            if real in seen or not _is_generative_dir(d):
+                continue
+            seen.add(real)
+            print(f"{d}	{resolve_display_name(d)[0]}	{'vlm' if is_vlm(d) else 'llm'}",
+                  flush=True)
+
+
 def scan_models(paths):
     """Print what locally actually sees in each model directory.
 

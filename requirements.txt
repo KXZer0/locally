@@ -1,5 +1,7 @@
 # Runtime
 flask
+rich>=13.7
+prompt-toolkit>=3.0.43
 # Auto turn-taking streams microphone frames to the VAD model over a WebSocket.
 # Optional: without it the Voice tab falls back to push-to-talk and says so.
 flask-sock>=0.7.0
@@ -48,13 +50,13 @@ huggingface_hub>=0.36.0
 # and faster for everything else. Discovered via a 74 GB Qwen3-Coder-Next.
 hf_xet
 
-# Optional: locally_app.py's native app-shell window (WebView2 via the
-# already-installed runtime, no browser chrome). The server itself never
-# imports this -- only scripts/locally-launch.ps1's native-window path does,
-# and it probes for the import and falls back to Edge app-mode when this
-# isn't installed. Install with:
-#   venv\Scripts\python.exe -m pip install pywebview
-# pywebview
+# Optional: the microphone and speaker for `locally.py chat` -> /voice. A ~2 MB
+# PortAudio wheel, imported only when /voice runs, because attaching a terminal
+# to a running server must not require an audio stack. The server side of voice
+# (Whisper, Kokoro, Silero) needs none of this -- it is already in the list
+# above. Install with:
+#   venv\Scripts\python.exe -m pip install sounddevice
+# sounddevice
 
 # Optional: only for `locally`'s Odysseus autostart (docs/ODYSSEUS.md).
 #

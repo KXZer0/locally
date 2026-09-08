@@ -37,7 +37,11 @@ def load_model():
     a minute; that's honest about what's happening rather than reporting
     success on a model that can't answer yet.
     """
-    body = request.get_json(silent=True) or {}
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return openai_error("Request body must be a JSON object")
+    if any(key in body and not isinstance(body[key], str) for key in ("model", "name", "device")):
+        return openai_error("'model', 'name', and 'device' must be strings")
     name = (body.get("model") or body.get("name") or "").strip()
     if not name:
         return openai_error("'model' is required (name or directory path)")
@@ -69,6 +73,12 @@ def load_model():
     # of failing.
     if device in ("AUTO", "ANY"):
         device = ""
+    if device and device not in ("NPU", "GPU", "CPU"):
+        return openai_error("Device must be NPU, GPU, CPU, or AUTO")
+    if runtime.primary is None:
+        return openai_error("Server has not initialized its model slots", "server_error", 503)
+    if runtime.primary.device_name == "REMOTE":
+        return openai_error("Local model swapping requires a local server, not --proxy-url")
     dev_name, dev_id, why = _choose_device(target, device or None)
     if dev_name is None:
         return openai_error(f"No device can host '{name}' ({why}).")
@@ -112,7 +122,7 @@ def load_model():
     print(f"\n{datetime.now():%H:%M:%S} <> [{slot.device_name}] Swap "
           f"{slot.model_name or '(empty)'} -> {model_display_name(target)}"
           + (f" (moving {moved_from} -> {dev_name})" if moved_from else ""), flush=True)
-    with slot.lock:
+    with slot.lock.moving_to(dev_name):
         slot.unload()
         # Wait for the release to actually land before loading. The offload
         # ratio is resolved from live free RAM, and the GPU driver hands the
@@ -164,10 +174,11 @@ def load_model():
             return openai_error(
                 f"Failed to load '{name}': {explain_genai_error(last_err)}",
                 "server_error", 500)
-    # warmup() takes the lock itself, so it must run after the block above.
-    slot.warmup()
-    slot.prewarmed = False
-    slot.last_ttft_ms = None
+        slot.warmup()
+        if slot.status == "error":
+            return openai_error("Model loaded but warmup failed; check server logs", "server_error", 500)
+        slot.prewarmed = False
+        slot.last_ttft_ms = None
     elapsed = time.perf_counter() - t0
     print(f"{datetime.now():%H:%M:%S} <> [{slot.device_name}] Swap done "
           f"({elapsed:.1f}s)", flush=True)
@@ -199,11 +210,33 @@ def unload_model():
     gets both and the UI reports them as what they are.
     """
     body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict) or not isinstance(body.get("device", ""), str):
+        return openai_error("Request body must be an object with an optional device string")
     want = (body.get("device") or "").upper()
+    # "device" cannot express "the OCR engines but not the model answering on
+    # the same device" -- and on a one-model box the chat model and the
+    # utilities are usually on the SAME device, so freeing the utilities by
+    # device took the conversation down with them. `scope` says which KIND of
+    # slot is meant; the two compose (scope util + device NPU is legal).
+    scope = str(body.get("scope") or "all").lower()
+    kinds = {
+        "all": (runtime.primary, runtime.secondary, runtime.whisper_slot,
+                runtime.tts_slot, runtime.util_npu, runtime.util_gpu, runtime.util_cpu),
+        "chat": (runtime.primary, runtime.secondary),
+        "audio": (runtime.whisper_slot, runtime.tts_slot),
+        "util": (runtime.util_npu, runtime.util_gpu, runtime.util_cpu),
+    }
+    if scope not in kinds:
+        return openai_error("'scope' must be one of: all, chat, audio, util")
 
-    targets = [s for s in (runtime.primary, runtime.secondary, runtime.whisper_slot, runtime.tts_slot,
-                           runtime.util_npu, runtime.util_gpu, runtime.util_cpu)
+    targets = [s for s in kinds[scope]
                if s and s.status not in ("not_configured", "idle_unloaded")]
+    if not targets and scope != "all":
+        # Nothing of that kind is loaded, which is the state the caller wanted.
+        return jsonify({"status": "ok", "unloaded": [],
+                        "memory": {"before": _memory_snapshot(),
+                                   "after": _memory_snapshot(),
+                                   "weights_mb": 0}})
     if want:
         targets = [s for s in targets if s.device_name == want]
         if not targets:
@@ -265,5 +298,4 @@ def unload_model():
              f"({returned:+d}, {settled}s)" if returned is not None else ""),
           flush=True)
     return jsonify({"status": "ok", "unloaded": freed, "memory": memory})
-
 

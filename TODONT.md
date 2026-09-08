@@ -1498,3 +1498,30 @@ Two corollaries, both found the same day:
   the whole of it. The same 400 messages arriving one at a time, each painted
   before the next (which is what `addMessage()` does, since it auto-scrolls),
   grew it by **0 px**.
+
+## Continuing the custom web UI (2026-09-04)
+
+The user chose external harnesses (such as Odysseus) as the main interface.
+Locally now provides the headless API and a small optional terminal client.
+The browser frontend and native shell were removed; model files were retained.
+Do not restart UI redesign work from the historical checkpoint plans.
+
+## Two things the terminal conversion tried and must not try again (2026-09-04)
+
+- **Do not bind `-ExtraArgs` explicitly from a generated `start.ps1`.** The
+  generated launcher forwarded to `scripts/locally-launch.ps1` as
+  `-ExtraArgs @('--device','NPU',...) @args`, and `-ExtraArgs` is declared
+  `ValueFromRemainingArguments`: binding it by name leaves nothing to collect
+  the rest, so **every** user override died with "A parameter cannot be found
+  that matches parameter name '-device'" -- on Windows PowerShell 5.1 and
+  pwsh 7 alike. Only `--port` survived, by accidentally binding to `-Port`,
+  which is what made it look like it worked. `-ExtraArgs (@(...) + $args)`
+  fixes it, and calling the venv's Python directly (what install.ps1 now
+  generates) removes the binding question entirely.
+- **Do not infer truncation by counting streamer callbacks.** The obvious
+  test -- `token_count >= gen.max_new_tokens` -- reads false on a generation
+  that plainly hit the cap: measured on Qwen3-8B-abliterated/NPU with
+  `--max-tokens 200`, the streamer fired **192** times for an answer that
+  stopped mid-sentence, because a callback is a text chunk and not a token.
+  `DecodedResults.finish_reasons` is the pipeline's own answer and is on both
+  the LLM and VLM result types (`extract_finish_reason`).

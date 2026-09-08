@@ -65,6 +65,15 @@ def _util_slot(engine):
     if blocked is not None:
         raise _TurnError(blocked)
     slot = _util_slots()[want]
+    if slot is not None and slot.status in ("loading", "warming_up"):
+        # Configured and on its way, which is a different sentence from "not
+        # installed" and needs the opposite action: wait, do not go and fetch
+        # models you already have. Utility slots deliberately load AFTER the
+        # chat model (startup.py), so the first seconds of a server's life are
+        # exactly when a client is most likely to ask.
+        raise _TurnError(openai_error(
+            f"The {want.upper()} utility models are still compiling. Retry in a "
+            f"moment; /health shows when they are ready.", "server_error", 503))
     if not slot or not _slot_serviceable(slot):
         others = [e for e in _loaded_util_engines() if e != want]
         if others:

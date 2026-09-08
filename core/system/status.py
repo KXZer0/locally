@@ -5,19 +5,17 @@ import json
 import time
 from datetime import datetime
 
-from flask import jsonify, render_template, request
+from flask import jsonify, request
 
-from core import config, odysseus, opencode_web, runtime
+from core import config, odysseus, runtime
 from core.chat.common import overall_status
 from core.chat.turn import python_tool_status
 from core.hardware.devices import (_gpu_shares_system_ram,
                                    _usable_gpu_bytes)
 from core.hardware.memory import _mem_status
-from core.models.discovery import _available_models_data, _models_data
 from core.models.integrity import _dir_size_bytes
 from core.routes import audio as audio_routes
 from core.slots.select import _slot_serviceable
-from core.system.coding import _coding_mode_state
 from core.tools.builtin import BUILTIN_TOOLS, _builtin_tools_supported
 from core.web.search import _searx, web_search_status
 
@@ -48,10 +46,6 @@ def _debug_openai():
 # Endpoints
 # ---------------------------------------------------------------------------
 
-def gui():
-    return render_template("index.html")
-
-
 def _health_data():
     """One snapshot of every serveable slot, without binding it to HTTP.
 
@@ -71,7 +65,6 @@ def _health_data():
               "prompt_cache": config.PROMPT_CACHE,
               "web_search": web_search_status(),
               "python_tool": python_tool_status(),
-              "coding_mode": _coding_mode_state(),
               # Which server-owned tools the serving slot will be offered. The
               # web UI reads this to decide whether to ask for a streamed turn:
               # the tool loop has to see a whole tool-call block before it can
@@ -87,14 +80,7 @@ def _health_data():
                   "pool_gb": config.PROMPT_CACHE_GB,
                   "prewarm_file": config.PREWARM_FILE,
               },
-              # The OpenCode web server's state belongs here for the same
-              # reason every other subsystem's does: it is a process this one
-              # may be holding open, and nothing else reports it.
-              "opencode_web": opencode_web.status(),
-              # Odysseus is a separate program, but locally may be holding its
-              # containers up, so its state belongs in the same snapshot for
-              # the same reason OpenCode's does.
-              "odysseus": odysseus.status()}
+              "service": "locally", "mode": "headless"}
     if runtime.whisper_slot and runtime.whisper_slot.status != "not_configured":
         result["whisper"] = runtime.whisper_slot.info
     if runtime.tts_slot and runtime.tts_slot.status != "not_configured":
@@ -154,7 +140,7 @@ def _memory_data():
 
     slots = []
     for slot in (runtime.primary, runtime.secondary):
-        if not slot or slot.status == "not_configured":
+        if not slot or slot.status == "not_configured" or slot.device_name == "REMOTE":
             continue
         weights = _dir_size_bytes(slot.model_dir) if slot.model_dir else None
         slots.append({
@@ -181,6 +167,17 @@ def _memory_data():
                    f"its expert weights from disk.")
         action = ("Free RAM, or raise the iGPU Shared GPU Memory Override, to "
                   "keep it fully resident.")
+    elif slots and all(s["status"] == "idle_unloaded" for s in slots):
+        # The watchdog doing its job, not a fault: the next request reloads
+        # the model. Saying "check the device states" here sent people looking
+        # for a problem that had already been solved on purpose.
+        state = "unloaded"
+        message = "Idle-unloaded; the next request reloads the model."
+        action = None
+    elif not any(s["status"] == "ready" for s in slots):
+        state = "unloaded"
+        message = "No local chat model is ready; check the device states above."
+        action = None
     else:
         state = "resident"
         message = "Models are fully resident."
@@ -207,29 +204,6 @@ def _memory_data():
     }
 
 
-def ui_bootstrap():
-    """Everything the first frame needs, captured in one HTTP round trip.
-
-    The old browser startup made six serial requests: /health triggered model,
-    available-model and memory refreshes, then init() repeated both model
-    requests. Localhost latency is small, but every `await` yielded a separate
-    parse, Flask dispatch and render opportunity, so the controls visibly
-    filled in one after another. Keep the public endpoints for API clients and
-    polling; this is only the web UI's coherent initial snapshot.
-    """
-    started = time.perf_counter()
-    payload = {
-        "health": _health_data(),
-        "models": _models_data(),
-        "available_models": _available_models_data(),
-        "memory": _memory_data(),
-    }
-    response = jsonify(payload)
-    elapsed_ms = (time.perf_counter() - started) * 1000
-    response.headers["Server-Timing"] = f"bootstrap;dur={elapsed_ms:.1f}"
-    return response
-
-
 # ---------------------------------------------------------------------------
 # Utilities (OCR, native documents, images, and local semantic search)
 # ---------------------------------------------------------------------------
@@ -248,7 +222,6 @@ def ui_bootstrap():
 
 
 atexit.register(_searx.stop)
-atexit.register(opencode_web.stop)
 # Only ever stops a stack this process started, and `stop` never `down`, so
 # nothing the user has in Odysseus can be lost by locally exiting.
 atexit.register(odysseus.stop)

@@ -35,6 +35,28 @@ def extract_perf(result):
         return None, None
 
 
+def extract_finish_reason(result, default="stop"):
+    """Why generation stopped, as OpenVINO GenAI reports it.
+
+    Every streaming turn used to be labelled "stop", so an answer cut off at
+    max_new_tokens was indistinguishable from one that finished -- no client
+    could tell a complete answer from a truncated one. Counting streamer
+    callbacks is not a substitute: measured on Qwen3-8B/NPU with a 200-token
+    budget, the callback count was 192 for a generation that plainly hit the
+    cap. `DecodedResults.finish_reasons` is the pipeline's own answer.
+
+    Falls back to `default` whenever the field is missing (older builds, other
+    result types), because claiming truncation that did not happen is worse
+    than the silence this replaces.
+    """
+    reasons = getattr(result, "finish_reasons", None)
+    try:
+        name = getattr(next(iter(reasons)), "name", "")
+    except (TypeError, StopIteration):
+        return default
+    return {"LENGTH": "length", "STOP": "stop"}.get(name, default)
+
+
 def explain_genai_error(e):
     """Map opaque OpenVINO GenAI runtime errors to actionable messages."""
     msg = str(e)

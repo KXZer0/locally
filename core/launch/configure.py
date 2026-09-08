@@ -7,47 +7,18 @@ import flask.cli
 from core import config, odysseus
 from core.sandbox.python_exec import sandbox_status
 from core.hardware.devices import _gpu_has_xmx
-from core.models.describe import scan_models
-from core.system.setup import _read_setup_config
+from core.models.describe import list_models, scan_models
 from core.web import search as web_search_mod
 
 
 def configure(args):
 
-    # First-run choices live outside the repository and only fill values the
-    # caller did not explicitly provide. Command-line flags remain the final
-    # authority, while the launcher can become one-click after onboarding.
-    saved_setup = _read_setup_config()
-    saved_assistant = saved_setup.get("assistant") or {}
-    default_model = os.path.abspath(os.path.join(config.SCRIPT_DIR, "model"))
-    using_default_model = (os.path.abspath(os.path.expanduser(args.model_dir)) ==
-                           default_model)
-    if not args.proxy_url and using_default_model:
-        if saved_assistant.get("backend") == "ollama":
-            args.proxy_url = saved_assistant.get("url") or "http://127.0.0.1:11434"
-            args.proxy_model = saved_assistant.get("model") or args.proxy_model
-        elif (saved_assistant.get("backend") == "openvino" and
-              os.path.isdir(saved_assistant.get("model_dir") or "")):
-            args.model_dir = saved_assistant["model_dir"]
-            args.device = saved_assistant.get("device") or args.device
-    saved_voice = saved_setup.get("voice") or {}
-    if not args.whisper_dir and os.path.isdir(saved_voice.get("stt_dir") or ""):
-        args.whisper_dir = saved_voice["stt_dir"]
-    if not args.tts_dir and os.path.isdir(saved_voice.get("tts_dir") or ""):
-        args.tts_dir = saved_voice["tts_dir"]
-    if not args.vad_dir and os.path.isdir(saved_voice.get("vad_dir") or ""):
-        args.vad_dir = saved_voice["vad_dir"]
-    if not args.speaker_dir and os.path.isdir(saved_voice.get("speaker_dir") or ""):
-        args.speaker_dir = saved_voice["speaker_dir"]
-    saved_web = saved_setup.get("web") or {}
-    if saved_web.get("check_updates"):
-        args.check_updates = True
-    if not args.search_url and saved_web.get("searxng"):
-        args.search_url = saved_web.get("url") or "http://127.0.0.1:8080"
-        if not args.searxng_root:
-            args.searxng_root = saved_web.get("root")
-
-    # --scan is a report, not a server: no ports, no devices, no model load.
+    # CLI flags are authoritative; retired browser settings are not loaded.
+    # Neither --scan nor --list-models is a server: no ports, no devices, no
+    # model load. --list-models is the parseable one, for launchers.
+    if args.list_models is not None:
+        list_models(args.list_models)
+        return None
     if args.scan is not None:
         print(flush=True)
         scan_models(args.scan)
@@ -106,6 +77,11 @@ def configure(args):
     # None means the flag was not given, so fall back to what the settings
     # toggle saved. An explicit --odysseus-autostart / --no- always wins, the
     # same precedence locally.ini.example states for every other setting.
+    # The one persisted preference still read: it is machine-local state
+    # (odysseus-autostart.json), not a browser setting, and the thing it
+    # controls happens at startup, so a value that does not survive a restart
+    # could never take effect. An explicit flag still wins, which is the
+    # precedence locally.ini.example states for every other setting.
     config.ODYSSEUS_AUTOSTART = (bool(args.odysseus_autostart)
                                  if args.odysseus_autostart is not None
                                  else odysseus.load_autostart())

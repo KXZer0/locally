@@ -1,3 +1,5 @@
+> Historical plan. The user retired the web UI; see ../README.md for the current direction.
+
 # Checkpoint 4 — Full web UI redesign
 
 Single source of truth for the redesign. Every worktree agent reads this file,

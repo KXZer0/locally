@@ -60,7 +60,8 @@ def build_slots(args, model_dir):
     setup_only = not args.proxy_url and not os.path.isdir(model_dir)
     if setup_only:
         print(f"  No assistant model found at {model_dir}.")
-        print("  Starting in setup mode — the web UI can install one.", flush=True)
+        print("  API available without a chat model. Use --model-dir, "
+              "POST /v1/models/load, or /load in terminal chat.", flush=True)
     if args.gpu_model_dir and not os.path.isdir(args.gpu_model_dir):
         print(f"ERROR: GPU model directory not found: {args.gpu_model_dir}")
         sys.exit(1)
@@ -75,7 +76,7 @@ def build_slots(args, model_dir):
             print(f"ERROR: --util-models-dir not found: {args.util_models_dir}")
             sys.exit(1)
         runtime.UTIL_DIR = os.path.abspath(args.util_models_dir)
-    elif not args.no_util:
+    elif not args.no_util and args.auto_util:
         # Find the utility models without being told where they are. An
         # explicit flag meant every existing launch script silently omitted it,
         # so the models sat on disk while the UI reported "not installed" —

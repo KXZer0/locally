@@ -57,7 +57,7 @@ def serve(app, ollama_app, args, model_dir, devices, setup_only, all_slots):
         )
         threads.append(t)
     else:
-        print(f"  Setup UI: http://localhost:{args.port}", flush=True)
+        print(f"  API: http://localhost:{args.port}/v1", flush=True)
         # Nothing is going to set this, and the utilities are the only thing
         # this mode can actually offer.
         _primary_ready.set()
@@ -175,7 +175,7 @@ def serve(app, ollama_app, args, model_dir, devices, setup_only, all_slots):
         def _run_ollama():
             try:
                 ollama_app.run(
-                    host="0.0.0.0", port=args.ollama_port, threaded=True,
+                    host=args.host, port=args.ollama_port, threaded=True,
                 )
             except Exception as e:
                 print(f"  WARNING: Ollama API failed to start: {e}", flush=True)
@@ -184,4 +184,6 @@ def serve(app, ollama_app, args, model_dir, devices, setup_only, all_slots):
 
     # OpenAI API on main thread
     print(f"  OpenAI API on port {args.port}", flush=True)
-    app.run(host="0.0.0.0", port=args.port, threaded=True)
+    print(f"  Optional chat: python locally.py chat --port {args.port}", flush=True)
+    print("  Ctrl+C stops this server and releases its models.", flush=True)
+    app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)

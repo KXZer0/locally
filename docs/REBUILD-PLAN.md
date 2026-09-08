@@ -1,3 +1,5 @@
+> Historical plan. The user retired the web UI; see ../README.md for the current direction.
+
 # locally rebuild plan (2026-09-02)
 
 Handoff for the implementing model. Every number below was measured in this

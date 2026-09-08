@@ -1,0 +1,52 @@
+# Abliterated + current-coder download queue (2026-09-04).
+# Format: <hf_repo> <dest_dir> [basename_glob].  Serial by design —
+# see scripts/fetch-models.sh for why (75% connection-reset rate here).
+#
+# Every entry below was checked against three gates before being listed:
+#   (1) EXPORTABLE — model_type is in optimum-intel's registered set for one
+#       of the two venvs, or the repo is already an OpenVINO IR.
+#   (2) FITS — int4 weights against _usable_gpu_bytes = min(ceiling 25.3 GB,
+#       free RAM - 3 GB). 31.5 GB box, Arc B390 iGPU, shared memory.
+#   (3) REPUTABLE — an org repo (Qwen, OpenVINO/Intel) or huihui-ai, which is
+#       the abliteration publisher this project already uses for the 8B.
+
+# --- 1. DROPPED 2026-09-04, Camilo's call ---------------------------------
+# Qwen3-14B-abliterated. Dense qwen3, would have been the NPU candidate at
+# int4-cw ~8 GB. Cut because a 2026 12B beats a 2025 dense 14B and the 14B
+# costs 160 KB/token of KV against gemma-4-12B's 64 -- it was the most
+# expensive model here to give context to, for the weakest result. The
+# partial download was deleted; re-enable this line to start it over.
+# huihui-ai/Huihui-Qwen3-14B-abliterated-v2  ~/models/src/Huihui-Qwen3-14B-abliterated-v2
+
+# --- 2. THE CODER, ready-to-run ------------------------------------------
+# Intel's own int4 export, published 2026-08-14 — three weeks old, and the
+# newest Qwen generation. 27B < 30B. No conversion step at all, so this is
+# the entry with zero export risk. Note it is a VLM (vision_config present,
+# language_model_only=false), so it takes VLMPipeline and gets NO prefix
+# cache — the language model alone is 12.97 GB of the 14.9.
+OpenVINO/Qwen3.8-27B-int4-ov  ~/models/Qwen3.8-27B-int4-ov
+
+# --- 3. THE CODER, abliterated + fast ------------------------------------
+# Purpose-built coding/reasoning model, abliterated by huihui-ai 2026-06-21,
+# Apache-2.0. gemma4_unified IS in venv-2026.3's registered export types
+# (checked, not assumed). 22.3 GB bf16 -> ~11B params -> int4 ~7 GB, which
+# by the bytes-per-token rule is ~2x the decode speed of entry 2.
+# CAVEAT: the base (yuxinlu1/gemma-4-12B-coder-fable5-composer2.5-v1) is an
+# individual's merge with 674 downloads, not an org release. Least
+# battle-tested thing in this file; judge it on measurement, not on the card.
+huihui-ai/Huihui-gemma-4-12B-coder-fable5-composer2.5-v1-abliterated  ~/models/src/Huihui-gemma-4-12B-coder-abliterated
+
+# --- 4. The newest abliterated 9B ----------------------------------------
+# qwen3_5, same 32-layer/4096-hidden geometry as the Qwen3.5-9B already on
+# disk, but published 2026-08-21. Hybrid attention (24 linear + 8 full), so
+# int8 only — optimum-intel #1722 corrupts Gated DeltaNet at int4 — and
+# never the NPU, which cannot legalize linear attention.
+huihui-ai/Huihui-Ornith-1.5-9B-abliterated  ~/models/src/Huihui-Ornith-1.5-9B-abliterated
+
+# --- 5. The flagship: newest abliterated model under 30B -----------------
+# Abliterated twin of entry 2, taken on Camilo's go-ahead 2026-09-04. 51.8 GB
+# of download and a 26B export. int4 rather than the int8 this file prescribes
+# for entry 4, because Intel themselves published Qwen3.8-27B-int4-ov on
+# 2026-08-14 — same qwen3_5 architecture — so int4 is validated upstream for
+# this model even though it is not for the 9B.
+huihui-ai/Huihui-Qwen3.8-27B-abliterated  ~/models/src/Huihui-Qwen3.8-27B-abliterated

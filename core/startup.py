@@ -95,10 +95,11 @@ def _load_in_background(slot, model_dir, devices, port, ollama_port, banner_slot
             slot.load()
             slot.warmup()
         else:
-            slot.device_full = devices.get(slot.device_name, {}).get("name", slot.device_name)
-            slot.load(model_dir)
-            slot.warmup()
-            _prewarm_slot(slot)
+            with slot.lock:
+                slot.device_full = devices.get(slot.device_name, {}).get("name", slot.device_name)
+                slot.load(model_dir)
+                slot.warmup()
+                _prewarm_slot(slot)
     except Exception as e:
         slot.status = "error"
         print(f"\n  [{slot.device_name}] ERROR: Failed to load model: {explain_genai_error(e)}")
@@ -134,7 +135,24 @@ def _load_in_background(slot, model_dir, devices, port, ollama_port, banner_slot
         api_lines = [f"    API  : {url}  (OpenAI)"]
         if ollama_port:
             api_lines.append(f"    API  : http://localhost:{ollama_port}  (Ollama)")
-        print(f"""
+        try:
+            from rich.console import Console
+            from rich.panel import Panel
+            from rich.table import Table
+            from rich.console import Group
+            from rich.text import Text
+            table = Table("Device", "Model", "Type", expand=True, box=None)
+            for s in banner_slots:
+                if s.status == "ready":
+                    table.add_row(Text(s.device_name), Text(s.model_name), Text(s.model_type.upper()))
+            endpoints = [f"OpenAI   {url}/v1"]
+            if ollama_port:
+                endpoints.append(f"Ollama   http://localhost:{ollama_port}")
+            Console().print(Panel(Group(table, Text("\n" + "\n".join(endpoints)),
+                                        Text("\nCtrl+C stops the API and releases its models", style="dim")),
+                                  title="locally · ready", border_style="dim"))
+        except ImportError:
+            print(f"""
 ================================================
   locally ready
 {chr(10).join(lines)}

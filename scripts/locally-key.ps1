@@ -1,199 +1,43 @@
-<#
-.SYNOPSIS
-    Hot path for the locally hardware key — raise the window, open one, or
-    hand off to the launcher.
-
-.DESCRIPTION
-    Replaces locallyKey.exe, which Smart App Control blocks (2026-08-17: SAC
-    left evaluation mode and started enforcing, so an unsigned locally-built
-    binary stopped loading — see TODONT.md). A self-signed certificate cannot
-    fix that; SAC judges against the Microsoft trusted root program and ignores
-    local trust stores. So the answer is to ship no binary at all and let a
-    Microsoft-signed host run the logic.
-
-    THREE CASES, and only the last one is allowed to be slow:
-
-      window up + server up   raise it and exit                (~50 ms of work)
-      window gone + server up open the app window RIGHT HERE   (no pwsh spawn)
-      server down             hand off to locally-launch.ps1   (it must boot a model)
-
-    The middle case is the one that was costing ~3-4 s. This script used to
-    treat "no window" as a cold start and hand off to locally-launch.ps1,
-    which meant spawning pwsh 7 (~235-600 ms) and paying that script's
-    Add-Type (~336 ms) purely to run a single Start-Process. Closing the app
-    window is the normal way to put locally away, so this was the common
-    case, not the rare one. %LOCALAPPDATA%\locally\launch.log showed every
-    recent press logging "server already running: True" — i.e. the entire
-    launcher ran to do nothing but open a browser.
-
-    The Win32 calls live in locally-win32.ps1, shared with the launcher.
-    They used to be duplicated, which is how locally-launch.ps1 kept its
-    Add-Type long after this script stopped using one.
-
-    Run with Windows PowerShell 5.1, from System32:
-      %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe
-    It is Microsoft-signed and in System32, so SAC never looks twice. (It is
-    no longer *required* — the shared helper now emits on pwsh 7 too — but
-    5.1 needs no separate install and this is the path locally.lnk uses.)
-
-.EXAMPLE
-    powershell.exe -NoProfile -WindowStyle Hidden -File scripts\locally-key.ps1
-#>
-param(
-    [int] $Port = 8000,
-    # Anything else is forwarded verbatim to locally-launch.ps1 on the cold path.
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]] $Rest = @()
-)
+# Hardware-key hot path: put a chat prompt in front of the user.
+#
+# There is no window to raise any more -- locally is a terminal program -- so
+# the only question this script answers is whether a server is ALREADY
+# listening. If one is, attach to it: starting a second one wants the same
+# port, and locally exits with "Port 8000 is already in use" into a window the
+# user has to read to find that out. If nothing is there, start a server this
+# chat session owns, which stops again when the session ends.
+#
+# Started with --start the server takes the default model/ link and picks its
+# own device. A configured server (install.ps1's start.ps1, with its device
+# and idle-timeout flags) should be started that way once; the key then finds
+# it listening and attaches, which is the faster path anyway.
+#
+# Runs under Windows PowerShell 5.1 from System32, which is what locally.lnk
+# uses and what Smart App Control never looks twice at (TODONT.md).
+param([int]$Port = 8000)
 
 $ErrorActionPreference = 'Stop'
-$sw = [Diagnostics.Stopwatch]::StartNew()
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$Python = if ($env:OS -eq 'Windows_NT') { Join-Path $RepoRoot 'venv\Scripts\python.exe' } else { Join-Path $RepoRoot 'venv/bin/python' }
+if (-not (Test-Path -LiteralPath $Python)) { throw 'Run install.ps1 first to create the server environment.' }
+$Entry = Join-Path $RepoRoot 'locally.py'
 
-# A hardware key gives no console to read, so leave a trail — the same log
-# locally-launch.ps1 writes. Without this, "the key felt slow" is unfalsifiable.
-# [IO.*] rather than Test-Path/Add-Content throughout: the first Test-Path in
-# a PS 5.1 session costs 144 ms of provider init (measured; later calls are
-# free), and Add-Content costs ~41 ms. Both are cmdlet overhead, not I/O, and
-# this script's whole budget is a few hundred milliseconds.
-$logDir = Join-Path $env:LOCALAPPDATA 'locally'
-if (-not [IO.Directory]::Exists($logDir)) { [void][IO.Directory]::CreateDirectory($logDir) }
-$keyLog = Join-Path $logDir 'launch.log'
-function Write-Log($msg) {
-    [IO.File]::AppendAllText($keyLog,
-        "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  key: $msg ($($sw.ElapsedMilliseconds) ms)$([Environment]::NewLine)")
-}
+# A TCP connect to loopback answers in about a millisecond. On this machine a
+# connection to a CLOSED loopback port is dropped rather than refused, so the
+# wait is bounded explicitly instead of relying on a fast failure.
+$Client = [System.Net.Sockets.TcpClient]::new()
+try { $Serving = $Client.ConnectAsync('127.0.0.1', $Port).Wait(250) -and $Client.Connected }
+catch { $Serving = $false }
+finally { $Client.Dispose() }
 
-$win32 = Join-Path $PSScriptRoot 'locally-win32.ps1'
-if (-not [IO.File]::Exists($win32)) {
-    [Console]::Error.WriteLine("locally-win32.ps1 not found next to this script")
-    exit 2
-}
-. $win32
+$Quote = { param($Value) "'" + ($Value -replace "'", "''") + "'" }
+$Inner = "& $(& $Quote $Python) $(& $Quote $Entry) chat --port $Port"
+if (-not $Serving) { $Inner += ' --start' }
 
-# A TCP connect to localhost answers in about a millisecond. A visible window
-# is NOT evidence of a live server — a stale window over a dead one is exactly
-# the "failed to fetch" case, and it has to fall through to the cold path.
-function Test-Up {
-    $c = [System.Net.Sockets.TcpClient]::new()
-    try { return $c.ConnectAsync('127.0.0.1', $Port).Wait(250) -and $c.Connected }
-    catch { return $false } finally { $c.Dispose() }
-}
-
-$serverUp = Test-Up
-# Raise whatever is there even if the server died — that is still where the
-# user wants to be looking, and the page will show its own error.
-$raised   = Show-locallyWindow
-
-# ---- Case 1: everything already up. Nothing to do. ----
-if ($raised -and $serverUp) {
-    Write-Log "raised existing window (pid $($raised.Id))"
-    exit 0
-}
-
-# ---- Case 2: server is fine, the window was just closed. ----
-# Open it here rather than waking pwsh 7 and the whole launcher for one
-# Start-Process. Only the app-mode path is inlined; anything more exotic
-# (no Chromium installed) still deserves the launcher's fallback chain.
-# A window that is STARTING has no title yet, so Find-locallyWindows cannot see
-# it, so the next key press concludes there is no window and opens another one.
-# The launch log shows exactly that: three "opened pywebview native window"
-# entries inside three seconds (14:46:10, :11, :12), interleaved with successful
-# raises of two different pids. Every extra window is a fresh WebView2 host, and
-# on the cold path a fresh model load -- which is what "everything opens and my
-# computer is flooded" is.
-#
-# A mutex cannot express this: this script exits immediately after spawning the
-# window, so any handle it holds is released before the window appears. The
-# state has to outlive the process, so it is a timestamp on disk. If we opened a
-# window within the grace period, the window is already coming -- do nothing.
-$launchMark = Join-Path $logDir 'opening.mark'
-$graceMs = 8000
-$ownsLaunch = $false
-if (-not $raised) {
-    # Exists-then-write is NOT enough, and the first cut of this guard proved
-    # it: five simultaneous presses, five checks that all ran before any write,
-    # so three still opened windows. The claim has to be ATOMIC, so it is
-    # FileMode::CreateNew -- the filesystem grants that to exactly one caller
-    # and throws for everyone else. Only the winner opens a window.
-    try {
-        $fs = [IO.File]::Open($launchMark, [IO.FileMode]::CreateNew,
-                              [IO.FileAccess]::Write, [IO.FileShare]::None)
-        $fs.Close()
-        $ownsLaunch = $true
-    } catch {
-        # Someone else holds it. Fresh means a window is genuinely on its way;
-        # stale means a previous press died before cleaning up, and refusing
-        # forever because of that would be worse than the flood.
-        $age = $graceMs + 1
-        try {
-            $age = ([DateTime]::UtcNow - [IO.File]::GetLastWriteTimeUtc($launchMark)).TotalMilliseconds
-        } catch { }
-        if ($age -lt $graceMs) {
-            Write-Log ("a window is already opening ({0:N0} ms ago); ignored" -f $age)
-            exit 0
-        }
-        try { [IO.File]::SetLastWriteTimeUtc($launchMark, [DateTime]::UtcNow); $ownsLaunch = $true } catch { }
-    }
-}
-
-if ($serverUp -and -not $raised) {
-    $opened = Open-locallyApp "http://127.0.0.1:$Port"
-    if ($opened) {
-        Write-Log "opened $opened, no launcher"
-        exit 0
-    } else {
-        Write-Log "installed PWA / Chromium app mode failed; handing off for fallbacks"
-    }
-}
-
-# ---- Case 3: cold path. The server needs starting (or app mode failed). ----
-# locally-launch.ps1 is #requires -Version 7.0, so it needs pwsh — the
-# WindowsApps alias rather than whatever Get-Command resolves to, since a Store
-# install pins the version in its path and breaks on the next update.
-$script = Join-Path $PSScriptRoot 'locally-launch.ps1'
-if (-not [IO.File]::Exists($script)) {
-    [Console]::Error.WriteLine("locally-launch.ps1 not found next to this script")
-    exit 2
-}
-$pwsh = "$env:LOCALAPPDATA\Microsoft\WindowsApps\pwsh.exe"
-if (-not [IO.File]::Exists($pwsh)) {
-    $pwsh = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
-}
-if (-not $pwsh) {
-    [Console]::Error.WriteLine("pwsh.exe not found; locally-launch.ps1 requires PowerShell 7")
-    exit 3
-}
-
-# One quoted string rather than an array: Start-Process puts ValidateNotNullOrEmpty
-# on each ArgumentList element, so a single empty argument fails the whole launch
-# — and `-NpuModel ''` is a documented, meaningful value to locally-launch.ps1
-# ("falls back to the GPU model below"). The old exe was no better here; joining
-# on spaces dropped the empty argument silently instead of erroring.
-function Quote($s) {
-    if ($null -eq $s -or $s -eq '' -or $s -match '[\s"]') {
-        return '"' + ($s -replace '"', '\"') + '"'
-    }
-    return $s
-}
-$launchArgs = (@('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
-                 '-File', $script, '-Port', $Port) + $Rest |
-                ForEach-Object { Quote $_ }) -join ' '
-# The window guard above covers this branch too, and it matters MORE here: a
-# duplicate window costs a WebView2 host, a duplicate SERVER costs a second full
-# model load. Measured on this machine, one server is 8.5 GB resident, so two
-# rapid presses on a cold box is 17 GB -- which is what "everything opens and my
-# computer is flooded" actually was. locally-launch.ps1 has its own
-# already-running check, but two launchers started in the same instant both read
-# "not running" before either binds.
-if (-not $ownsLaunch) {
-    Write-Log "server down, but another press already owns the launch; ignored"
-    exit 0
-}
-try {
-    Start-Process -FilePath $pwsh -ArgumentList $launchArgs -WindowStyle Hidden
-    Write-Log "server down; handed off to locally-launch.ps1"
-} catch {
-    [Console]::Error.WriteLine("failed to launch: $($_.Exception.Message)")
-    exit 3
-}
-exit 0
+# The key gives no console to inherit, so open one. -NoExit keeps the window
+# up after the client exits, so a startup error stays readable.
+$Shell = Get-Command pwsh -ErrorAction SilentlyContinue
+if (-not $Shell) { $Shell = Get-Command powershell -ErrorAction SilentlyContinue }
+if (-not $Shell) { throw 'No PowerShell host was found to open the locally terminal.' }
+Start-Process -FilePath $Shell.Source -WindowStyle Normal `
+    -ArgumentList "-NoProfile -NoExit -Command `"$Inner`""

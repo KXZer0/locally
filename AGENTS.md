@@ -2,27 +2,84 @@
 
 OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 
-## Current work — Checkpoint 4 (full web UI redesign)
+## Current direction — headless API and optional terminal chat
 
-Read `docs/CHECKPOINT-4-UI-REDESIGN.md` before touching anything under `static/`
-or `templates/`. It is the active brief: a structural redesign around one
-persistent sidebar and one content spine, a five-agent worktree split, strict
-DOM compatibility, and a deliberately small motion vocabulary. Checkpoint 3 is
-complete and retained only as historical context.
-
-Design skills are installed at **`~/.agents/skills/`** — note that this is *not*
-Codex's own skill root (`~/.codex/skills/`), and nothing links the two. If they
-are not auto-discovered, read them from that path directly. The relevant ones
-are `animate`, `review-animations` and `apple-design`.
-
-**Their stack advice does not apply to this project.** No Tailwind, no component
-library, no CDN fonts, no motion library, no build step. The brief's §2 lists
-the constraints and why each exists; the exact easing and duration values are
-reproduced in §3 so the work does not depend on the skills loading at all.
+The user retired the custom web UI. Do not rebuild it. `README.md` is the current
+operating guide; old UI checkpoints and the rebuild plan are historical.
+`locally.py` starts the foreground API; `chat` attaches an optional terminal client,
+and `chat --start` owns a server until exit. Markdown copy/save preserve source.
+No browser setup settings are read. Audio/util models require explicit opt-in.
+Keep API compatibility for external harnesses. Do not launch or stop a user's
+separate harness when attaching/detaching terminal chat. Existing integration
+source is retained but browser/control routes are not mounted.
 
 ## Architecture
 
-- `locally.py` — Flask server, DeviceSlot class per device, auto-detects VLM/LLM from config.json
+- `locally.py` — command entry point; `core/app.py` builds APIs, `core/slots/device.py` owns inference, `core/terminal.py` is an HTTP client
+- **The terminal client is an HTTP client and nothing else** (`core/terminal.py`,
+  `locally.py chat` / `status`). It imports no Flask and no OpenVINO -- attaching
+  to a running server must not pay a native import -- and the one thing it does
+  take from `core/` is `_ThinkFilter`, so reasoning is hidden by the same code
+  the Anthropic path uses rather than by a second copy that can drift. Four
+  behaviours are deliberate and were each found by running it: the prompt waits
+  while `/health` says `loading`, because the socket binds seconds before a model
+  can answer and the first turn was otherwise refused outright (a piped turn was
+  simply lost); Ctrl+C posts `/v1/cancel` before giving up on the stream, since
+  the spinner promises a cancel; a `length` finish keeps the answer and labels it
+  incomplete instead of raising it away (on the 1024-token default that is the
+  ordinary end of a long answer); and an unclosed `<think>` falls back to showing
+  the reasoning, because an empty answer reads as a hang. Verified on
+  Qwen3-8B-abliterated/NPU: closed think block -> reasoning hidden, answer alone;
+  200-token budget -> answer kept, "Stopped at the 200-token budget".
+- **`finish_reason` was `"stop"` for every streamed turn** (fixed 2026-09-04).
+  Both `stream_llm` and `stream_vlm` hard-coded it, so an answer cut off at
+  `max_new_tokens` arrived labelled exactly like one that finished and no client
+  -- terminal or harness -- could tell them apart. `extract_finish_reason` reads
+  `DecodedResults.finish_reasons` (the pipeline's own verdict) and falls back to
+  `"stop"` when the field is missing, because claiming a truncation that did not
+  happen is worse than the silence it replaces. Do not count streamer callbacks
+  instead; TODONT.md has the measurement.
+- **Nothing outside `core/models/describe.py` keeps a list of model names.**
+  `--list-models` prints `path<TAB>name<TAB>llm|vlm` using the same discovery
+  and the same `_is_generative_dir` filter as `/v1/models/available` (depth 1,
+  so a diffusion pipeline's `unet` is not offered as a chat model; `--scan`
+  keeps depth 2 because a report about the disk should show the disk). The
+  terminal's `/load` completes from the live endpoint, and
+  `scripts/locally-launch.ps1` takes a PREFERENCE ORDER of names and falls
+  through to `--list-models` when none of them exist -- deleting a model is
+  the user's business and must not decide which model starts. The launcher
+  also stopped naming a device: `--device auto` lets `_choose_device` read the
+  IR's `rt_info`, which a shell script cannot do.
+- **The terminal client is where the retired UI's non-chat surface went.**
+  `/think on|off` sends Qwen3's `/no_think` on a COPY of the last user message
+  (a control token kept in history is re-sent every turn and lands in `/save` --
+  and the first cut did exactly that, caught by a test rather than by reading
+  it). `/read`, `/index`, `/find` and `/upscale` are the utility endpoints, with
+  `/read` putting the extracted Markdown into the conversation. `/util off`
+  needed a new server input, `POST /v1/models/unload {"scope": "util"}`: `device`
+  cannot say "the OCR engines but not the model answering on the same device",
+  and on a one-model box that took the conversation down with the utilities.
+  Utility commands wait while engines compile -- they load after the chat model,
+  so the first seconds of a server's life are exactly when a client asks, and
+  the server used to answer "Start with --util-models-dir" when it was already
+  set. Verified on this box: README.md read in 9,542 chars, CLAUDE.md + TODONT.md
+  indexed to 245 chunks with the right passage top-ranked, 320x200 upscaled 3.0x
+  on the NPU.
+- **Voice in the terminal is push-to-talk, and the audio dependency is optional**
+  (`core/terminal_voice.py`, `/voice`). The server already owns Whisper, Kokoro
+  and Silero, so the only missing pieces were a microphone and a speaker:
+  `sounddevice` is imported when `/voice` runs and never on the chat path, since
+  attaching a terminal to a running server must not require an audio stack. A
+  terminal cannot see a key being RELEASED, which is why Enter starts and stops
+  a take rather than a held key. Two behaviours are carried over from the web UI
+  because they were measured there: speech starts before the answer finishes
+  (clips are peeled off the token stream a sentence at a time, and synthesis of
+  clip N+1 runs on its own thread while N plays), and each line is printed when
+  its AUDIO starts, so the text cannot run ahead of the voice. Spoken turns
+  append the voice directive last, cap at 220 tokens and force no-think --
+  reasoning must never be spoken -- and keep neither the directive nor the token
+  in the conversation, which voice and text share. Measured through the client:
+  Kokoro 3.2 s of audio in 1.9 s, Whisper read it back word for word.
 - NPU: LLMPipeline with MAX_PROMPT_LEN=8192 (raised from 4096 on 2026-08-19;
   8192 is the vpux compiler's ceiling, not a memory limit — 9216/10240/12288
   all fail graph legalisation, and KV compression does not move it. See

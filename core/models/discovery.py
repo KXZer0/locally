@@ -185,9 +185,14 @@ def _available_models_data():
     data = []
     for m in add_live_fit_data(_available_models(), runtime.DEVICES):
         entry = dict(m)
+        if "NPU" in runtime.DEVICES:
+            ok, reason = _device_can_host("NPU", runtime.DEVICES["NPU"]["id"],
+                                           m["path"], m["type"] == "vlm")
+            entry["npu"] = {"compatible": ok and m.get("loadable", True), "reason": reason}
+        else:
+            entry["npu"] = {"compatible": False, "reason": "No NPU detected"}
         entry["loaded_on"] = loaded.get(os.path.realpath(m["path"]))
         data.append(entry)
     return {"object": "list", "data": data,
             "devices": [s.device_name for s in (runtime.primary, runtime.secondary) if s]}
-
 

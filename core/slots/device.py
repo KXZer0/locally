@@ -13,7 +13,8 @@ import time
 from datetime import datetime
 from queue import Empty, Queue
 from core import config
-from core.genai.results import explain_genai_error, extract_perf, extract_text
+from core.genai.results import (explain_genai_error, extract_finish_reason,
+                                extract_perf, extract_text)
 from core.genai.tokens import _count_tokens
 from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx, _usable_gpu_bytes
 from core.metrics import record_turn
@@ -23,7 +24,7 @@ from core.models.geometry import _kv_bytes_per_token, _model_max_context, _moe_e
 from core.models.identity import is_vlm, model_display_name
 from core.models.integrity import _dir_size_bytes, _verify_weights_integrity
 from core.slots.capability import _tools_supported
-from core.slots.locks import _device_lock
+from core.slots.locks import SlotLock
 from core.slots.planning import MemoryPlanning
 
 
@@ -38,7 +39,7 @@ class DeviceSlot(MemoryPlanning):
         self.model_name = ""
         self.model_type = ""             # "vlm" or "llm"
         self.status = "not_configured"   # not_configured -> loading -> warming_up -> ready / error / idle_unloaded
-        self.lock = _device_lock(self.device_name)
+        self.lock = SlotLock(lambda: self.device_name)
         self._cancel = threading.Event()  # signal to stop generation
         self.last_used = time.time()     # for idle-unload watchdog
         self.model_dir = None            # remembered so we can reload after unload
@@ -349,6 +350,9 @@ class DeviceSlot(MemoryPlanning):
         token_queue = Queue()
         token_count = 0
         gen_error = [None]
+        # Kept so the finish frame can report why generation stopped: the
+        # streamer only ever sees text, and the reason is on the result.
+        gen_result = [None]
         ttft_ms = None
         self.last_ttft_ms = None
 
@@ -364,12 +368,12 @@ class DeviceSlot(MemoryPlanning):
                     self._cancel.clear()
                     if images:
                         imgs = images[0] if len(images) == 1 else images
-                        self.pipe.generate(
+                        gen_result[0] = self.pipe.generate(
                             prompt=text_prompt, images=imgs,
                             generation_config=gen, streamer=streamer_callback,
                         )
                     else:
-                        self.pipe.generate(
+                        gen_result[0] = self.pipe.generate(
                             prompt=text_prompt, generation_config=gen,
                             streamer=streamer_callback,
                         )
@@ -421,7 +425,13 @@ class DeviceSlot(MemoryPlanning):
                 }
                 yield f"data: {json.dumps(err_chunk)}\n\n"
             else:
-                finish_reason = "cancelled" if was_cancelled else "stop"
+                # "stop" for everything was a lie the client could not
+                # check: an answer cut off at max_new_tokens arrived
+                # labelled exactly like one that finished, so nothing
+                # downstream could tell a complete answer from a truncated
+                # one. The pipeline knows; see extract_finish_reason.
+                finish_reason = ("cancelled" if was_cancelled else
+                                 extract_finish_reason(gen_result[0]))
                 chunk = {
                     "id": completion_id, "object": "chat.completion.chunk",
                     "created": created, "model": self.model_name,
@@ -462,6 +472,9 @@ class DeviceSlot(MemoryPlanning):
             return False
 
         gen_error = [None]  # captured from generate thread
+        # Kept so the finish frame can report why generation stopped: the
+        # streamer only ever sees text, and the reason is on the result.
+        gen_result = [None]
 
         def _generate():
             try:
@@ -478,8 +491,9 @@ class DeviceSlot(MemoryPlanning):
                     # stayed hidden: the model answered fine until you asked it
                     # to stream, which is what the web UI and every agent client
                     # actually do.
-                    self.pipe.generate(history, generation_config=gen,
-                                       streamer=streamer_callback)
+                    gen_result[0] = self.pipe.generate(
+                        history, generation_config=gen,
+                        streamer=streamer_callback)
                     self.last_used = time.time()
             except Exception as e:
                 gen_error[0] = e
@@ -546,7 +560,13 @@ class DeviceSlot(MemoryPlanning):
                 }
                 yield f"data: {json.dumps(err_chunk)}\n\n"
             else:
-                finish_reason = "cancelled" if was_cancelled else "stop"
+                # "stop" for everything was a lie the client could not
+                # check: an answer cut off at max_new_tokens arrived
+                # labelled exactly like one that finished, so nothing
+                # downstream could tell a complete answer from a truncated
+                # one. The pipeline knows; see extract_finish_reason.
+                finish_reason = ("cancelled" if was_cancelled else
+                                 extract_finish_reason(gen_result[0]))
                 chunk = {
                     "id": completion_id, "object": "chat.completion.chunk",
                     "created": created, "model": self.model_name,
