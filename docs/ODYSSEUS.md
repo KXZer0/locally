@@ -284,8 +284,9 @@ authoritative throughout `locally`; renaming the folder renames the model. On a
 proxy slot the device is `REMOTE`, so you get e.g. `qwen3-coder:30b@REMOTE`.
 
 `_route_request()` matches a requested model against **either** `model@DEVICE`
-**or** the bare `model_name`. Both work. Anything else falls through to default
-routing rather than erroring — see §7 for why that silence is a trap.
+**or** the bare `model_name`. Both work. A name that matches something on disk
+but is not loaded is loaded on demand — see "Changing models from Odysseus"
+below. Anything else falls through to default routing rather than erroring.
 
 Note the two protocols disagree on purpose:
 
@@ -296,6 +297,47 @@ Note the two protocols disagree on purpose:
 
 The Ollama shim omits the device suffix because Ollama clients treat the tag as a
 name, not an address.
+
+### Changing models from Odysseus
+
+`/v1/models` advertises the resident model **and every loadable model on disk**,
+so a client's model picker has something to pick from. The two are told apart by
+their id and their `owned_by`:
+
+```console
+$ curl -s http://127.0.0.1:8000/v1/models
+{"object":"list","data":[
+  {"id":"Qwen3-8B-abliterated-int4-cw@NPU","owned_by":"local-npu"},
+  {"id":"gemma-4-26b-a4b-it","owned_by":"local-available"}
+]}
+```
+
+The resident one carries `@DEVICE`. An unloaded one is named alone, deliberately:
+placement is decided at load time by `_choose_device` reading the IR's `rt_info`,
+so promising a device here would sometimes promise one the model cannot use — the
+NPU has no vision path, and group-quantized int4 crashes its compiler.
+
+**Selecting one and sending a message loads it.** `_load_on_demand`
+(`core/slots/route.py`) matches the requested id against what is on disk and
+swaps the slot before serving, the same bargain Ollama strikes. Nothing else is
+needed on the Odysseus side: pick the model, type, wait once.
+
+The cost is real and worth knowing before you switch mid-conversation:
+
+- The swap is **synchronous**, so the turn that triggers it pays the whole load —
+  9.3 s for Qwen3-8B on the NPU against a warm compile cache, 65 s cold, and
+  longer for a 14 GB VLM onto the GPU.
+- It is **one model at a time**, so the model you were using is unloaded. That is
+  not a limitation of this path; it is how the server is deliberately run (the
+  NPU allocates from the same RAM as the GPU, so a second resident model costs
+  real memory for a model you cannot talk to concurrently anyway).
+
+An id that matches nothing on disk still falls through to the resident model
+rather than erroring, because clients send ids nobody configured — an
+unconfigured default like `gpt-4` would otherwise break turns that work today.
+That silence is the trap §7 describes; on-demand loading removes the half of it
+that mattered, which was asking for a model you actually have and being answered
+by a different one under the requested model's name.
 
 ### Alternative: the Ollama shim
 

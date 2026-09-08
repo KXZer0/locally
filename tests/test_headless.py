@@ -32,6 +32,21 @@ class HeadlessTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
             self.assertIn("error", response.json)
 
+    @staticmethod
+    def _slot(status, name="fixture-8b", device="NPU"):
+        return types.SimpleNamespace(status=status, model_name=name,
+                                     device_name=device, model_dir=None)
+
+    def _models(self, primary, available=()):
+        """GET /v1/models with the slot table and the disk stubbed out."""
+        from core.models import discovery
+        with (mock.patch.object(runtime, "primary", primary),
+              mock.patch.object(runtime, "secondary", None),
+              mock.patch.object(runtime, "whisper_slot", None),
+              mock.patch.object(discovery, "_available_models",
+                                return_value=list(available))):
+            return self.client.get("/v1/models").json["data"]
+
     def test_idle_unloaded_model_is_still_advertised(self):
         """An idle-unloaded slot serves on demand, so it must stay listed.
 
@@ -40,24 +55,37 @@ class HeadlessTests(unittest.TestCase):
         models by polling this endpoint reads that as "backend offline" --
         which is how a working NPU looked offline to Odysseus.
         """
-        slot = types.SimpleNamespace(status="idle_unloaded",
-                                     model_name="fixture-8b", device_name="NPU")
-        with (mock.patch.object(runtime, "primary", slot),
-              mock.patch.object(runtime, "secondary", None),
-              mock.patch.object(runtime, "whisper_slot", None)):
-            body = self.client.get("/v1/models").json
-        self.assertEqual([m["id"] for m in body["data"]], ["fixture-8b@NPU"])
+        data = self._models(self._slot("idle_unloaded"))
+        self.assertEqual([m["id"] for m in data], ["fixture-8b@NPU"])
 
     def test_dead_slot_is_not_advertised(self):
         """The other half of the same rule: errored/unconfigured stay hidden."""
         for status in ("error", "not_configured", "loading"):
-            slot = types.SimpleNamespace(status=status, model_name="fixture-8b",
-                                         device_name="NPU")
-            with (mock.patch.object(runtime, "primary", slot),
-                  mock.patch.object(runtime, "secondary", None),
-                  mock.patch.object(runtime, "whisper_slot", None)):
-                body = self.client.get("/v1/models").json
-            self.assertEqual(body["data"], [], status)
+            self.assertEqual(self._models(self._slot(status)), [], status)
+
+    def test_models_on_disk_are_offered_alongside_the_resident_one(self):
+        """A picker built from this endpoint needs more than one choice.
+
+        The resident model keeps its @DEVICE id; an unloaded one is named
+        alone, because placement is decided at load time. The resident model
+        must not also appear as an available one -- that is the same model
+        twice under two ids.
+        """
+        data = self._models(self._slot("ready"), available=[
+            {"name": "fixture-8b", "path": "/m/fixture-8b", "type": "llm"},
+            {"name": "gemma-4-26b", "path": "/m/gemma", "type": "vlm"},
+        ])
+        self.assertEqual([m["id"] for m in data], ["fixture-8b@NPU", "gemma-4-26b"])
+        self.assertEqual(data[1]["owned_by"], "local-available")
+
+    def test_unloadable_model_on_disk_is_not_offered(self):
+        """A GGUF the reader cannot open is listed by /v1/models/available with
+        its reason, but offering it here would invite a load that fails."""
+        data = self._models(self._slot("ready"), available=[
+            {"name": "broken", "path": "/m/broken", "type": "llm",
+             "loadable": False, "reason": "unsupported architecture"},
+        ])
+        self.assertEqual([m["id"] for m in data], ["fixture-8b@NPU"])
 
     def test_no_slot_is_a_recoverable_api_error(self):
         from core.models import manage

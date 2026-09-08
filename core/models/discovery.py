@@ -36,6 +36,28 @@ def _models_data():
             "created": 0,
             "owned_by": f"local-{runtime.whisper_slot.device_name.lower()}",
         })
+
+    # Models on disk that nothing is holding. A client's model picker is built
+    # from this endpoint, so listing only what is resident meant the picker
+    # offered exactly one choice on a one-model-at-a-time server -- a dropdown
+    # with a single possible answer, which is not a choice. Asking for one of
+    # these in a chat request loads it (core/slots/route.py:_load_on_demand),
+    # so what is advertised and what can actually answer stay the same set.
+    #
+    # No @DEVICE suffix: placement is decided at load time by _choose_device
+    # reading the IR, and naming a device here would promise one the model may
+    # not be able to use.
+    resident = {s.model_name.lower() for s in (runtime.primary, runtime.secondary)
+                if _slot_serviceable(s) and s.model_name}
+    for model in _available_models():
+        if model["name"].lower() in resident or model.get("loadable") is False:
+            continue
+        data.append({
+            "id": model["name"],
+            "object": "model",
+            "created": 0,
+            "owned_by": "local-available",
+        })
     return {"object": "list", "data": data}
 
 

@@ -8,7 +8,7 @@ from datetime import datetime
 from flask import jsonify, request
 
 from core import runtime
-from core.errors import openai_error
+from core.errors import _TurnError, openai_error
 from core.genai.results import explain_genai_error
 from core.hardware.memory import _memory_snapshot, _settle_memory
 from core.models.discovery import _available_models, _choose_device
@@ -28,15 +28,19 @@ def _is_transient_load_error(e):
             or "failed to load shared object" in msg)
 
 
-def load_model():
-    """Swap the model in a slot without restarting the server.
+def _refuse(*args, **kwargs):
+    """Build the _TurnError for a refusal, so callers can `raise _refuse(...)`.
 
-    Ollama-style one-at-a-time: the slot's current model is unloaded before
-    the new one is loaded, so peak memory is one model, not two. Synchronous
-    — it returns when the model is ready to serve, which for a big IR can be
-    a minute; that's honest about what's happening rather than reporting
-    success on a model that can't answer yet.
+    swap_model() is reached both by its endpoint and by the chat path loading
+    a model on demand, and the two need the same refusals in different shapes:
+    an HTTP response for one, an exception for the other. Building the response
+    here keeps a single wording for both.
     """
+    return _TurnError(openai_error(*args, **kwargs))
+
+
+def load_model():
+    """POST /v1/models/load — the HTTP face of swap_model()."""
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         return openai_error("Request body must be a JSON object")
@@ -45,10 +49,28 @@ def load_model():
     name = (body.get("model") or body.get("name") or "").strip()
     if not name:
         return openai_error("'model' is required (name or directory path)")
+    try:
+        return jsonify(swap_model(name, body.get("device") or ""))
+    except _TurnError as e:
+        return e.response
 
+
+def swap_model(name, device=""):
+    """Swap the model in a slot without restarting the server.
+
+    Ollama-style one-at-a-time: the slot's current model is unloaded before
+    the new one is loaded, so peak memory is one model, not two. Synchronous
+    — it returns when the model is ready to serve, which for a big IR can be
+    a minute; that's honest about what's happening rather than reporting
+    success on a model that can't answer yet.
+
+    Raises _TurnError carrying an API error response rather than returning
+    one, so the chat path can load on demand and surface exactly the refusals
+    this endpoint gives instead of reimplementing them.
+    """
     # Accept "name@DEVICE" like the rest of the API, an exact directory, or a
     # display name from /v1/models/available.
-    device = (body.get("device") or "").upper()
+    device = (device or "").upper()
     if "@" in name:
         name, _, dev = name.partition("@")
         device = device or dev.upper()
@@ -64,7 +86,7 @@ def load_model():
                 break
     if not target:
         known = ", ".join(m["name"] for m in _available_models()) or "(none found)"
-        return openai_error(f"Unknown model '{name}'. Available: {known}")
+        raise _refuse(f"Unknown model '{name}'. Available: {known}")
 
     # Pick the slot automatically. An explicit device is honoured when that
     # device can actually host the model, and otherwise treated as a
@@ -74,14 +96,14 @@ def load_model():
     if device in ("AUTO", "ANY"):
         device = ""
     if device and device not in ("NPU", "GPU", "CPU"):
-        return openai_error("Device must be NPU, GPU, CPU, or AUTO")
+        raise _refuse("Device must be NPU, GPU, CPU, or AUTO")
     if runtime.primary is None:
-        return openai_error("Server has not initialized its model slots", "server_error", 503)
+        raise _refuse("Server has not initialized its model slots", "server_error", 503)
     if runtime.primary.device_name == "REMOTE":
-        return openai_error("Local model swapping requires a local server, not --proxy-url")
+        raise _refuse("Local model swapping requires a local server, not --proxy-url")
     dev_name, dev_id, why = _choose_device(target, device or None)
     if dev_name is None:
-        return openai_error(f"No device can host '{name}' ({why}).")
+        raise _refuse(f"No device can host '{name}' ({why}).")
     placement = why
 
     # Prefer a slot already on that device; otherwise move a slot there. With
@@ -95,12 +117,12 @@ def load_model():
         moved_from = slot.device_name
 
     if slot.status == "loading":
-        return openai_error("That slot is already loading a model.",
+        raise _refuse("That slot is already loading a model.",
                             "server_error", 409)
 
     err = _verify_weights_integrity(target)
     if err:
-        return openai_error(err)
+        raise _refuse(err)
 
     # Refuse before touching the running model. The swap unloads first so peak
     # memory stays at one model, which means a load that was never going to
@@ -113,7 +135,7 @@ def load_model():
     if refusal:
         print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] "
               f"refused before unload: {refusal}", flush=True)
-        return openai_error(refusal, "invalid_request_error", 400)
+        raise _refuse(refusal, "invalid_request_error", 400)
 
     # Hold the lock across unload+load so a concurrent request can't reach a
     # half-swapped slot. A generation in flight keeps the lock, so we wait
@@ -171,22 +193,21 @@ def load_model():
             slot.status = "error"
             print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] "
                   f"Swap failed: {last_err}", flush=True)
-            return openai_error(
+            raise _refuse(
                 f"Failed to load '{name}': {explain_genai_error(last_err)}",
                 "server_error", 500)
         slot.warmup()
         if slot.status == "error":
-            return openai_error("Model loaded but warmup failed; check server logs", "server_error", 500)
+            raise _refuse("Model loaded but warmup failed; check server logs", "server_error", 500)
         slot.prewarmed = False
         slot.last_ttft_ms = None
     elapsed = time.perf_counter() - t0
     print(f"{datetime.now():%H:%M:%S} <> [{slot.device_name}] Swap done "
           f"({elapsed:.1f}s)", flush=True)
 
-    return jsonify({"status": "ok", "model": slot.model_name,
-                    "device": slot.device_name, "type": slot.model_type,
-                    "placement": placement,
-                    "load_seconds": round(elapsed, 1)})
+    return {"status": "ok", "model": slot.model_name,
+            "device": slot.device_name, "type": slot.model_type,
+            "placement": placement, "load_seconds": round(elapsed, 1)}
 
 
 def unload_model():
