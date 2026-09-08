@@ -453,6 +453,17 @@ and let Tailscale be the only path in. `locally` has no authentication.
 
 **This is the most common failure by a wide margin. Check it first.**
 
+One command answers it, and it is read-only — it changes no rules and starts
+nothing:
+
+```powershell
+pwsh -File scripts/diagnose-odysseus-link.ps1
+```
+
+It walks the ladder below, prints the layer that is broken, and exits non-zero
+when something is wrong, so a launcher or a scheduled check can call it. The
+rest of this section is what it is checking and why.
+
 Symptoms: Odysseus's Settings page shows no models, model discovery times out, or
 chat returns a connection error. Meanwhile `curl http://127.0.0.1:8000/v1/models`
 on the host works perfectly.
@@ -461,16 +472,31 @@ Cause: you gave Odysseus `http://localhost:8000/v1`. Inside a container,
 `localhost` is **the container itself** — it is not the machine. The container
 has no `locally` in it, so nothing answers.
 
-Fix, on Windows and macOS:
+Fix, under **Docker Desktop** (Windows and macOS):
 
 ```
 http://host.docker.internal:8000/v1
 ```
 
 `host.docker.internal` is Docker's hostname for the host machine as seen from
-inside a container. Docker Desktop provides it automatically.
+inside a container. Docker Desktop special-cases it.
 
-On **Linux** it is not automatic — the service needs:
+**Under Podman on Windows that name does not work**, and this is the setup on
+Machine A. Podman's containers run inside a WSL2 VM and the name resolves to
+`169.254.1.2` — the gateway of the VM, not the Windows host where `locally`
+listens. Podman does not special-case it. Measured 2026-08-30:
+`host.docker.internal` → HTTP 000, `172.17.96.1` → HTTP 200. Use the Windows
+`vEthernet (WSL)` gateway address directly:
+
+```
+OLLAMA_BASE_URL=http://172.17.96.1:8000/v1
+```
+
+The `/v1` suffix is required — this is the OpenAI-compatible base URL, not the
+server root. See "If the gateway address moved" below before assuming that
+address is still current.
+
+On **Linux** `host.docker.internal` is not automatic — the service needs:
 
 ```yaml
 extra_hosts:
@@ -481,22 +507,227 @@ Odysseus's upstream `docker-compose.yml` already defines this on the `odysseus`
 service (confirmed against the repo). The override file ships it anyway, harmless
 and explicit, so the setting is visible where you are editing.
 
-Verify from inside the container:
+Verify from inside the container — note `podman exec` and the container's real
+name, since `docker compose exec` is not what is running here:
 
 ```bash
-docker compose exec odysseus curl -sS http://host.docker.internal:8000/v1/models
+podman exec odysseus_odysseus_1 curl -sS http://172.17.96.1:8000/v1/models
 ```
 
-If that fails but the host `curl` works, in order:
+If that fails but the host `curl` works, work the ladder below rather than
+guessing. Every rung is a one-line command and each one eliminates a layer.
 
-- Is `locally` actually listening on all interfaces? It binds `0.0.0.0` with no
-  flag — `netstat -ano | findstr :8000` should show `0.0.0.0:8000`, not
-  `127.0.0.1:8000`.
-- **Windows Firewall.** A first run usually prompts; a dismissed prompt creates a
-  blocking rule. Docker's traffic arrives from the WSL/Hyper-V virtual adapter,
-  which many "private network" rules do not cover.
-- Wrong port. 8000 is the OpenAI API. 11434 is the Ollama shim — and on Machine B
-  it is disabled (`--ollama-port 0`) because real Ollama owns it.
+#### The reachability ladder
+
+Run these in order. The **timing** is the diagnosis, not the status code — every
+rung returns HTTP 000 when it fails, and what separates a firewall from a dead
+server is how long it takes to fail.
+
+```powershell
+# 1. Is the server up and serving, from the host itself?
+curl -s http://127.0.0.1:8000/v1/models
+
+# 2. Is it bound to all interfaces, or only loopback?
+netstat -ano | Select-String ":8000"        # want 0.0.0.0:8000, not 127.0.0.1:8000
+
+# 3. Does the host answer on the WSL gateway address?
+curl -s http://172.17.96.1:8000/v1/models
+
+# 4. Can the podman VM reach the host at all?
+podman machine ssh "curl -s -o /dev/null -m 6 -w '%{http_code} %{time_total}s' http://172.17.96.1:8000/v1/models"
+
+# 5. Can the Odysseus container reach it?
+podman exec odysseus_odysseus_1 curl -s -o /dev/null -m 6 -w '%{http_code} %{time_total}s' http://172.17.96.1:8000/v1/models
+```
+
+**Reading rungs 4 and 5 — this is the whole trick:**
+
+| Result | curl exit | Meaning |
+|---|---|---|
+| fails in **~2 ms** | 56 | The packet **reached the host** and something reset it. The network path is open; your problem is the server, the port, or the protocol. |
+| fails after the **full timeout** | 28 | The packet was **silently dropped**. This is a firewall, every time. Nothing else drops without answering. |
+| HTTP 200 | 0 | Working. |
+
+Measured on this box 2026-09-08, with the API confirmed healthy on the host:
+
+```
+port 7070 (AnyDesk)  = 000  time=0.0017s  exit=56   -> path open, AnyDesk reset it
+port 8000 (locally)  = 000  time=6.0032s  exit=28   -> DROPPED
+port 445  (SMB)      = 000  time=6.0025s  exit=28   -> DROPPED (expected)
+```
+
+Port 7070 is the control: it proves WSL-to-host networking, the `172.17.96.1`
+gateway and the podman NAT are all fine. Only port 8000 is being dropped.
+
+Do **not** use `ping` as a rung. ICMP echo to the gateway fails on this machine
+even when TCP works, because echo requests are blocked separately — a failed
+ping proves nothing and sent an earlier debugging session down the wrong path.
+
+#### Firewall rules: three traps, in the order they bite
+
+**1. The command line is not the program.** Firewall rules match the **loaded
+image path**, and on this box those two things disagree — which is what made this
+bug take a whole session to find:
+
+```
+CommandLine : "C:\Projects\Nollama\venv\Scripts\python.exe" locally.py --device auto
+ImagePath   : C:\Users\zeror\AppData\Local\Python\pythoncore-3.14-64\python.exe
+```
+
+`venv\Scripts\python.exe` redirects to the base interpreter rather than being the
+process, so as far as Windows Firewall is concerned the server is the **system
+Python** — not the venv one the launcher names. Every tool that shows you a
+command line, `Get-CimInstance Win32_Process` and Task Manager included, shows
+the venv path and is useless here. Ask for the image path instead:
+
+```powershell
+(Get-Process -Id (Get-NetTCPConnection -State Listen -LocalPort 8000).OwningProcess).Path
+```
+
+Write firewall rules against *that*. A rule aimed at the venv path matches
+nothing, and — the trap that actually bit — a stale **block** rule on the system
+Python matches everything.
+
+**2. Block beats Allow.** Windows evaluates block rules first, so one stale block
+rule defeats any number of correct allow rules. Cancelling a Windows firewall
+prompt silently creates one — this box accumulated two, both on the system
+Python, Public profile, all ports. Find them:
+
+```powershell
+Get-NetFirewallRule -Enabled True -Direction Inbound -Action Block |
+  ForEach-Object { [pscustomobject]@{ Name = $_.DisplayName
+    Program = ($_ | Get-NetFirewallApplicationFilter).Program } }
+```
+
+**3. A rule can be valid, active, and still not take effect.** Confirm it reached
+the enforced store, not just the persistent one — a rule present in
+`PersistentStore` but absent from `ActiveStore` is not being enforced:
+
+```powershell
+Get-NetFirewallRule -PolicyStore ActiveStore -DisplayName 'locally API (WSL/Podman only)'
+```
+
+#### Scoping the allow rule
+
+Scope by **port plus WSL subnet**, not by program. The program path changes
+whenever the venv is rebuilt, and three different Pythons can plausibly serve
+this; the subnet does not move. `172.17.96.0/20` is the WSL virtual switch only,
+so the rule does not expose port 8000 to the Wi-Fi LAN — which matters, because
+`locally` has no authentication and this machine's Wi-Fi profile is Public.
+
+```powershell
+New-NetFirewallRule -DisplayName 'locally API (WSL/Podman only)' -Direction Inbound `
+  -Action Allow -Protocol TCP -LocalPort 8000 -RemoteAddress 172.17.96.0/20 -Profile Any
+```
+
+Requires an elevated PowerShell. Verify with rung 5, not by re-reading the rule.
+
+#### If the gateway address moved
+
+`172.17.96.1` is stable across container and machine restarts but **not** across
+a WSL virtual-switch recreation (a Windows feature update, or `wsl --shutdown`
+plus a network reset). It appears in three places that must agree — the host
+adapter, the VM's default route, and `../odysseus/.env`:
+
+```powershell
+Get-NetIPAddress -AddressFamily IPv4 | Where-Object InterfaceAlias -like '*WSL*'
+podman machine ssh "ip route | head -1"
+Select-String OLLAMA_BASE_URL ../odysseus/.env
+```
+
+The VM's own address sits elsewhere in that subnet (`172.17.109.78/20` here), and
+it is the address the allow rule's `-RemoteAddress` must cover — not the gateway.
+
+#### Never start the server with `chat.ps1 --start` for this
+
+`core/terminal.py:270` passes `--host 127.0.0.1`, so a chat-owned server is
+loopback-only and Odysseus can never reach it no matter what the firewall says.
+Use `api.ps1`, which goes through the launcher and keeps the `0.0.0.0` default
+from `core/cli.py:58`.
+
+#### What this actually was, 2026-09-08
+
+Two stale `Block` rules on `pythoncore-3.14-64\python.exe`, Public profile, all
+ports — the residue of cancelling a Windows firewall prompt at some point. They
+beat the correct, active, correctly scoped allow rule for port 8000, because
+block always wins.
+
+It stayed hidden because every process listing showed the server running as
+`venv\Scripts\python.exe`, which no block rule named. The venv path is the
+command line; the image is the system Python (trap 1 above). The allow rule and
+the block rules were pointed at the same executable all along.
+
+Removing them, elevated:
+
+```powershell
+$target = (Get-Process -Id (Get-NetTCPConnection -State Listen -LocalPort 8000).OwningProcess).Path
+Get-NetFirewallRule -Direction Inbound -Action Block |
+  Where-Object { ($_ | Get-NetFirewallApplicationFilter -EA SilentlyContinue).Program -eq $target } |
+  Remove-NetFirewallRule
+```
+
+Then re-run `scripts/diagnose-odysseus-link.ps1` — rung 4 flipping from
+`DROPPED - timed out after 6.0s` to `HTTP 200` is the confirmation. Do not
+confirm by re-reading the rule list; a rule that exists is not a rule that is
+being matched, which is the mistake that cost most of the session.
+
+If it is still dropped after that, enable drop logging and read which rule
+actually matched, rather than guessing again:
+
+```powershell
+Set-NetFirewallProfile -All -LogBlocked True
+Get-Content "$env:SystemRoot\system32\LogFiles\Firewall\pfirewall.log" -Tail 20 -Wait
+```
+
+
+### Reachable, but the model list is empty
+
+Symptoms: identical to the firewall failure above — Odysseus says offline and
+adds no models — but the ladder passes every rung and the container gets HTTP 200
+from `/v1/models`. The difference is in the body:
+
+```
+{"data":[],"object":"list"}
+```
+
+Cause: **idle unload**. `_models_data()` (`core/models/discovery.py:15`) lists a
+slot only when its status is `ready`, and the launcher's default
+`-IdleTimeout 900` unloads the model after fifteen quiet minutes. The slot then
+reports `idle_unloaded` and drops out of the listing.
+
+The slot has not stopped working. `core/slots/select.py:14` and
+`core/chat/common.py:123` both treat `idle_unloaded` as usable, and a chat
+request reloads it on demand — verified from inside the container 2026-09-08,
+which got a correct completion and left the slot `ready` and advertised again.
+So the server will *answer* while advertising nothing, and any client that
+discovers models by polling `/v1/models` — Odysseus does — concludes the backend
+is gone. Fifteen minutes after you last spoke to it, which is exactly when you
+come back to it.
+
+Check for it directly:
+
+```powershell
+curl -s http://127.0.0.1:8000/health | ConvertFrom-Json |
+  ForEach-Object { $_.devices.PSObject.Properties.Value } | Select-Object model, status
+```
+
+`status: idle_unloaded` with an empty `/v1/models` is this, not a network fault.
+
+Fix: keep the model resident for an agent setup, which is what CLAUDE.md already
+prescribes and what `install.ps1` writes for agent installs:
+
+```powershell
+.\scripts\locally-launch.ps1 -IdleTimeout 0
+```
+
+That also keeps the prefix cache alive, which is the larger win for an agent
+client re-sending a fixed system prompt every turn.
+
+The underlying inconsistency is worth fixing rather than working around: a slot
+that will serve on demand should probably still be advertised, which is a
+one-line change to the status test in `_models_data()`. The argument against is
+that a client would then pick a model whose first turn pays a 10-40 s reload. Not
+changed here — decide it deliberately.
 
 ### Model id mismatch
 
