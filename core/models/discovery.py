@@ -11,11 +11,18 @@ from core.models.geometry import _moe_expert_fraction
 from core.models.identity import _is_generative_dir, is_vlm, model_display_name
 from core.models.integrity import _dir_size_bytes
 from core.models.irinfo import read_ir_rt_info
+from core.slots.select import _slot_serviceable
 
 def _models_data():
+    # A slot that is merely idle-unloaded still SERVES -- _slot_serviceable and
+    # overall_status() both count it, and the chat path reloads it on demand --
+    # so listing only "ready" advertised nothing after the idle timeout while
+    # the server went on answering. A client that discovers models by polling
+    # this endpoint (Odysseus does) reads the empty list as "backend offline",
+    # which is what it looks like fifteen quiet minutes after you last used it.
     data = []
     for slot in (runtime.primary, runtime.secondary):
-        if slot and slot.status == "ready":
+        if _slot_serviceable(slot):
             data.append({
                 "id": f"{slot.model_name}@{slot.device_name}",
                 "object": "model",

@@ -1,4 +1,5 @@
 import threading
+import types
 import unittest
 from unittest import mock
 
@@ -30,6 +31,33 @@ class HeadlessTests(unittest.TestCase):
             response = self.client.post("/v1/models/load", json=body)
             self.assertEqual(response.status_code, 400)
             self.assertIn("error", response.json)
+
+    def test_idle_unloaded_model_is_still_advertised(self):
+        """An idle-unloaded slot serves on demand, so it must stay listed.
+
+        Listing only "ready" emptied /v1/models after the idle timeout while
+        the server went on answering chat requests. A client that discovers
+        models by polling this endpoint reads that as "backend offline" --
+        which is how a working NPU looked offline to Odysseus.
+        """
+        slot = types.SimpleNamespace(status="idle_unloaded",
+                                     model_name="fixture-8b", device_name="NPU")
+        with (mock.patch.object(runtime, "primary", slot),
+              mock.patch.object(runtime, "secondary", None),
+              mock.patch.object(runtime, "whisper_slot", None)):
+            body = self.client.get("/v1/models").json
+        self.assertEqual([m["id"] for m in body["data"]], ["fixture-8b@NPU"])
+
+    def test_dead_slot_is_not_advertised(self):
+        """The other half of the same rule: errored/unconfigured stay hidden."""
+        for status in ("error", "not_configured", "loading"):
+            slot = types.SimpleNamespace(status=status, model_name="fixture-8b",
+                                         device_name="NPU")
+            with (mock.patch.object(runtime, "primary", slot),
+                  mock.patch.object(runtime, "secondary", None),
+                  mock.patch.object(runtime, "whisper_slot", None)):
+                body = self.client.get("/v1/models").json
+            self.assertEqual(body["data"], [], status)
 
     def test_no_slot_is_a_recoverable_api_error(self):
         from core.models import manage
