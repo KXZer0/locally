@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 KEY = ROOT / "scripts" / "locally-key.ps1"
+ODYSSEUS = ROOT / "odysseus.ps1"
 
 
 @unittest.skipUnless(os.name == "nt" and shutil.which("powershell"),
@@ -82,6 +83,24 @@ class WindowsLaunchTests(unittest.TestCase):
             unused.bind(("127.0.0.1", 0))
             port = unused.getsockname()[1]
         self.assertEqual(self._decision(port)["Action"], "start-api")
+
+    def test_odysseus_shortcut_starts_missing_services_and_opens_browser(self):
+        with socket.socket() as api_socket, socket.socket() as odysseus_socket:
+            api_socket.bind(("127.0.0.1", 0))
+            odysseus_socket.bind(("127.0.0.1", 0))
+            api_port = api_socket.getsockname()[1]
+            odysseus_port = odysseus_socket.getsockname()[1]
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-File", str(ODYSSEUS),
+                 "-ApiPort", str(api_port),
+                 "-Port", str(odysseus_port), "-WhatIf"],
+                cwd=ROOT, capture_output=True, text=True, check=True,
+            )
+        decision = json.loads(result.stdout.strip())
+        self.assertTrue(decision["StartApi"])
+        self.assertTrue(decision["StartOdysseus"])
+        self.assertEqual(decision["Open"],
+                         f"http://127.0.0.1:{odysseus_port}")
 
     def test_api_wrapper_uses_configured_start_and_forwards_arguments(self):
         captured = self._capture_wrapper(

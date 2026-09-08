@@ -15,6 +15,10 @@ if __name__ == "__main__":
         # Client commands need neither Flask nor native OpenVINO imports.
         from core.terminal import main
         raise SystemExit(main(sys.argv[1:]))
+    elif len(sys.argv) > 1 and sys.argv[1] == "odysseus":
+        # Companion lifecycle needs neither Flask nor native OpenVINO imports.
+        from core.odysseus_cli import main
+        raise SystemExit(main(sys.argv[2:]))
     else:
         if len(sys.argv) > 1 and sys.argv[1] == "serve":
             del sys.argv[1]

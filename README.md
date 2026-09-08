@@ -152,6 +152,36 @@ Ollama compatibility is available on port 11434 unless disabled with `--ollama-p
 
 For a client in a Docker container on this Windows computer, start the API with `--host 0.0.0.0` and use `http://host.docker.internal:8000/v1` inside the container.
 
+## Use Odysseus
+
+Odysseus runs the assistant interface; Locally supplies its model over HTTP.
+In Odysseus, add an OpenAI-compatible model provider with this base URL:
+
+```text
+http://host.docker.internal:8000/v1
+```
+
+Use the exact model ID shown by `GET http://127.0.0.1:8000/v1/models`. The
+container must use `host.docker.internal`, because `localhost` inside the
+container points back to Odysseus itself.
+
+Once Odysseus and a Docker-compatible container engine are installed, this
+single command starts Locally and the Odysseus stack when needed, then opens
+Odysseus in your default browser:
+
+```powershell
+.\odysseus.ps1
+```
+
+Install the same action as a Start-menu and Desktop shortcut with:
+
+```powershell
+.\odysseus.ps1 -CreateShortcut -Desktop
+```
+
+The shortcut never stops either service. It adopts services that are already
+running and opens `http://127.0.0.1:7000`.
+
 ## Troubleshooting
 
 | Problem | What to do |

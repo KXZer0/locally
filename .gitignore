@@ -47,6 +47,7 @@ scripts/.watch_body.md
 start.ps1
 # Absolute paths baked in — regenerate with scripts/locally-launch.ps1.
 locally.lnk
+odysseus.lnk
 # Runtime settings for this install. locally.ini.example is tracked instead.
 locally.ini
 keys.ini
