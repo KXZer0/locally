@@ -22,6 +22,12 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.coverage
+htmlcov/
+*.egg-info/
 
 # --- generated at run time, never source ------------------------------------
 # The OpenVINO compiled-model cache: regenerated on demand, hundreds of MB.

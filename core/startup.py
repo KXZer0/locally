@@ -149,7 +149,8 @@ def _load_in_background(slot, model_dir, devices, port, ollama_port, banner_slot
             if ollama_port:
                 endpoints.append(f"Ollama   http://localhost:{ollama_port}")
             Console().print(Panel(Group(table, Text("\n" + "\n".join(endpoints)),
-                                        Text("\nCtrl+C stops the API and releases its models", style="dim")),
+                                        Text("\nCtrl+C stops the API and releases its models · "
+                                             "Shift+Enter opens terminal chat", style="dim")),
                                   title="locally · ready", border_style="dim"))
         except ImportError:
             print(f"""
@@ -158,4 +159,5 @@ def _load_in_background(slot, model_dir, devices, port, ollama_port, banner_slot
 {chr(10).join(lines)}
 {chr(10).join(api_lines)}
 ================================================
+  Ctrl+C stops the API and releases its models · Shift+Enter opens terminal chat
 """, flush=True)

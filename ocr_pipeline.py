@@ -15,7 +15,7 @@ fixed size before compile — the detector to a square letterbox canvas, the
 recogniser to its native 3x48x320 line image.
 
 Measured on that NPU: detection 26 ms/page, recognition 5 ms/line, a full page
-in ~80 ms. See docs/NPU-UTIL-PHASE0.md for the full gate results.
+in ~80 ms. See docs/archive/NPU-UTIL-PHASE0.md for the full gate results.
 
 Preprocessing constants are read from each model's own inference.yml rather than
 hardcoded from a paper — a wrong mean shows up as "runs fine, finds no text",

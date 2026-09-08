@@ -100,7 +100,7 @@ invented and still require one host run of the verifier above:
 | whole-path warm run, machine running | Not run: same restriction |
 | `/health`, machine stopped and running | Not run: same restriction |
 
-The already-measured machine cost from `docs/REBUILD-PLAN.md` remains the
+The already-measured machine cost from `docs/archive/REBUILD-PLAN.md` remains the
 design constraint: starting this VM consumes 1.44 GB of host RAM and moves the
 model budget from 16.2 GB to 13.5 GB. Do not substitute that RAM measurement
 for the missing latency numbers.

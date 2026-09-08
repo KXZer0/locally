@@ -7,6 +7,7 @@ import time
 
 from core import config, odysseus, runtime
 from core.startup import _idle_watchdog, _load_in_background
+from core.launch.quick_chat import start_shift_enter_chat
 
 
 def serve(app, ollama_app, args, model_dir, devices, setup_only, all_slots):
@@ -185,5 +186,7 @@ def serve(app, ollama_app, args, model_dir, devices, setup_only, all_slots):
     # OpenAI API on main thread
     print(f"  OpenAI API on port {args.port}", flush=True)
     print(f"  Optional chat: python locally.py chat --port {args.port}", flush=True)
-    print("  Ctrl+C stops this server and releases its models.", flush=True)
+    start_shift_enter_chat(args.port)
+    print("  Ctrl+C stops this server and releases its models · "
+          "Shift+Enter opens terminal chat", flush=True)
     app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)

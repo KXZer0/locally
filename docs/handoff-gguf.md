@@ -1,6 +1,6 @@
 # GGUF on the OpenVINO GPU path — measured (2026-09-03)
 
-`docs/REBUILD-PLAN.md` §3.2 asks for a 10-minute experiment before any GGUF
+The historical `docs/archive/REBUILD-PLAN.md` §3.2 asked for a 10-minute experiment before any GGUF
 support is built. This is that experiment, plus the A/B it made possible.
 
 ## It works

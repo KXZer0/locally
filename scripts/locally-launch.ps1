@@ -40,13 +40,15 @@ param(
     [string[]] $ChatModels = @('Qwen3-8B-abliterated-int4-cw-ov',
                                'Qwen3-8B-int4-cw-ov'),
     [string] $ModelsDir = "$env:USERPROFILE\models",
-    [string] $Whisper   = "$env:USERPROFILE\models\whisper-small-int8-ov",
-    [string] $Tts       = "$env:USERPROFILE\models\Kokoro-82M-int8-ov",
-    [string] $Speaker   = "$env:USERPROFILE\models\speaker",
+    # Optional models stay off unless named. API startup should not compile
+    # audio engines merely because conventional folders happen to exist.
+    [string] $Whisper   = '',
+    [string] $Tts       = '',
+    [string] $Speaker   = '',
     # Silero voice-activity model -- one 1.3 MB file, and it is what lets the
     # audio socket take turns on its own. Take the openvino_16k build: the
     # stock silero_vad.onnx has a sample-rate branch OpenVINO cannot convert.
-    [string] $Vad       = "$env:USERPROFILE\models\silero-vad",
+    [string] $Vad       = '',
     [int]    $Port      = 8000,
     # 'auto' is right for almost everyone: the server computes the smallest
     # ratio that makes the model fit, and stays off when it already does.
@@ -67,9 +69,13 @@ param(
     # Unload models after this many seconds idle (0 = never).
     [int]    $IdleTimeout = 900,
     # Regenerate locally.lnk and install it as a Windows app entry, then exit.
-    # The shortcut points at locally-key.ps1, which opens a chat terminal.
+    # The shortcut points at locally-key.ps1; API is the default action and
+    # -ShortcutMode chat makes it open the optional terminal client instead.
     [switch] $CreateShortcut,
     [switch] $Desktop,
+    [ValidateSet('chat', 'api')]
+    [Alias('Mode')]
+    [string] $ShortcutMode = 'api',
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $ExtraArgs = @()
 )
@@ -91,14 +97,15 @@ if ($CreateShortcut) {
     $ws = New-Object -ComObject WScript.Shell
     $s = $ws.CreateShortcut($lnk)
     $s.TargetPath = $target
-    $s.Arguments = '-NoProfile -WindowStyle Hidden -File "{0}" -Port {1}' -f $key, $Port
+    $s.Arguments = '-NoProfile -WindowStyle Hidden -File "{0}" -Mode {1} -Port {2}' -f $key, $ShortcutMode, $Port
     $s.WorkingDirectory = $root
     $s.WindowStyle = 7          # minimised: no console flash on key press
-    $s.Description = 'Open a locally chat terminal'
+    $s.Description = if ($ShortcutMode -eq 'chat') { 'Open a Locally chat terminal' } else { 'Start or inspect the Locally API' }
     $icon = Join-Path $root 'static\icons\locally.ico'
     $s.IconLocation = if (Test-Path $icon) { "$icon,0" } else { "$env:SystemRoot\System32\SHELL32.dll,13" }
     $s.Save()
     Write-Host "Created $lnk"
+    Write-Host "Shortcut mode: $ShortcutMode"
 
     # A .lnk in Start Menu\Programs is what Windows counts as an installed
     # app: searchable from Start, pinnable to the taskbar, and it is what a
@@ -226,13 +233,13 @@ if ($OffloadRatio -and $OffloadRatio -ne 'auto') {
 # ASR on the GPU: measured 0.3 s against ~1.05 s on CPU for the same clip, and
 # it sits directly in the voice turn's critical path. 245 MB next to a
 # multi-GB chat model is noise.
-if (Test-Path $Whisper) { $serverArgs += @('--whisper-dir', $Whisper, '--whisper-device', $WhisperDevice) }
-if (Test-Path $Tts)     { $serverArgs += @('--tts-dir', $Tts, '--tts-device', 'CPU') }
+if ($Whisper -and (Test-Path $Whisper)) { $serverArgs += @('--whisper-dir', $Whisper, '--whisper-device', $WhisperDevice) }
+if ($Tts -and (Test-Path $Tts))         { $serverArgs += @('--tts-dir', $Tts, '--tts-device', 'CPU') }
 # VAD on the CPU deliberately: ~1M parameters, running on every 32 ms frame
 # for as long as the mic is open. That belongs nowhere near the NPU, which is
 # answering, or the GPU, which is doing ASR.
-if (Test-Path $Vad)     { $serverArgs += @('--vad-dir', $Vad, '--vad-device', 'CPU') }
-if (Test-Path $Speaker) { $serverArgs += @('--speaker-dir', $Speaker, '--speaker-device', 'CPU') }
+if ($Vad -and (Test-Path $Vad))         { $serverArgs += @('--vad-dir', $Vad, '--vad-device', 'CPU') }
+if ($Speaker -and (Test-Path $Speaker)) { $serverArgs += @('--speaker-dir', $Speaker, '--speaker-device', 'CPU') }
 $serverArgs += $ExtraArgs
 
 & $python @serverArgs

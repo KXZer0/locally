@@ -1434,7 +1434,7 @@ upstream request that nobody typed.)
 
 ## An `AbortController` per view to tear down listeners (2026-09-03)
 
-`docs/REBUILD-PLAN.md` §2.3 says "One `AbortController` per view; register
+`docs/archive/REBUILD-PLAN.md` §2.3 says "One `AbortController` per view; register
 listeners through a helper that tears down on tab switch (today 127 added, 0
 removed)". The figure is real and the conclusion does not follow: it is a
 count of `addEventListener` calls in the source, and a listener bound once at
@@ -1445,7 +1445,7 @@ thirteenth is the setup dialog's focus trap, which is the one
 
 The question a teardown helper answers is whether the count **grows**.
 Measured with the renderer's own counter (`Memory.getDOMCounters` via
-`scripts/uidrive.mjs`):
+`docs/archive/ui-tooling/scripts/uidrive.mjs`):
 
 | | elements | DOM nodes | listeners |
 |---|---|---|---|
@@ -1457,7 +1457,7 @@ Flat, and slightly down. **Verdict: do not build it.** It would be a
 registration helper threaded through every module, a new indirection in front
 of a browser API, and a thing to keep in step -- for a leak that is not there.
 If a future view starts binding per-visit listeners to `document`, this table
-is the test that will show it: re-run `scripts/probes/listeners.js`.
+is the test that will show it: re-run `docs/archive/ui-tooling/scripts/probes/listeners.js`.
 
 The same section's other two items were also already satisfied when it was
 written: every `createObjectURL` in the app has a matching `revokeObjectURL`
@@ -1467,7 +1467,7 @@ written: every `createObjectURL` in the app has a matching `revokeObjectURL`
 
 ## Measuring the web UI in a hidden browser pane (2026-09-03)
 
-`scripts/css-oracle.js` already warns that `innerWidth` is **0** in a hidden
+`docs/archive/ui-tooling/scripts/css-oracle.js` already warns that `innerWidth` is **0** in a hidden
 pane, which makes every `max-width` query match. There is a second, worse
 consequence: `document.hidden` is `true`, and Chromium **stops firing
 `requestAnimationFrame`** for a hidden page. Every measurement that waits for
@@ -1476,7 +1476,7 @@ drag and the message enter animation are all rAF-batched -- then hangs rather
 than returning a wrong number. A 45-second timeout reads as a broken feature,
 not a broken rig, and the natural next move is to "fix" working code.
 
-**Verdict: the rig owns the browser.** `scripts/uidrive.mjs` launches the
+**Verdict: the rig owns the browser.** `docs/archive/ui-tooling/scripts/uidrive.mjs` launches the
 WebView2/Edge Chromium headless over CDP and sets the viewport with
 `Emulation.setDeviceMetricsOverride`; a headless page is a *visible* page as
 far as the page can tell, so rAF runs, fonts load and `IntersectionObserver`

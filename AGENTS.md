@@ -9,6 +9,9 @@ operating guide; old UI checkpoints and the rebuild plan are historical.
 `locally.py` starts the foreground API; `chat` attaches an optional terminal client,
 and `chat --start` owns a server until exit. Markdown copy/save preserve source.
 No browser setup settings are read. Audio/util models require explicit opt-in.
+Windows entry points: `api.ps1` uses the installer's `start.ps1`; `chat.ps1`
+attaches to an existing API or owns a temporary one when the port is free.
+The shortcut/Copilot-key launcher defaults to API mode; `-Mode chat` opens chat.
 Keep API compatibility for external harnesses. Do not launch or stop a user's
 separate harness when attaching/detaching terminal chat. Existing integration
 source is retained but browser/control routes are not mounted.

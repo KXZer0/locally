@@ -8,6 +8,9 @@ The user retired the custom web UI in favor of external harnesses such as Odysse
 Read README.md for the current headless API and optional terminal chat workflow.
 Old UI instructions below are historical; do not restore the browser shell.
 Audio/util models are opt-in and browser setup preferences are no longer read.
+Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
+(attach, or own a temporary server). The shortcut/key defaults to API mode;
+`-Mode chat` opens the optional terminal client.
 
 ## Architecture
 
@@ -659,15 +662,15 @@ Audio/util models are opt-in and browser setup preferences are no longer read.
   `chatHistory` — switching modes must never drop the conversation, and voice turns are
   mirrored into the chat thread. Util keeps its selected file/result independently and
   can hand extracted text to Chat. The nine sheets replaced 39 on 2026-09-03
-  (`docs/handoff-css.md`) and are now the **source of truth**: `css_collapse.py` still
+  (`docs/archive/handoff-css.md`) and are now a **historical record**: `docs/archive/ui-tooling/scripts/css_collapse.py` still
   regenerates them from the 39 originals in `c6a8c9d`, but four of them have been edited
   by hand since, so it checks `scripts/css-collapse.manifest.json` and refuses rather
   than silently deleting those rules.
 - **The frontend is measured from the command line, not from a console** (2026-09-03).
-  `scripts/uiserve.py` serves the page with stubbed boot endpoints, so CSS and DOM work
+  `docs/archive/ui-tooling/scripts/uiserve.py` serves the page with stubbed boot endpoints, so CSS and DOM work
   does not wait 10–40 s for a model to compile onto a device, and `?strip=<id>` serves it
   with one element removed — the only way to ask "did adding this move anything else"
-  and get an answer rather than an `nth-child` renumbering. `scripts/uidrive.mjs` drives
+  and get an answer rather than an `nth-child` renumbering. `docs/archive/ui-tooling/scripts/uidrive.mjs` drives
   the WebView2/Edge Chromium over CDP with **no npm dependency** (Node 21+ has a global
   `WebSocket`), sets a real layout viewport, seeds `localStorage` before the app's first
   line runs, and appends `Memory.getDOMCounters` and console errors to every result.
@@ -677,7 +680,7 @@ Audio/util models are opt-in and browser setup preferences are no longer read.
   Do not measure this UI in a hidden pane, and do not measure DOM cost with
   `performance.memory`: nodes do not live on the JS heap.
 - **The sidebar's width is draggable and the thread is capped** (§2.2/§2.3,
-  `docs/handoff-layout.md`). Width is one custom property (`--rail-open`), so the grid,
+  `docs/archive/handoff-layout.md`). Width is one custom property (`--rail-open`), so the grid,
   the sidebar and everything measured off them move together; it applies only where the
   handle does (>780px, fine pointer), because a 348px rail carried over from a desktop
   left a 375px viewport with **27px** of app column. The thread keeps 40 message bodies

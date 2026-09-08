@@ -1,217 +1,188 @@
 # locally
 
-A terminal-operated OpenAI-compatible model server for Intel NPU and OpenVINO models.
-Use Odysseus or another API client as your main interface. Optional terminal chat is
-available for quick questions, pasted assignments, and Markdown answers.
+`locally` is an OpenAI-compatible AI server for Intel hardware. It has no web dashboard. Run the API in PowerShell, then connect an API client or open the built-in terminal chat when you need it.
 
-The custom web UI, static assets, and native browser shell have been removed.
-`/` returns service information as JSON. There is no browser setup wizard.
+## Quick start
 
-## Run the API
+Open PowerShell in the project folder. In File Explorer, click the address bar, type `powershell`, and press Enter.
 
-From the repository in PowerShell:
+For a fresh clone:
 
 ```powershell
-.\start.ps1
-# Or choose a model explicitly:
-.\venv\Scripts\python.exe locally.py --model-dir ~\models\Qwen3-8B-int4-cw-ov --device NPU
+git clone https://github.com/KXZer0/locally.git
+cd locally
+pwsh -NoProfile -File .\install.ps1
 ```
 
-The default model is the existing `model` directory/link, with NPU-first device
-selection. Only one chat slot starts unless `--gpu-model-dir` is supplied.
-Press **Ctrl+C in the server terminal** to stop the API and release its model
-allocations. Closing an attached chat client does not stop the server.
+The installer creates `venv`, installs dependencies, and helps you choose a model. It needs PowerShell 7 (`pwsh`). If that command is not found, install PowerShell 7 and reopen your terminal. If PowerShell blocks scripts, allow them for the installer process and retry:
 
-Audio and utility models are opt-in: pass `--whisper-dir`, `--tts-dir`,
-`--util-models-dir`, or `--auto-util` for utility discovery. Previous browser setup
-settings and saved companion autostart choices are no longer read. Explicit API
-features such as `--search-url` and `--odysseus-autostart` remain available.
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
 
-Idle models unload after 30 minutes by default. `--idle-timeout 0` keeps them resident.
-An unloaded model can reload when a new API request needs it; stop the process when
-you want its memory to stay released. Driver memory accounting may settle after exit.
+Then start the API and keep that PowerShell window open:
 
-## Connect Odysseus or another harness
+```powershell
+.\api.ps1
+```
 
-Use an OpenAI-compatible provider with base URL **http://127.0.0.1:8000/v1**.
-Choose an exact model ID from `GET /v1/models`, such as `model-name@NPU`.
-If the client requires an API key field, use `local`; Locally does not authenticate it.
-Ollama compatibility is available on port 11434 unless occupied or disabled with
-`--ollama-port 0`. Anthropic Messages is available at `/v1/messages`.
+The first model load can take a while because OpenVINO compiles it. When ready, the API is available at:
 
-For a containerized harness on this Windows host, start the API with `--host 0.0.0.0`
-and use **http://host.docker.internal:8000/v1** in the container. The standalone server keeps its existing all-interface bind for container clients.
-Use `--host 127.0.0.1` for a local-only server. The API has no authentication, so only expose it to trusted clients.
-A firewall or container-specific host routing may need configuration.
+```
+http://127.0.0.1:8000/v1
+```
 
-Client tool calls run on GPU and CPU slots unconditionally. **An NPU slot takes
-them when the request's rendered tool block fits `NPU_TOOL_BUDGET`** (1200 tokens
--- an 8-tool assistant set measures 735, a 30-tool coding agent 4,553), and an
-over-budget set is refused with the token count and a fix rather than a bare
-"GPU-only". Fitting is not answering well: a small model given thirty tools is a
-harder problem than one given six, so test your harness and model together. The
-NPU prompt cap is 8192 tokens, and a large agent system prompt spends it before
-the user types anything.
+Press Ctrl+C in the API window when you want to stop the server and release model memory.
+Press Shift+Enter in that same window to open terminal chat attached to the API;
+leaving chat does not stop the server.
 
-## Optional terminal chat
+## Start and check the API
 
-Attach to an API you already started (exiting leaves that API running):
+`api.ps1` is the simple foreground launcher. It uses the model and device settings saved in `start.ps1` by the installer and accepts a port when you need a separate server:
+
+```powershell
+.\api.ps1 -Port 8001
+```
+
+Check a running server from a different PowerShell window:
+
+```powershell
+.\venv\Scripts\python.exe locally.py status
+```
+
+For direct control over a model or device, start `locally.py` yourself:
+
+```powershell
+.\venv\Scripts\python.exe locally.py --model-dir "$HOME\models\Qwen3-8B-int4-cw-ov" --device NPU
+```
+
+Use `--device auto` to let the server choose compatible Intel hardware. The default server bind is `0.0.0.0` for local container clients. Use `--host 127.0.0.1` when only this computer should connect. The API does not authenticate requests, so do not expose it to untrusted networks.
+
+After setup, launch and chat commands work in Windows PowerShell 5.1 and PowerShell 7. To install dependencies without choosing a model, use `.\install.ps1 -SkipModel`.
+
+## Open terminal chat
+
+Terminal chat is an HTTP client. It connects to the API; attaching to a server does not load OpenVINO or stop the server when you leave.
+
+Start the API first with `.\api.ps1`, then open another PowerShell window in the repository and run:
+
+```powershell
+.\chat.ps1
+```
+
+That is the easiest chat command. It attaches to an API already listening on port 8000. If no API is listening, it starts one for this chat session and stops that temporary API when you leave.
+
+To use another port:
+
+```powershell
+.\chat.ps1 -Port 8001
+```
+
+You can also attach explicitly:
 
 ```powershell
 .\venv\Scripts\python.exe locally.py chat
 ```
 
-Or start a server owned by this one chat session:
+For a one-off chat that always starts and owns its own API:
 
 ```powershell
 .\venv\Scripts\python.exe locally.py chat --start --device NPU
 ```
 
-`--start` refuses an occupied port. `/exit`, Ctrl+D, or Ctrl+C at the prompt stops
-its owned server process tree, including any in-flight native inference. It does
-not stop a separately running harness. The owned server binds to loopback, disables
-the secondary Ollama listener and companion autostart, and writes a temporary log
-whose path is printed. If you forcibly kill the terminal application itself rather
-than exiting the client, check that the server has stopped.
+`--start` owns the API it starts. `/exit`, Ctrl+D, or Ctrl+C at the prompt ends both chat and that API. It refuses an occupied port, so leave off `--start` when an API is already running.
 
-The prompt may appear while a model is compiling; `/status` shows its state.
-Use `--port 8001` to run an independent server, or `--url http://host:8000` to attach
-elsewhere. `--max-tokens 2048` changes the output budget. `--plain` displays raw
-Markdown without colors.
+Type a question and press Enter. Alt+Enter inserts a newline. Type `/` to browse commands. Use `/status` to inspect the server, `/new` to clear the conversation, and `/exit` to leave. Ctrl+C during an answer asks the server to cancel it.
 
-Type `/` to open command suggestions with descriptions. Keep typing to filter;
-Tab or the arrow keys select a completion. Arguments complete too: `/markdown on`,
-`/unload NPU`, and **`/load` completes model names from the server itself**
-(`GET /v1/models/available`), matching anywhere in the name — `/load abl` finds
-`Qwen3-8B-abliterated-int4-cw` — and showing what each one is, where it is
-loaded, or why it cannot be. `name@` then completes `NPU`/`GPU`/`CPU`. The list
-is the server's, never a baked-in one, so a model you delete stops being offered
-and one you add appears. Suggestions stay out of ordinary chat text.
-
-**Enter sends. Alt+Enter inserts a newline.** Pasted multiline text remains editable
-before sending in terminals supporting bracketed paste. Use Ctrl+V (or Ctrl+Shift+V,
-depending on your terminal), or `/paste` to insert the clipboard for editing.
-Mouse selection and normal terminal copy shortcuts remain available.
-
-| Command | What it does |
+| Command | Purpose |
 | --- | --- |
-| `/models` | List models on disk |
-| `/models npu` | Show models passing local NPU capability checks |
-| `/load model-name@NPU` | Load or swap a model; actual placement is reported |
-| `/load C:\path with spaces\model@GPU` | Load a model by directory |
-| `/unload` or `/unload NPU` | Release model slots while keeping the API up |
-| `/status` | Show device states, context limits, TTFT, and available RAM |
-| `/new` | Clear the conversation and last answer |
-| `/copy` | Copy the last complete answer as original Markdown |
-| `/save homework.md` | Save the last complete answer in UTF-8; never overwrite |
-| `/markdown on` or `/markdown off` | Choose formatted or raw display |
-| `/think on` or `/think off` | Reasoning before the answer (off sends Qwen3's `/no_think`) |
-| `/read PATH` or `/read https://...` | Read a document, image or page **into the conversation** |
-| `/index PATH [PATH ...]` | Build a local semantic index from files |
-| `/find query` | Search that index; shows the embedding score and the rerank score |
+| `/models` | List local chat models |
+| `/models npu` | Show models that pass local NPU capability checks |
+| `/load name@NPU` | Load or swap a model |
+| `/unload` | Free the chat model while keeping the API alive |
+| `/status` | Show readiness, devices, and memory |
+| `/copy` | Copy the last answer as Markdown |
+| `/save answer.md` | Save the last answer without overwriting a file |
+| `/markdown on` or `/markdown off` | Choose formatted or raw Markdown display |
+| `/think on` or `/think off` | Toggle Qwen3 reasoning mode |
+| `/read PATH` | Add extracted document text to the conversation |
+| `/index PATH` and `/find query` | Search local files with utility models |
 | `/upscale IN [OUT]` | Upscale an image and write a PNG |
-| `/util` / `/util off` | Utility engine state; `off` frees them, chat untouched |
-| `/voice` | Talk instead of typing (needs `sounddevice` and the server's audio models) |
-| `/paste` | Insert clipboard text into the next prompt |
-| `/exit` | Exit the client; also stop its server if started with `--start` |
+| `/util off` | Unload utility models without unloading chat |
+| `/voice` | Start optional push-to-talk voice chat |
+| `/paste` | Insert clipboard text into the current prompt |
+| `/exit` | Leave chat; stop the API only when chat used `--start` |
 
-`/read` puts the extracted Markdown in the conversation, so the next question can
-be about it; a URL is fetched server-side and a scanned page goes through OCR.
-`/index` and `/find` use the utility engines — they retrieve wide and let a
-cross-encoder settle the order, which is why a hit can show a lower embedding
-score above a higher one. The engines compile on first use and stay resident;
-`/util off` frees **only** them (`POST /v1/models/unload {"scope": "util"}`),
-because on a one-model box the chat model is usually on the same device and
-unloading by device took the conversation down with it. A utility command run
-while the engines are still compiling waits instead of failing.
+`/load` clears the current conversation, and model load/unload affects every client connected to that API. `/copy` and `/save` preserve the original Markdown, not terminal formatting; `/save` never overwrites an existing file. Pasted multiline text remains editable before you send it in terminals that support bracketed paste. Use Ctrl+V or Ctrl+Shift+V, depending on your terminal, or use `/paste`.
 
-`/load` clears the conversation to avoid carrying the previous model's context.
-Model load/unload commands affect all clients connected to that server.
-Ctrl+C during a streamed response stops reading it and asks the server to cancel
-(`POST /v1/cancel`). That request is best effort by construction: OpenVINO may be
-blocked in native code and never look at the flag, so a native prefill can run to
-completion. Exiting an owned session stops the process entirely.
-Failed or interrupted turns are not appended to conversation history. An answer
-that hits the `--max-tokens` budget is kept and labelled incomplete rather than
-discarded — on the 1024-token default that is the ordinary end of a long answer.
-A thinking model's `<think>` block is hidden: it is not the answer, and it would
-otherwise land in `/copy` and `/save` as though it were. If a turn produces only
-reasoning (a small model can spend its whole budget before closing the tag), the
-reasoning is shown, because an empty answer reads as a hang.
+`/read`, `/index`, `/find`, `/upscale`, and `/voice` need optional models. Start the API with `--whisper-dir`, `--tts-dir`, or `--util-models-dir` to enable those features. Voice also needs `sounddevice` on the client: `python -m pip install sounddevice`.
 
-Markdown headings, lists, tables, and code blocks render in the terminal. Copy/save
-preserve the original Markdown rather than terminal decoration. LaTeX source stays
-intact; this client does not typeset equations. Conversations live in memory and are
-not saved automatically. Use `/new` when a long conversation reaches the model's
-context budget. For attachments, rich math, and persistent conversations, use your
-chosen harness.
+## Shortcut and Copilot key
 
-### Voice in the terminal
+Create a Start-menu shortcut, with an optional Desktop copy:
 
-`/voice` is push-to-talk: Enter opens the microphone, Enter closes it, an empty
-turn leaves, Ctrl+C interrupts. A terminal cannot see a key being *released*, so
-hold-to-talk is not available; the server's Silero VAD can take turns on its own
-over `/v1/audio/stream`, but that needs a live socket and is not wired up here.
+```powershell
+.\scripts\locally-launch.ps1 -CreateShortcut -Desktop
+```
 
-It needs `sounddevice` (`pip install sounddevice`) on the client, and the server
-started with `--whisper-dir` and `--tts-dir`; without either it says so and the
-rest of the client carries on. Both models are warmed on entry, because idle
-unload is doing its job when it evicts them and the reload otherwise lands
-inside your first spoken turn.
+The default shortcut opens a terminal for the persistent API: if an API is running, it shows its status; otherwise it starts the foreground API. This is the recommended target for a Copilot or hardware key, because the API stays available for your normal client and for terminal chat.
 
-Spoken turns share the conversation with typed ones, and are shaped for speech:
-a voice-only directive is appended last (2-3 plain sentences, no Markdown — a
-table read aloud is gibberish), the budget is 220 tokens, and reasoning is
-suppressed by default because it must never be spoken. Neither the directive nor
-the control token is kept in the conversation. **Speech starts before the answer
-finishes**: clips are peeled off the token stream a sentence at a time and clip
-N+1 is synthesized while clip N plays, and each line is printed when its audio
-starts, so what you read is what you are hearing.
+To make the shortcut open chat instead, use:
 
-Measured on this machine, through the client's own methods: Kokoro synthesized
-3.2 s of audio in 1.9 s, and Whisper transcribed it back word for word.
+```powershell
+.\scripts\locally-launch.ps1 -CreateShortcut -ShortcutMode chat
+```
 
-## API surface
+Chat mode attaches to the current API, or starts a temporary API that ends when chat exits. You can open either behavior directly, without a shortcut:
+
+```powershell
+.\scripts\locally-key.ps1 -Mode api
+.\scripts\locally-key.ps1 -Mode chat
+```
+
+The shortcut command creates `locally.lnk` in the repository, puts a copy in the Windows Start menu, and adds one to the Desktop when `-Desktop` is supplied. Point a key-remapping tool at that installed shortcut.
+
+Windows’ built-in **Customize Copilot key** option accepts signed MSIX apps instead of ordinary `.lnk` shortcuts. Use a key-remapping tool such as NewPilot or your keyboard/laptop vendor's utility to launch the shortcut. Microsoft documents the limitation in [Manage the Copilot key](https://learn.microsoft.com/en-us/windows/client-management/manage-windows-copilot).
+
+## Connect another client
+
+Use an OpenAI-compatible provider with the base URL `http://127.0.0.1:8000/v1`. Read loaded model IDs from `GET /v1/models`; they look like `model-name@NPU`. If your client insists on an API key, enter `local`; locally does not validate it.
+
+Ollama compatibility is available on port 11434 unless disabled with `--ollama-port 0`. Anthropic Messages compatibility is available at `POST /v1/messages`.
+
+For a client in a Docker container on this Windows computer, start the API with `--host 0.0.0.0` and use `http://host.docker.internal:8000/v1` inside the container.
+
+## Troubleshooting
+
+| Problem | What to do |
+| --- | --- |
+| `Run install.ps1 first` | Run `.\install.ps1` from the repository, then retry. |
+| Chat cannot connect | Start `.\api.ps1`, then run `locally.py status` to check port 8000. |
+| Port 8000 is occupied | Use `.\chat.ps1` to attach, stop the old server if it is yours, or give both API and chat the same alternate `-Port`. |
+| The terminal says the model is loading | Wait. The client waits while `/health` reports `loading`; first compile takes longest. |
+| No model can be loaded | Run `.\venv\Scripts\python.exe locally.py --list-models $HOME\models`, or rerun the installer. |
+| The hardware key does nothing | Open the Start-menu shortcut once to confirm it works, then configure the key-remapping tool to launch that shortcut. |
+
+## API reference and development
 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Readiness and enabled model slots |
 | `GET /v1/models` | Loaded model IDs |
 | `GET /v1/models/available` | Local model discovery and placement information |
-| `POST /v1/models/load` | `{ "model": "name", "device": "NPU" }` |
-| `POST /v1/models/unload` | `{}` or `{ "device": "NPU" }` |
+| `POST /v1/models/load` | Load a model: `{ "model": "name", "device": "NPU" }` |
+| `POST /v1/models/unload` | Unload slots: `{}` or `{ "device": "NPU" }` |
 | `POST /v1/chat/completions` | OpenAI chat, including SSE streaming |
 | `POST /v1/messages` | Anthropic Messages compatibility |
 | `GET /v1/memory` | Available memory and offload state |
-| `GET /v1/metrics` | Last 50 recorded turns |
+| `GET /v1/metrics` | Recent recorded turns |
 
-Audio, document/OCR, and utility APIs remain available when their models are enabled.
-Historical details are in [the previous README](docs/LEGACY-README.md); its UI and
-setup instructions are retired. Models are stored outside the frontend and were not deleted.
+Show server options with `.\venv\Scripts\python.exe locally.py --help` and chat options with `.\venv\Scripts\python.exe locally.py chat --help`. `--scan` inspects models without loading them; `--list-models [DIR]` prints script-friendly discovery.
 
-## Install and verify
-
-Starting Locally works in Windows PowerShell 5.1 (the Windows default) and
-PowerShell 7. The installer itself still requires PowerShell 7. The hardware-key
-launcher uses PowerShell 7 when present and falls back to Windows PowerShell; it
-opens a chat window attached to a server that is already listening, and only
-starts one (`chat --start`) when nothing answers on the port.
-If an older generated `start.ps1` complains about a PowerShell version, replace
-it with the repository's current `start.ps1` or rerun the installer once.
-
-`./install.ps1` installs the environment and opens the terminal model chooser.
-`-SkipModel` installs dependencies only. `-TerminalSetup` remains accepted for old scripts.
-`python locally.py --help` lists inference settings; `python locally.py chat --help`
-lists client settings. `python locally.py --scan` inspects models without loading
-them, and `python locally.py --list-models [DIR]` prints the same discovery as
-`path<TAB>name<TAB>llm|vlm` for scripts — which is how `scripts/locally-launch.ps1`
-picks a model when the ones it prefers are no longer on disk, instead of naming
-models by hand.
+Run unit tests with:
 
 ```powershell
 .\venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Unit tests use synthetic responses and no model loads. Hardware-specific notes in
-`TODONT.md` remain relevant. Old browser tooling and integration source files are
-retained as historical code, but no browser routes are registered by the server.
+Unit tests use synthetic responses and do not load a model. UI-era notes are historical material in [docs/archive/README.md](docs/archive/README.md).

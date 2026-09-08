@@ -64,7 +64,7 @@ TIERS = {
     },
     "detect": "detect-rfdetr/rfdetr_small.xml",
     # all-MiniLM-L6 stays: BGE-base was probed and did NOT beat it on this
-    # workload (docs/NPU-UTIL-PHASE0.md, phase 4). The reranker is where the
+    # workload (docs/archive/NPU-UTIL-PHASE0.md, phase 4). The reranker is where the
     # retrieval gain actually came from.
     "search": "embed/openvino_model_qint8_quantized.xml",
     "rerank": "rerank-bge/openvino_model.xml",
@@ -580,7 +580,7 @@ class UtilityEngine:
         which is why it can order candidates a bi-encoder cannot. Measured on
         this project's own corpus it took top-1 from 7/9 to 8/9 and MRR from
         0.889 to 0.944, while swapping the *embedder* for a bigger one changed
-        nothing (docs/NPU-UTIL-PHASE0.md, phase 4).
+        nothing (docs/archive/NPU-UTIL-PHASE0.md, phase 4).
 
         Scores are raw logits — comparable to each other for one query, not
         across queries, and not probabilities. Callers should sort, not

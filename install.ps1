@@ -656,7 +656,16 @@ Write-Host ""
 Write-Host "=== locally install complete ===" -ForegroundColor Green
 Write-Host ""
 Write-Host "To start the server:"
-Write-Host "  .\start.ps1"
+Write-Host "  .\api.ps1"
+Write-Host "Leave that terminal open while your API clients are using it."
+Write-Host ""
+Write-Host "To chat, open another PowerShell window in this folder and run:"
+Write-Host "  .\chat.ps1"
+Write-Host "Type /exit to close chat; the separate API stays running."
+Write-Host ""
+Write-Host "To add an API shortcut to Start and the Desktop:"
+Write-Host "  .\scripts\locally-launch.ps1 -CreateShortcut -Desktop -Mode Api"
+Write-Host "See README.md for Copilot-key setup and terminal commands."
 Write-Host ""
 
 Pop-Location
