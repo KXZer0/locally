@@ -88,6 +88,22 @@ def swap_model(name, device=""):
         known = ", ".join(m["name"] for m in _available_models()) or "(none found)"
         raise _refuse(f"Unknown model '{name}'. Available: {known}")
 
+    # Already resident? Naming the model that is loaded -- a client re-picking
+    # the current model, `/load` used as a keep-alive, a chat request routed
+    # here on demand for a model a stale suffix hid -- must not pay the whole
+    # 9-65 s reload only to land back where it started. An explicit device that
+    # differs from where the model sits is a real "move it there" request and
+    # is not short-circuited; a matching or absent device is a no-op.
+    real_target = os.path.realpath(target)
+    for s in (runtime.primary, runtime.secondary):
+        if (s and s.status == "ready" and s.model_dir
+                and os.path.realpath(s.model_dir) == real_target
+                and (not device or device in ("AUTO", "ANY")
+                     or s.device_name == device)):
+            return {"status": "ok", "model": s.model_name,
+                    "device": s.device_name, "type": s.model_type,
+                    "placement": "already resident", "load_seconds": 0.0}
+
     # Pick the slot automatically. An explicit device is honoured when that
     # device can actually host the model, and otherwise treated as a
     # preference rather than an order — a request that would OOM or hit the

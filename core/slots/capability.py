@@ -12,14 +12,13 @@ from core.tools.render import render_tools_prompt
 
 
 def _tools_supported(slot):
-    """Tool calling runs on GPU/iGPU and CPU, but not the NPU.
+    """Advertise unrestricted tool support on GPU/CPU/REMOTE, not NPU.
 
-    The NPU has a hard prompt cap (MAX_PROMPT_LEN) and small NPU-class models
-    can't reliably drive multi-step agent loops, so we never honor `tools` there
-    — that request is answered as plain chat. A capable coder LLM on the GPU, or
-    on a strong desktop CPU (e.g. Core Ultra 9 with many cores), drives tool
-    loops fine; tool turns are buffered with SSE keep-alive (see
-    _sse_tool_stream) so a slow prefill doesn't trip the client's watchdog.
+    NPU requests can still use a small tool set through _tool_capable's
+    per-request token budget. This conservative advertisement avoids inviting
+    clients to send an unlimited catalogue into the NPU's hard prompt cap.
+    Tool turns are buffered with SSE keep-alive (see _sse_tool_stream), so
+    a slow prefill does not trip the client's watchdog.
 
     REMOTE is included because every reason to exclude the NPU is about
     hardware this process owns, and a proxy slot owns none of it: the prompt

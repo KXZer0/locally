@@ -163,7 +163,7 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(data[0]["prompt_tokens"], 1005)
         self.assertEqual(data[-1]["prompt_tokens"], 1054)
         self.assertEqual(data[-1]["prefill_tokens_per_second"], 2108.0)
-        self.assertEqual(data[-1]["decode_tokens_per_second"], 20.0)
+        self.assertEqual(data[-1]["decode_tokens_per_second"], 19.0)
 
     def test_fresh_metrics_route_returns_an_empty_json_list(self):
         from flask import Flask

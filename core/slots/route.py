@@ -12,19 +12,49 @@ same silent fallthrough -- ask for gemma and get answered by Qwen, under
 gemma's name. Now it loads. See _load_on_demand.
 """
 from core import runtime
+from core.errors import _TurnError, openai_error
+from core.models.discovery import canonical_model_name
 from core.slots.select import _slot_serviceable
 
 
+def _split_requested(requested_model):
+    """(canonical_bare_name, device_or_empty) from a request's `model` field.
+
+    The bare half is folded through discovery's `canonical_model_name`, so
+    routing and discovery agree on what "the same model" means -- case,
+    surrounding whitespace and a trailing `@DEVICE` are all identity-neutral,
+    and only one function decides that.
+    """
+    _, _, device = (requested_model or "").partition("@")
+    return canonical_model_name(requested_model), device.strip().upper()
+
+
 def _match_loaded(requested_model):
-    """A resident slot whose name the request asked for, or None."""
-    for slot in (runtime.primary, runtime.secondary):
-        if not _slot_serviceable(slot):
-            continue
-        # Match "model@DEVICE" or just "model"
-        if requested_model in (f"{slot.model_name}@{slot.device_name}",
-                               slot.model_name):
-            return slot
-    return None
+    """A resident slot whose name the request asked for, or None.
+
+    Matches the bare model name case-insensitively against every serviceable
+    slot -- the name is the only stable identity a model has: discovery
+    advertises an unresident model without a device suffix at all, and a
+    resident one can change device under an unchanged name (an automatic
+    fallback swap, or a client that cached the id from before that swap
+    happened). A device suffix on the request is honoured only to disambiguate
+    two slots sharing a name; it is never grounds to refuse an otherwise exact
+    match. Treating a stale or wrong-case suffix as "not loaded" would trigger
+    a needless reload of the model that is already sitting there.
+    """
+    wanted, device = _split_requested(requested_model)
+    if not wanted:
+        return None
+    candidates = [slot for slot in (runtime.primary, runtime.secondary)
+                  if _slot_serviceable(slot) and slot.model_name
+                  and canonical_model_name(slot.model_name) == wanted]
+    if not candidates:
+        return None
+    if device:
+        for slot in candidates:
+            if slot.device_name.upper() == device:
+                return slot
+    return candidates[0]
 
 
 def _load_on_demand(requested_model):
@@ -41,6 +71,13 @@ def _load_on_demand(requested_model):
     the previous model is gone. That is why it fires only on an exact name
     match against what is actually on disk -- never on a typo, never on a
     client's unconfigured default, both of which keep the old fallthrough.
+
+    A name that IS known but cannot be loaded (a GGUF architecture the reader
+    does not implement, say) is a different case again, and gets a different
+    answer: refusing outright, rather than the old silent fallthrough that
+    quietly kept answering under whatever was already resident. The caller
+    named this model on purpose -- it is listed, with a reason, by
+    /v1/models/available -- so the failure belongs to the caller to see.
     """
     # Imported here rather than at module scope: manage imports the discovery
     # and slot machinery this module also sits in, and a top-level import
@@ -48,17 +85,28 @@ def _load_on_demand(requested_model):
     from core.models.discovery import _available_models
     from core.models.manage import swap_model
 
-    wanted = requested_model.partition("@")[0].strip().lower()
+    wanted, _ = _split_requested(requested_model)
     if not wanted:
         return None
-    known = {m["name"].lower(): m for m in _available_models()}
+    known = {canonical_model_name(m["name"]): m for m in _available_models()}
     match = known.get(wanted)
-    if match is None or match.get("loadable") is False:
-        return None
-    # Raises _TurnError on refusal, which the chat path already handles -- so
+    if match is None:
+        return None  # not ours -- caller keeps the unknown-client-default fallthrough
+    if match.get("loadable") is False:
+        raise _TurnError(openai_error(
+            f"'{match['name']}' is on disk but cannot be loaded "
+            f"({match.get('reason') or 'unsupported'}).",
+            "invalid_request_error", 400))
+    # Raises _TurnError on any other refusal (busy slot, bad weights, no
+    # device can host it, ...), which the chat path already handles -- so
     # "that model cannot run here" reaches the user as itself rather than as a
     # silent answer from whatever happened to be loaded.
     swap_model(requested_model)
+    # _match_loaded matches on the bare name across both slots regardless of
+    # device, so this finds the model wherever swap_model actually placed it
+    # -- including a device fallback or landing in the secondary slot. The
+    # `or runtime.primary` is a last-resort fallback that should not be
+    # reachable once swap_model has returned without raising.
     return _match_loaded(requested_model) or runtime.primary
 
 
@@ -81,12 +129,18 @@ def _route_request(has_images, requested_model):
                 if _slot_serviceable(slot) and slot.model_type == "vlm":
                     return slot
             return None  # no VLM loaded
-        else:
-            # Text → prefer the better/primary model
-            # If GPU has a big LLM, use GPU. Otherwise use primary (NPU).
-            if runtime.secondary.model_type == "llm":
-                return runtime.secondary  # GPU has a big LLM — use it
-            return runtime.primary  # GPU has VLM, text goes to NPU
+        # Text → a resident LLM first (the GPU's big coder outranks the NPU),
+        # then whatever else is serviceable. The fallbacks matter when one
+        # slot is mid-swap or errored: a VLM answers text fine, and returning
+        # a dead primary here -- which the old `return runtime.primary` did
+        # unconditionally -- handed the caller a slot that could not serve.
+        for slot in (runtime.secondary, runtime.primary):
+            if _slot_serviceable(slot) and slot.model_type == "llm":
+                return slot
+        for slot in (runtime.primary, runtime.secondary):
+            if _slot_serviceable(slot):
+                return slot
+        return None
 
     # Single mode — everything goes to primary
     return runtime.primary if _slot_serviceable(runtime.primary) else None

@@ -95,6 +95,58 @@ class HeadlessTests(unittest.TestCase):
             response = self.client.post("/v1/models/load", json={"model": "fixture"})
         self.assertEqual(response.status_code, 503)
 
+    def _resident_slot(self, tmpdir, name="fixture-8b", device="NPU"):
+        import os
+        model_dir = os.path.join(tmpdir, name)
+        os.makedirs(model_dir, exist_ok=True)
+        loads = []
+        return model_dir, loads, types.SimpleNamespace(
+            status="ready", model_name=name, device_name=device,
+            model_type="llm", model_dir=model_dir,
+            load=lambda target, *_a: loads.append(target))
+
+    def test_loading_the_resident_model_does_not_reload_it(self):
+        """`/load` on the current model -- a keep-alive, a re-pick, a stale
+        `@DEVICE` suffix -- must be a no-op, not a 9-65 s reload."""
+        import tempfile
+        from core.models import manage
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir, loads, s = self._resident_slot(tmp)
+            with (mock.patch.object(runtime, "primary", s),
+                  mock.patch.object(runtime, "secondary", None),
+                  mock.patch.object(manage, "_available_models", return_value=[
+                      {"name": "fixture-8b", "path": model_dir}])):
+                for asked in ("fixture-8b", "fixture-8b@NPU", "FIXTURE-8B@npu",
+                              "fixture-8b@AUTO"):
+                    response = self.client.post("/v1/models/load",
+                                                json={"model": asked})
+                    self.assertEqual(response.status_code, 200, asked)
+                    self.assertEqual(response.json["placement"],
+                                     "already resident", asked)
+                    self.assertEqual(response.json["device"], "NPU", asked)
+            self.assertEqual(loads, [])
+
+    def test_explicit_other_device_still_moves_a_resident_model(self):
+        """Asking for the resident model @GPU when it sits on NPU is a real
+        move request -- it must NOT be short-circuited as already resident."""
+        import tempfile
+        from core.models import manage
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir, loads, s = self._resident_slot(tmp)
+            with (mock.patch.object(runtime, "primary", s),
+                  mock.patch.object(runtime, "secondary", None),
+                  mock.patch.object(manage, "_available_models", return_value=[
+                      {"name": "fixture-8b", "path": model_dir}]),
+                  mock.patch.object(runtime, "DEVICES", {}),
+                  mock.patch("core.models.manage._choose_device",
+                             return_value=(None, None, "no GPU on this machine"))):
+                response = self.client.post("/v1/models/load",
+                                            json={"model": "fixture-8b@GPU"})
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("no GPU on this machine",
+                          response.json["error"]["message"])
+            self.assertEqual(loads, [])
+
 
 class SlotLockTests(unittest.TestCase):
     def available_on_other_thread(self, lock):

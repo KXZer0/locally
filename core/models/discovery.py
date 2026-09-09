@@ -13,6 +13,22 @@ from core.models.integrity import _dir_size_bytes
 from core.models.irinfo import read_ir_rt_info
 from core.slots.select import _slot_serviceable
 
+
+def canonical_model_name(raw):
+    """The stable, case-folded identity of a model id.
+
+    A device suffix ("name@DEVICE") is stripped: it is compatibility syntax
+    for the ids this module used to advertise, not part of a model's
+    identity, and _models_data() never emits one for a model that isn't
+    resident. Comparing on this form -- rather than the raw string -- is
+    what lets a resident model survive a device-fallback swap, a client's
+    stale cached "name@NPU", or different case, without being mistaken for
+    a different model and reloaded for no reason. core/slots/route.py is
+    the other half of this: it matches requests against the same form.
+    """
+    return (raw or "").partition("@")[0].strip().lower()
+
+
 def _models_data():
     # A slot that is merely idle-unloaded still SERVES -- _slot_serviceable and
     # overall_status() both count it, and the chat path reloads it on demand --
@@ -47,10 +63,12 @@ def _models_data():
     # No @DEVICE suffix: placement is decided at load time by _choose_device
     # reading the IR, and naming a device here would promise one the model may
     # not be able to use.
-    resident = {s.model_name.lower() for s in (runtime.primary, runtime.secondary)
+    resident = {canonical_model_name(s.model_name)
+                for s in (runtime.primary, runtime.secondary)
                 if _slot_serviceable(s) and s.model_name}
     for model in _available_models():
-        if model["name"].lower() in resident or model.get("loadable") is False:
+        if canonical_model_name(model["name"]) in resident \
+                or model.get("loadable") is False:
             continue
         data.append({
             "id": model["name"],

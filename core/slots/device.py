@@ -14,7 +14,8 @@ from datetime import datetime
 from queue import Empty, Queue
 from core import config
 from core.genai.results import (explain_genai_error, extract_finish_reason,
-                                extract_perf, extract_text)
+                                extract_perf, extract_text, extract_token_metrics,
+                                GeneratedText)
 from core.genai.tokens import _count_tokens
 from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx, _usable_gpu_bytes
 from core.metrics import record_turn
@@ -240,13 +241,17 @@ class DeviceSlot(MemoryPlanning):
         return "\n".join(str(msg.get("content") or "") for msg in raw_messages)
 
     def _record_turn(self, prompt_text, completion_text, completion_tokens,
-                     started, finish_reason="stop", ttft_ms=None):
+                     started, finish_reason="stop", ttft_ms=None, result=None):
         """Turn the measurements already used by log lines into JSON data."""
         total_ms = (time.perf_counter() - started) * 1000
-        prompt_tokens = _count_tokens(self, prompt_text)
+        native = extract_token_metrics(result)
+        prompt_tokens = native.get("prompt_tokens")
+        if prompt_tokens is None:
+            prompt_tokens = _count_tokens(self, prompt_text)
+        completion_tokens = native.get("completion_tokens")
         if completion_tokens is None:
             completion_tokens = _count_tokens(self, completion_text)
-        record_turn(
+        item = record_turn(
             device=self.device_name,
             model=self.model_name,
             prompt_tokens=prompt_tokens,
@@ -254,7 +259,19 @@ class DeviceSlot(MemoryPlanning):
             ttft_ms=ttft_ms,
             total_ms=total_ms,
             finish_reason=finish_reason,
+            native_decode_tps=native.get("decode_tps"),
+            token_count_source="native" if "completion_tokens" in native else "tokenizer",
         )
+        def rate(key):
+            value = item[key]
+            return f"{value:.1f}" if value is not None else "unknown"
+        qualifier = "" if "decode_tps" in native else "estimated "
+        print(f"{datetime.now():%H:%M:%S} -> [{self.device_name}] "
+              f"{completion_tokens if completion_tokens is not None else 'unknown'} tokens, "
+              f"{qualifier}decode {rate('decode_tokens_per_second')} tok/s, "
+              f"end-to-end {rate('end_to_end_tokens_per_second')} tok/s, "
+              f"TTFT {rate('ttft_ms')}ms ({finish_reason})", flush=True)
+        return item
 
 
     def warmup(self):
@@ -320,8 +337,9 @@ class DeviceSlot(MemoryPlanning):
         text = extract_text(result)
         ttft_ms, _ = extract_perf(result)
         self.last_ttft_ms = ttft_ms
-        self._record_turn(text_prompt, text, None, started, ttft_ms=ttft_ms)
-        return text
+        self._record_turn(text_prompt, text, None, started,
+                          extract_finish_reason(result), ttft_ms=ttft_ms, result=result)
+        return GeneratedText(text, extract_finish_reason(result))
 
     def generate_llm(self, raw_messages, gen, record_metric=True):
         """LLM generate — non-streaming."""
@@ -338,8 +356,9 @@ class DeviceSlot(MemoryPlanning):
         text = extract_text(result)
         if record_metric:
             self._record_turn(self._message_text(raw_messages), text, None,
-                              started, ttft_ms=ttft_ms)
-        return text
+                              started, extract_finish_reason(result),
+                              ttft_ms=ttft_ms, result=result)
+        return GeneratedText(text, extract_finish_reason(result))
 
     def cancel(self):
         """Signal the current generation to stop."""
@@ -349,6 +368,7 @@ class DeviceSlot(MemoryPlanning):
         """VLM generate — SSE streaming. openvino-genai 2026.1+."""
         token_queue = Queue()
         token_count = 0
+        pieces = []
         gen_error = [None]
         # Kept so the finish frame can report why generation stopped: the
         # streamer only ever sees text, and the reason is on the result.
@@ -407,6 +427,7 @@ class DeviceSlot(MemoryPlanning):
                     ttft_ms = (time.perf_counter() - t0) * 1000
                     self.last_ttft_ms = ttft_ms
                 token_count += 1
+                pieces.append(token)
                 chunk = {
                     "id": completion_id, "object": "chat.completion.chunk",
                     "created": created, "model": self.model_name,
@@ -443,15 +464,10 @@ class DeviceSlot(MemoryPlanning):
             self._cancel.set()
 
         elapsed = time.perf_counter() - t0
-        tps = token_count / elapsed if elapsed > 0 else 0
-        tag = " (cancelled)" if was_cancelled else (" (error)" if gen_error[0] else "")
-        print(f"{datetime.now():%H:%M:%S} -> [{self.device_name}] "
-              f"VLM {token_count} tokens in {elapsed:.1f}s ({tps:.1f} tok/s){tag}",
-              flush=True)
-        self._record_turn(text_prompt, "", token_count, t0,
+        self._record_turn(text_prompt, "".join(pieces), None, t0,
                           "cancelled" if was_cancelled else
-                          ("error" if gen_error[0] else "stop"),
-                          ttft_ms=ttft_ms)
+                          ("error" if gen_error[0] else finish_reason),
+                          ttft_ms=ttft_ms, result=gen_result[0])
 
     def stream_llm(self, raw_messages, gen, completion_id, created, t0):
         """LLM generate — SSE streaming."""
@@ -461,6 +477,7 @@ class DeviceSlot(MemoryPlanning):
 
         token_queue = Queue()
         token_count = 0
+        pieces = []
         cancelled = False
         ttft_ms = None
         self.last_ttft_ms = None
@@ -540,6 +557,7 @@ class DeviceSlot(MemoryPlanning):
                     ttft_ms = (time.perf_counter() - t0) * 1000
                     self.last_ttft_ms = ttft_ms
                 token_count += 1
+                pieces.append(token)
                 chunk = {
                     "id": completion_id, "object": "chat.completion.chunk",
                     "created": created, "model": self.model_name,
@@ -578,16 +596,8 @@ class DeviceSlot(MemoryPlanning):
             # Safety net: if client disconnects, stop generation
             self._cancel.set()
 
-        elapsed = time.perf_counter() - t0
-        tps = token_count / elapsed if elapsed > 0 else 0
-        tag = " (cancelled)" if was_cancelled else (" (error)" if gen_error[0] else "")
-        ttft = (f", TTFT {self.last_ttft_ms:.0f}ms" if token_count and
-                self.last_ttft_ms is not None else "")
-        print(f"{datetime.now():%H:%M:%S} -> [{self.device_name}] "
-              f"{token_count} tokens in {elapsed:.1f}s ({tps:.1f} tok/s{ttft}){tag}",
-              flush=True)
-        self._record_turn(self._message_text(raw_messages), "", token_count, t0,
-                          finish_reason, ttft_ms=ttft_ms)
+        self._record_turn(self._message_text(raw_messages), "".join(pieces), None, t0,
+                          finish_reason, ttft_ms=ttft_ms, result=gen_result[0])
 
     @property
     def info(self):

@@ -209,12 +209,9 @@ def _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0)
         return
 
     text = result.get("text", "")
-    n_words = len(text.split())
-    ttft = (f", TTFT {slot.last_ttft_ms:.0f}ms"
-            if slot.last_ttft_ms is not None else "")
+    generation_finish = getattr(text, "finish_reason", "stop")
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
-          f"~{n_words} tokens in {elapsed:.1f}s "
-          f"({n_words / max(elapsed, 1e-6):.1f} tok/s{ttft})", flush=True)
+          f"Buffered tool response completed in {elapsed:.1f}s", flush=True)
 
     text, tool_calls = parse_tool_calls(text, tools)
     if tool_calls:
@@ -225,7 +222,7 @@ def _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0)
         finish_reason = "tool_calls"
     else:
         message = {"role": "assistant", "content": text}
-        finish_reason = "stop"
+        finish_reason = generation_finish
 
     # Reuse the replay emitter (it re-sends a role frame — harmless, clients
     # just set role twice) for the content/tool_calls/finish/[DONE] tail.

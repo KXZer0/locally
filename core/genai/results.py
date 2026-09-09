@@ -5,7 +5,39 @@ on -- most importantly annotating 'Got unfinished GenerationStatus' with the
 --cache-size-gb hint, because that error means the KV pool is too small and
 says so nowhere (#21)."""
 
+import math
+
 from core import config
+
+
+class GeneratedText(str):
+    """String-compatible answer carrying this generation's own finish reason."""
+    def __new__(cls, text, finish_reason="stop"):
+        value = super().__new__(cls, text)
+        value.finish_reason = finish_reason
+        return value
+
+
+def extract_token_metrics(result):
+    """Native token counts and decode rate; absent/invalid fields stay unknown.
+
+    A streamer callback may contain part of a token or several tokens. GenAI's
+    counters include the chat template and generated reasoning, unlike counting
+    words in the visible answer. Read fields independently for older runtimes.
+    """
+    metrics = getattr(result, "perf_metrics", None)
+    values = {}
+    for field, method in (("prompt_tokens", "get_num_input_tokens"),
+                          ("completion_tokens", "get_num_generated_tokens"),
+                          ("decode_tps", "get_throughput")):
+        try:
+            value = getattr(metrics, method)()
+            value = float(value.mean if field == "decode_tps" else value)
+            if math.isfinite(value) and value >= 0:
+                values[field] = value if field == "decode_tps" else int(value)
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            pass
+    return values
 
 
 

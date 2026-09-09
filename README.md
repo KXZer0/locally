@@ -56,11 +56,15 @@ For direct control over a model or device, start `locally.py` yourself:
 .\venv\Scripts\python.exe locally.py --model-dir "$HOME\models\Qwen3-8B-int4-cw-ov" --device NPU
 ```
 
-Use `--device auto` to let the server choose compatible Intel hardware. The default server bind is `0.0.0.0` for local container clients. Use `--host 127.0.0.1` when only this computer should connect. The API does not authenticate requests, so do not expose it to untrusted networks.
+Use `--device auto` to let the server choose compatible Intel hardware. The default server bind is `0.0.0.0` for local container clients. The source filter permits loopback and detected virtual/container subnets by default; optional `--api-key` authentication is available. Use `--host 127.0.0.1` when only this computer should connect.
 
 After setup, launch and chat commands work in Windows PowerShell 5.1 and PowerShell 7. To install dependencies without choosing a model, use `.\install.ps1 -SkipModel`.
 
 ## Open terminal chat
+
+For Obsidian Copilot model selection, see [Copilot setup](docs/COPILOT.md).
+For the NPU speed investigation and reproducible probe, see
+[token speed review](docs/TOKEN-SPEED-REVIEW.md).
 
 Terminal chat is an HTTP client. It connects to the API; attaching to a server does not load OpenVINO or stop the server when you leave.
 

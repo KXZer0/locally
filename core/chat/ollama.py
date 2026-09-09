@@ -14,8 +14,8 @@ from core import config, runtime
 from core.chat.common import (apply_penalties, _maybe_capture_prewarm,
                               overall_status, parse_messages)
 from core.chat.openai import chat_completions
-from core.errors import openai_error
-from core.genai.results import extract_perf, explain_genai_error
+from core.errors import _TurnError, openai_error
+from core.genai.results import extract_perf, explain_genai_error, extract_finish_reason
 from core.media.images import load_image, pil_to_tensor
 from core.slots.capability import (_tool_capable, _tools_refused_note,
                                    _tools_supported)
@@ -133,7 +133,11 @@ def ollama_chat():
             internal_messages.append({"role": role, "content": content})
 
     # Route to device
-    slot = _route_request(has_images, requested_model)
+    try:
+        slot = _route_request(has_images, requested_model)
+    except _TurnError as error:
+        response, status = error.response
+        return jsonify({"error": response.get_json()["error"]["message"]}), status
     if slot is None:
         return jsonify({"error": "no model ready"}), 503
 
@@ -222,11 +226,10 @@ def ollama_chat():
         return jsonify({"error": explain_genai_error(e)}), 500
 
     elapsed = time.perf_counter() - t0
-    ttft = (f", TTFT {slot.last_ttft_ms:.0f}ms"
-            if slot.last_ttft_ms is not None else "")
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "
-          f"~{len(text.split())} tokens in {elapsed:.1f}s{ttft}", flush=True)
+          f"Response completed in {elapsed:.1f}s", flush=True)
 
+    generation_finish = getattr(text, "finish_reason", "stop")
     message = {"role": "assistant", "content": text}
     if tools_active:
         text, tool_calls = parse_tool_calls(text, tools)
@@ -248,6 +251,7 @@ def ollama_chat():
         "model": slot.model_name,
         "message": message,
         "done": True,
+        "done_reason": generation_finish,
         "total_duration": int(elapsed * 1e9),
     }
     if stream:
@@ -264,6 +268,10 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
 
     token_queue = Queue()
     token_count = 0
+    pieces = []
+    generated = [None]
+    failure = [None]
+    ttft_ms = None
 
     def streamer_callback(token):
         if slot._cancel.is_set():
@@ -275,9 +283,11 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
         try:
             with slot.lock:
                 slot._cancel.clear()
-                slot.pipe.generate(history, gen, streamer_callback)
+                generated[0] = slot.pipe.generate(history, generation_config=gen,
+                                                  streamer=streamer_callback)
                 slot.last_used = time.time()
         except Exception as e:
+            failure[0] = e
             print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] [Ollama] "
                   f"generate error: {explain_genai_error(e)}", flush=True)
         finally:
@@ -297,7 +307,9 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
             if token_count == 0:
                 # Wall-clock TTFT: prefill is over when the first token lands.
                 slot.last_ttft_ms = (time.perf_counter() - t0) * 1000
+                ttft_ms = slot.last_ttft_ms
             token_count += 1
+            pieces.append(token)
             yield json.dumps({
                 "model": slot.model_name,
                 "message": {"role": "assistant", "content": token},
@@ -305,22 +317,25 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
             }) + "\n"
 
         elapsed = time.perf_counter() - t0
-        tps = token_count / elapsed if elapsed > 0 else 0
+        reason = ('error' if failure[0] else 'cancelled' if slot._cancel.is_set()
+                  else extract_finish_reason(generated[0]))
+        metric = slot._record_turn(slot._message_text(raw_messages), ''.join(pieces),
+                                   None, t0, reason, ttft_ms=ttft_ms, result=generated[0])
 
-        yield json.dumps({
+        final = {
             "model": slot.model_name,
             "message": {"role": "assistant", "content": ""},
             "done": True,
             "total_duration": int(elapsed * 1e9),
-            "eval_count": token_count,
-        }) + "\n"
+            "done_reason": reason,
+        }
+        if metric['completion_tokens'] is not None:
+            final['eval_count'] = metric['completion_tokens']
+        if failure[0]:
+            final['error'] = explain_genai_error(failure[0])
+        yield json.dumps(final) + "\n"
     finally:
         slot._cancel.set()
-
-    ttft = (f", TTFT {slot.last_ttft_ms:.0f}ms" if token_count and
-            slot.last_ttft_ms is not None else "")
-    print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "
-          f"{token_count} tokens in {elapsed:.1f}s ({tps:.1f} tok/s{ttft})", flush=True)
 
 from core.chat.ollama_generate import (ollama_copy, ollama_delete,
                                          ollama_generate, ollama_pull,

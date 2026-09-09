@@ -62,7 +62,7 @@ def chat_completions():
         resp.headers.extend(_turn_headers(turn, slot))
         return resp
 
-    if stream and not tools_active:
+    if stream and not tools_active and not images:
         return Response(
             slot.stream_llm(raw_messages, gen, completion_id, created, t0),
             mimetype="text/event-stream",
@@ -91,7 +91,7 @@ def chat_completions():
         resp = jsonify({
             "id": completion_id, "object": "chat.completion",
             "created": created, "model": slot.model_name,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": getattr(text, "finish_reason", "stop")}],
             "usage": {"prompt_tokens": -1, "completion_tokens": -1, "total_tokens": -1},
         })
         resp.headers.extend(_turn_headers(turn, slot))
@@ -122,14 +122,10 @@ def chat_completions():
         return openai_error(f"Inference failed: {err}", "server_error", 500)
 
     elapsed = time.perf_counter() - t0
-    n_words = len(text.split())
-    ttft = (f", TTFT {slot.last_ttft_ms:.0f}ms"
-            if slot.last_ttft_ms is not None else "")
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
-          f"~{n_words} tokens in {elapsed:.1f}s "
-          f"({n_words / max(elapsed, 1e-6):.1f} tok/s{ttft}"
-          f"{slot.prefill_note(text_prompt)})", flush=True)
+          f"Response completed in {elapsed:.1f}s", flush=True)
 
+    generation_finish = getattr(text, "finish_reason", "stop")
     tool_calls = []
     if tools_active:
         text, tool_calls = parse_tool_calls(text, tools)
@@ -144,7 +140,7 @@ def chat_completions():
         finish_reason = "tool_calls"
     else:
         message = {"role": "assistant", "content": text}
-        finish_reason = "stop"
+        finish_reason = generation_finish
 
     resp = jsonify({
         "id": completion_id, "object": "chat.completion",

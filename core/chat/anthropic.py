@@ -6,14 +6,14 @@ from datetime import datetime
 
 from flask import Response, jsonify, request
 
-from core import config
+from core import config, runtime
 from core.chat.common import (_maybe_capture_prewarm, _sse_tool_stream,
                               _turn_headers, make_id, parse_messages)
 from core.chat.turn import _prepare_turn
 from core.errors import _TurnError, openai_error
 from core.genai.results import explain_genai_error
 from core.genai.tokens import _count_tokens
-from core.slots.route import _route_request
+from core.slots.route import _match_loaded
 from core.tools.parse import parse_tool_calls
 from core.tools.text import _strip_tool_markup, strip_thinking
 from core.voice.think_filter import _ThinkFilter
@@ -270,6 +270,7 @@ def anthropic_messages():
               f"error: {err}", flush=True)
         return openai_error(f"Inference failed: {err}", "server_error", 500)
 
+    generation_finish = getattr(text, "finish_reason", "stop")
     tool_calls = []
     if turn["tools_active"]:
         text, tool_calls = parse_tool_calls(text, turn["tools"])
@@ -286,14 +287,14 @@ def anthropic_messages():
     elapsed = time.perf_counter() - t0
     out_tokens = _count_tokens(slot, text) or len(text.split())
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
-          f"{out_tokens} tokens in {elapsed:.1f}s "
-          f"({out_tokens / max(elapsed, 1e-6):.1f} tok/s)", flush=True)
+          f"Anthropic response completed in {elapsed:.1f}s", flush=True)
 
     resp = jsonify({
         "id": msg_id, "type": "message", "role": "assistant",
         "model": slot.model_name,
         "content": _anthropic_blocks(text, tool_calls),
-        "stop_reason": "tool_use" if tool_calls else "end_turn",
+        "stop_reason": "tool_use" if tool_calls else (
+            "max_tokens" if generation_finish == "length" else "end_turn"),
         "stop_sequence": None,
         "usage": {"input_tokens": input_tokens or 0, "output_tokens": out_tokens},
     })
@@ -305,9 +306,13 @@ def anthropic_messages():
 
 def anthropic_count_tokens():
     raw = request.get_json(silent=True) or {}
-    slot = _route_request(False, raw.get("model", ""))
-    if slot is None:
-        return openai_error("No model ready.", "server_error", 503)
+    if not isinstance(raw, dict) or not isinstance(raw.get("model", ""), str):
+        return openai_error("Request body must be an object with a model string")
+    # Counting is read-only: discovery routing can now unload and compile an
+    # entirely different model. An unavailable tokenizer uses the existing
+    # estimate; a budget probe must not evict the model serving another app.
+    wanted = raw.get("model", "")
+    slot = _match_loaded(wanted) if wanted else runtime.primary
     body = _anthropic_to_openai(raw)
     try:
         text_prompt, _images, _raw = parse_messages(body.get("messages") or [], config.MAX_IMAGE_DIM)

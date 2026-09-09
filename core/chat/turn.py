@@ -160,9 +160,9 @@ def _prepare_turn(body):
         except Exception as e:
             raise _TurnError(openai_error(f"Failed to prepare Python turn: {e}"))
 
-    # Tool calling is GPU/iGPU + CPU only. Only when such a slot serves the turn
-    # do we render tool specs into the prompt and (later) parse calls back out;
-    # on the NPU the request is answered as a plain chat turn.
+    # GPU/CPU/REMOTE accept tools; the NPU accepts a set only when its rendered
+    # schemas fit NPU_TOOL_BUDGET. Accepted sets add prompt tokens and use the
+    # buffered tool-response path, even when the answer calls no tool.
     tools_active = bool(tools) and _tool_capable(slot, tools) and not python_tool_active
     if tools_active:
         try:

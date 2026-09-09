@@ -152,7 +152,8 @@ def key_ok(headers):
     expected = config.API_KEY
     if not expected:
         return True
-    return hmac.compare_digest(presented_key(headers), expected)
+    return hmac.compare_digest(presented_key(headers).encode("utf-8"),
+                               expected.encode("utf-8"))
 
 
 def attach_guard(app):
