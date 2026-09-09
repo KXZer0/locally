@@ -86,6 +86,35 @@ def parse_args(argv=None):
     # by design, per Python convention. Same for every --two-word flag here.
     p.add_argument("--ollama-port", type=int, default=11434,
                    help="Ollama API port (default: 11434, 0 to disable)")
+    p.add_argument("--allow-from", default="auto", metavar="SPEC",
+                   help="Which source addresses may call the API. 'auto' "
+                        "(default) answers loopback and the private subnets of "
+                        "virtual/container adapters — the WSL and Podman path — "
+                        "and refuses the rest, so the 0.0.0.0 bind that "
+                        "containers need does not also serve the Wi-Fi. Give "
+                        "CIDRs to add subnets (comma-separated), or 'any' to "
+                        "filter nothing; pair 'any' with --api-key.")
+    p.add_argument("--api-key", default=os.environ.get("LOCALLY_API_KEY") or None,
+                   metavar="KEY",
+                   help="Require this key on every request, as 'Authorization: "
+                        "Bearer <key>' or 'X-Api-Key: <key>'. Off by default — "
+                        "--allow-from is what keeps the default install safe. "
+                        "Turn it on when the port is deliberately reachable "
+                        "past this machine (LAN, Tailscale, a second box), "
+                        "where a source address vouches for nobody. Reads "
+                        "$LOCALLY_API_KEY when the flag is absent.")
+    p.add_argument("--cors-origin", action="append", default=None, metavar="ORIGIN",
+                   help="Extra browser origin allowed to call the API; repeat "
+                        "for several. Obsidian (app://obsidian.md), its mobile "
+                        "origins and localhost pages are allowed already. "
+                        "fnmatch wildcards work, e.g. 'vscode-webview://*'. "
+                        "'*' allows every page in every open tab to drive your "
+                        "model — this server takes no credentials, so say it "
+                        "deliberately.")
+    p.add_argument("--no-cors", action="store_true",
+                   help="Send no cross-origin headers at all. Browser-based "
+                        "clients (Obsidian plugins, any web UI locally did not "
+                        "itself serve) then fail with 'Failed to fetch'.")
     p.add_argument("--max-dim", type=int, default=768,
                    help="Max image dimension before resize (default: 768)")
     p.add_argument("--whisper-dir", default=None,

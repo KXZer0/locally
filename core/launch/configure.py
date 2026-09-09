@@ -32,6 +32,17 @@ def configure(args):
     config.MAX_IMAGE_DIM = args.max_dim
     config.DEBUG_REQUESTS = args.debug
     config.VSCODE_COMPAT = args.vscode_compat
+    config.ALLOW_FROM = args.allow_from
+    config.API_KEY = (args.api_key or "").strip() or None
+    # Additive: --cors-origin extends the built-in allowlist rather than
+    # replacing it, because the common case is "Obsidian works, now also let
+    # my own page in" and silently dropping Obsidian to add one origin is the
+    # kind of fix that reads as a new bug.
+    if args.no_cors:
+        config.CORS_ORIGINS = []
+    elif args.cors_origin:
+        config.CORS_ORIGINS = list(config.CORS_ORIGINS) + [
+            o.strip() for o in args.cors_origin if o.strip()]
     # Tri-state: explicit flags win, otherwise per-device (see config.PROMPT_CACHE).
     config.PROMPT_CACHE = (False if args.no_prompt_cache
                     else (True if args.prompt_cache else None))

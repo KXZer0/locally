@@ -3,6 +3,8 @@
 from flask import Flask
 
 from core import config
+from core.cors import attach_cors
+from core.netguard import attach_guard
 from core.metrics import register_metrics_route
 from core.routes import audio
 from core.routes.chat import bp as chat_bp, ollama_bp as ollama_chat_bp
@@ -15,6 +17,8 @@ from core.system.status import _log_request
 def create_app():
     app = Flask("locally", static_folder=None, template_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = config.MAX_REQUEST_BYTES
+    attach_guard(app)
+    attach_cors(app)
     app.register_blueprint(chat_bp)
     app.register_blueprint(models_bp)
     app.register_blueprint(audio.bp)
@@ -35,6 +39,8 @@ def create_app():
 def create_ollama_app():
     app = Flask("locally-Ollama", static_folder=None)
     app.config["MAX_CONTENT_LENGTH"] = config.MAX_REQUEST_BYTES
+    attach_guard(app)
+    attach_cors(app)
     app.register_blueprint(ollama_chat_bp)
     app.register_blueprint(ollama_models_bp)
 

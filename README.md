@@ -152,6 +152,42 @@ Ollama compatibility is available on port 11434 unless disabled with `--ollama-p
 
 For a client in a Docker container on this Windows computer, start the API with `--host 0.0.0.0` and use `http://host.docker.internal:8000/v1` inside the container.
 
+### Who can reach the server
+
+locally binds `0.0.0.0` by default, because a container cannot see a loopback socket — that bind is what makes the WSL, Podman and Docker path work at all. It is not a decision to serve the network: `--allow-from` (default `auto`) answers loopback and the private subnets of virtual/container adapters, and refuses everything else with `403`. The container subnet is discovered at startup (about 10 ms), so nothing is hardcoded and nothing needs configuring on a new machine.
+
+The startup banner says the posture out loud, e.g. `Access: 127.0.0.0/8, ::1/128, 172.17.96.0/20`.
+
+Add a subnet, or turn the filter off:
+
+```powershell
+python locally.py --model-dir model --allow-from auto,192.168.1.0/24
+```
+
+To expose the port deliberately — a real LAN, Tailscale, a second machine — a source address vouches for nobody, so add a key:
+
+```powershell
+python locally.py --model-dir model --allow-from any --api-key 'choose-a-long-random-string'
+```
+
+Clients then send `Authorization: Bearer <key>` or `X-Api-Key: <key>`. The server reads `$LOCALLY_API_KEY` when `--api-key` is absent, and the terminal client (`chat.ps1`) reads the same variable so it keeps working. Without `--api-key`, no key is required or checked.
+
+On Windows the firewall is a separate matter, and it governs *reachability* rather than safety: without an inbound allow rule the packets never arrive. See `docs/ODYSSEUS.md` for the scoped rule.
+
+### Clients that run in a browser (Obsidian, and anything embedded)
+
+An Obsidian plugin runs inside a browser engine at the origin `app://obsidian.md`, so its call to locally is a *cross-origin* request. The browser discards a cross-origin response that carries no `Access-Control-Allow-Origin` header before the plugin sees it, and the plugin can only report `Failed to fetch` — no status, no message — while locally logs an ordinary `200`. Reaching the port from a browser address bar proves nothing here, because typing a URL is not a cross-origin request.
+
+locally sends the header. Obsidian on desktop and mobile, and pages served from `localhost` or `127.0.0.1` on any port, are allowed out of the box; point the plugin at `http://127.0.0.1:8000/v1` (or port 11434 for the Ollama surface) and it works with no flag.
+
+Allow another origin with `--cors-origin`, repeating it as needed. `fnmatch` wildcards are accepted:
+
+```powershell
+python locally.py --model-dir model --cors-origin 'vscode-webview://*'
+```
+
+`--cors-origin '*'` allows every page in every open tab to drive your model, and locally checks no credentials — prefer naming the origin. `--no-cors` sends nothing at all.
+
 ## Use Odysseus
 
 Odysseus runs the assistant interface; Locally supplies its model over HTTP.

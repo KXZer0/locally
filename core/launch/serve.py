@@ -185,6 +185,10 @@ def serve(app, ollama_app, args, model_dir, devices, setup_only, all_slots):
 
     # OpenAI API on main thread
     print(f"  OpenAI API on port {args.port}", flush=True)
+    # Say the posture out loud. The failure this replaces was a firewall rule
+    # that had silently stopped being in force, with nothing on screen to say so.
+    from core import netguard
+    print(f"  {netguard.describe(args.host)}", flush=True)
     print(f"  Optional chat: python locally.py chat --port {args.port}", flush=True)
     start_shift_enter_chat(args.port)
     print("  Ctrl+C stops this server and releases its models · "

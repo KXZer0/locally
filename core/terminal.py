@@ -22,6 +22,19 @@ from urllib.request import Request, urlopen
 from core.voice.think_filter import _ThinkFilter
 
 
+def _auth_headers():
+    """The server's key, from the environment, or nothing.
+
+    Read here rather than passed in because the terminal attaches to a server
+    it did not start: `--api-key` is the server's flag, and a client that
+    cannot see it would 401 against a server the user is looking at. Absent
+    key, absent header -- the default install requires none.
+    """
+    key = (os.environ.get("LOCALLY_API_KEY") or "").strip()
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
+
 SYSTEM_PROMPT = (
     "Help with questions and homework. Explain the steps clearly and concisely. "
     "Use Markdown when useful, including fenced code blocks. "
@@ -78,7 +91,8 @@ class Client:
     def open(self, path, body=None, timeout=None):
         data = None if body is None else json.dumps(body).encode("utf-8")
         req = Request(self.url + path, data=data,
-                      headers={"Content-Type": "application/json"})
+                      headers={"Content-Type": "application/json",
+                               **_auth_headers()})
         try:
             return urlopen(req, timeout=timeout or self.timeout)
         except HTTPError as e:
@@ -107,7 +121,8 @@ class Client:
         """
         body, content_type = multipart(fields, files, raw)
         req = Request(self.url + path, data=body,
-                      headers={"Content-Type": content_type})
+                      headers={"Content-Type": content_type,
+                               **_auth_headers()})
         try:
             with urlopen(req, timeout=timeout) as response:
                 return json.load(response)

@@ -245,6 +245,65 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   **75 s cold / 66 s warm per turn**, vs 369 s before. Tool calls execute
   correctly; answer *quality* is a separate question — a 30B int4 miscounted
   files in a Glob result on the first try.
+- **The 0.0.0.0 bind is required, so the filter is in the app** (`core/netguard.py`,
+  2026-09-09). `--host` defaults to 0.0.0.0 because a container reaches the host
+  over a virtual adapter and cannot see a loopback socket -- ODYSSEUS.md is built
+  on that. What was missing is that the wide bind was also the whole access
+  policy: no inbound auth exists anywhere, and on the dev box, on a Wi-Fi Windows
+  classed **Public**, `http://10.153.88.41:8000/` and `:11434/` both answered
+  **200** to anyone on the network.
+  **The firewall cannot be where this is enforced**, which is where the docs used
+  to put it. The scoped rule (`-RemoteAddress 172.17.96.0/20`) is right on the
+  machine it was typed on and replicates nowhere: WSL assigns that subnet per
+  machine and changes it, the rule needs elevation, Windows-only leaves a Linux
+  install with nothing, and -- measured -- two `python.exe` Public/Any/Any rules
+  that Windows wrote from an ordinary permission prompt **silently outranked it**.
+  The careful rule was already not in force and nothing said so. Enforcement that
+  does not ship with the code does not ship.
+  So `--allow-from` (default `auto`) answers loopback plus the private subnets of
+  virtual adapters and 403s the rest. Subnets are **discovered live** (psutil,
+  10.7 ms at startup, 1.68 us per request) because the constant is the thing that
+  does not travel. Two conditions, not one: the interface name must look virtual
+  (`vEthernet`, `docker`, `podman`, `veth`, ...) **and** the network must be
+  private and non-link-local -- "allow private" alone is useless here, since the
+  Wi-Fi that had to be refused was `10.153.88.0/24`. Measured on this box with no
+  configuration: allows `127.0.0.1`, `172.17.96.1` and a container at
+  `172.17.100.7`, refuses both Wi-Fi addresses. Firewall and filter are now
+  complementary -- the firewall decides *reachability*, `--allow-from` decides who
+  is *answered*, so a too-broad rule stops being a hole.
+  **`--api-key` is the second layer and stays off**, because the source filter is
+  what makes an unconfigured install safe and a key that every client must be
+  told breaks zero-touch replication. It is for a port deliberately exposed past
+  the box, where no address vouches for anyone. Order is deliberate: the source
+  filter outranks a correct key (holding the key is not permission to arrive from
+  the Wi-Fi), and **`OPTIONS` is exempt from the key** -- a preflight cannot carry
+  credentials, asking whether `Authorization` may be sent is what it is FOR, so
+  401ing it breaks every browser client before the real request happens. `GET /`
+  stays open as liveness. `core/terminal.py` reads `$LOCALLY_API_KEY`: it attaches
+  to a server it did not start, so it cannot see the server's flag.
+- **Browser clients need a CORS header, and there was none** (fixed 2026-09-09).
+  An Obsidian plugin runs at the origin `app://obsidian.md`, so every call it
+  makes is cross-origin, and a response with no `Access-Control-Allow-Origin`
+  is discarded by the browser *before the plugin sees it*. The client can only
+  say `Failed to fetch` -- no status, no body -- while locally logs an ordinary
+  200, so the symptom points at the network and the cause is a missing response
+  header. It reproduced against both surfaces (8000 and 11434) and survived
+  every check a user can make from outside: `/` answers in an address bar,
+  because typing a URL is not a cross-origin request. `core/cors.py` is one
+  `after_request` hook on both app factories -- error responses need the header
+  too, or a legible 413 also reads as "Failed to fetch" -- and preflight is
+  Flask's own automatic OPTIONS, which the same hook decorates.
+  **The allowlist is the design, not `*`.** This server binds 0.0.0.0 and
+  validates no key, so a wildcard lets any page in any open tab drive the model
+  and read `/v1/models`; reflecting the caller's `Origin` unconditionally is the
+  same thing wearing a hat. Ollama shipped `OLLAMA_ORIGINS` for this and
+  `--cors-origin` is that flag (additive -- replacing the list to add one origin
+  would silently break Obsidian). Defaults cover Obsidian desktop/mobile and
+  localhost on any port, which is Odysseus (7000) and OpenCode (4747).
+  `Access-Control-Request-Headers` is **echoed** rather than matched against a
+  fixed list, so an Anthropic client's `x-api-key`/`anthropic-version` works
+  without this file learning about it; `X-Device` is exposed, or a client can
+  read the answer but not which engine produced it.
 - Observability: per-request log lines include TTFT (streaming: wall-clock to first token;
   non-streaming: `perf_metrics` via `extract_perf`) — a prefix-cache hit is sub-second vs a
   cold multi-second/minute prefill, so hits/misses are visible without instrumentation.

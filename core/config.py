@@ -28,6 +28,30 @@ DEBUG_REQUESTS = False                 # --debug
 VSCODE_COMPAT = False                  # --vscode-compat
 OLLAMA_COMPAT_PORT = 0                 # --ollama-port after availability checks
 CHECK_UPDATES = False                  # --check-updates
+
+# Who may call the server. The bind stays 0.0.0.0 because a container reaches
+# the host over a virtual adapter and cannot see a loopback socket, so the
+# filter lives in the app instead of the firewall -- a scoped firewall rule is
+# per-machine, needs elevation, is Windows-only, and loses to the broad
+# python.exe rule Windows writes from a permission prompt. See core/netguard.py.
+ALLOW_FROM = "auto"                    # --allow-from: auto | any | CIDR,CIDR
+API_KEY = None                         # --api-key (off; source filter is the default posture)
+
+# Browser origins allowed to call the API (--cors-origin adds, --no-cors
+# empties). fnmatch patterns. A browser rejects a cross-origin response with
+# no Access-Control-Allow-Origin *before* the client sees it, which is why an
+# Obsidian plugin reports "Failed to fetch" against a server that answered
+# 200 -- see core/cors.py. The list is an allowlist and not `*` because this
+# server binds 0.0.0.0 and takes no credentials: every origin here can drive
+# the model from any open tab.
+CORS_ORIGINS = [
+    "app://obsidian.md",         # Obsidian desktop
+    "capacitor://localhost",     # Obsidian mobile (iOS)
+    "http://localhost",          # Obsidian mobile (Android)
+    "http://localhost:*", "https://localhost:*",
+    "http://127.0.0.1", "http://127.0.0.1:*", "https://127.0.0.1:*",
+    "http://[::1]", "http://[::1]:*",
+]
 SEARXNG_ROOT = None                    # --searxng-root, or detected checkout
 SEARXNG_IDLE = 600                     # --searxng-idle
 PYTHON_TOOL_ENABLED = False            # --python-tool

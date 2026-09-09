@@ -272,7 +272,16 @@ Four things about that string, each of which is a way people get it wrong:
    `/v1/chat/completions`, so the base is `.../v1`.
 
 `locally` binds `0.0.0.0` by default (`--host`, `core/cli.py:58`), which is *why*
-a container can reach it at all. A 127.0.0.1-bound server is invisible from a
+a container can reach it at all.
+
+That bind is not, by itself, a decision to serve the network. Since 2026-09-09
+`--allow-from` (default `auto`) answers loopback and the private subnets of
+virtual/container adapters and refuses everything else, so the wide bind the
+container path needs does not also hand the model to the Wi-Fi. It discovers
+the subnet live — on the development box, `172.17.96.0/20`, the same figure
+written by hand into the rule below — because WSL assigns it per machine and
+changes it, which is exactly why that rule could never be copied to a second
+box. Nothing here needs configuring for Odysseus; see `core/netguard.py`. A 127.0.0.1-bound server is invisible from a
 container no matter how the firewall is set — which is exactly what
 `chat.ps1 --start` gives you, since `core/terminal.py:270` pins the host. Use
 `api.ps1` or `scripts/locally-launch.ps1` for anything Odysseus will talk to.
@@ -292,6 +301,13 @@ idle-unloaded slot is advertised now — but it keeps the prefix cache warm, whi
 is the real win for a client re-sending a fixed system prompt every turn.
 
 **2. Open the firewall to the WSL subnet only, once, elevated.**
+
+This is about *reachability*, not safety: without an inbound allow the packets
+never arrive, and `--allow-from` cannot answer a request it never sees. The two
+are complementary, and the split matters — a firewall rule that ends up too
+broad (Windows writes a `python.exe` Any/Any rule from an ordinary permission
+prompt, and it outranks this one) is no longer a hole, because the app still
+refuses the source.
 
 ```powershell
 New-NetFirewallRule -DisplayName 'locally API (WSL/Podman only)' -Direction Inbound `
