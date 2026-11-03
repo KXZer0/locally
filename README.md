@@ -162,6 +162,19 @@ Ollama compatibility is available on port 11434 unless disabled with `--ollama-p
 
 Images, documents and audio still work headlessly. Send images as OpenAI `image_url` content blocks (data URLs included) to a vision model — or to a text model, which reads them with the OCR utilities instead. Send documents to `POST /v1/util/read`: images and scanned PDFs go through OCR, while PDF/DOCX/PPTX/XLSX/XLS/HTML/EPUB/CSV/text are converted in memory and return `engine: null`. Speech is `POST /v1/audio/transcriptions` and `POST /v1/audio/speech`.
 
+### JSON output that always parses
+
+Ask for JSON and it is enforced while decoding, not requested in the prompt: tokens that cannot continue a valid document are masked out, so a small model cannot return a stray preamble or a missing brace. OpenAI `response_format` takes `{"type": "json_object"}` or `{"type": "json_schema", "json_schema": {"schema": {...}}}`; Ollama `format` takes `"json"` or a schema object; Anthropic `output_format` takes `{"type": "json_schema", "schema": {...}}`.
+
+```json
+{"messages": [{"role": "user", "content": "Name a colour and whether it is warm."}],
+ "response_format": {"type": "json_schema", "json_schema": {"name": "colour", "schema": {
+   "type": "object", "required": ["name", "warm"],
+   "properties": {"name": {"type": "string"}, "warm": {"type": "boolean"}}}}}}
+```
+
+OpenAI and Anthropic replies carry `X-Structured-Output`: `constrained` (the answer parses), `truncated` (`max_tokens` ended it mid-document — raise the budget), `skipped-tools` (tools were active, so the format was not applied: a constrained answer cannot also be a tool call), or `violated` (the device ignored the constraint; later requests to that model and device are refused). An invalid schema is a `400` naming what is wrong. A device that cannot constrain output gets a `400` too, never an unconstrained retry — load the model on GPU or CPU instead. Streams carry `constrained` only, since the header leaves before the answer exists.
+
 For a client in a Docker container on this Windows computer, start the API with `--host 0.0.0.0` and use `http://host.docker.internal:8000/v1` inside the container.
 
 ### Who can reach the server

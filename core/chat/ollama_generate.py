@@ -10,6 +10,7 @@ import openvino_genai as ovg
 from flask import Response, jsonify, request
 
 from core import config
+from core.chat import structured
 from core.chat.common import apply_penalties, overall_status
 from core.chat.openai import chat_completions
 from core.genai.results import explain_genai_error
@@ -27,6 +28,10 @@ def ollama_generate():
     requested_model = body.get("model", "")
     max_tokens = body.get("options", {}).get("num_predict", 2048)
     temperature = body.get("options", {}).get("temperature", 0.0)
+    try:
+        spec = structured.from_ollama(body.get("format"))
+    except structured.StructuredRequestError as e:
+        return jsonify({"error": str(e)}), 400
 
     # Images in generate endpoint
     images_b64 = body.get("images", [])
@@ -35,6 +40,9 @@ def ollama_generate():
     slot = _route_request(has_images, requested_model)
     if slot is None:
         return jsonify({"error": "no model ready"}), 503
+    if spec is not None and structured.refusal(slot):
+        return structured.refusal_response(slot, ollama=True)
+    turn = {"slot": slot, "structured": spec}
 
     try:
         slot.ensure_loaded()
@@ -54,6 +62,7 @@ def ollama_generate():
                     repetition=_opts.get("repeat_penalty"),
                     frequency=_opts.get("frequency_penalty"),
                     presence=_opts.get("presence_penalty"))
+    structured.apply(gen, spec)
 
     t0 = time.perf_counter()
 
@@ -66,7 +75,8 @@ def ollama_generate():
         try:
             text = slot.generate_vlm(prompt, img_tensors, gen)
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            return (structured.error_response(turn, e, ollama=True) or
+                    (jsonify({"error": str(e)}), 500))
         elapsed = time.perf_counter() - t0
         return jsonify({
             "model": slot.model_name,
@@ -92,13 +102,17 @@ def ollama_generate():
         try:
             text = slot.generate_vlm(prompt, [], gen)
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            return (structured.error_response(turn, e, ollama=True) or
+                    (jsonify({"error": str(e)}), 500))
     else:
         try:
             text = slot.generate_llm(raw_messages, gen)
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            return (structured.error_response(turn, e, ollama=True) or
+                    (jsonify({"error": str(e)}), 500))
 
+    if spec is not None:
+        structured.verdict(slot, spec, text)
     elapsed = time.perf_counter() - t0
     return jsonify({
         "model": slot.model_name,

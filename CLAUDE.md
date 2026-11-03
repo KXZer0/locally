@@ -337,6 +337,27 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   fixed list, so an Anthropic client's `x-api-key`/`anthropic-version` works
   without this file learning about it; `X-Device` is exposed, or a client can
   read the answer but not which engine produced it.
+- **Structured output is enforced by genai's sampler, not asked for** (2026-11-03,
+  `core/chat/structured.py` + `structured_verdict.py`). OpenAI `response_format`,
+  Ollama `format` and Anthropic `output_format` become a
+  `GenerationConfig.structured_output_config` (xgrammar inside genai 2026.4). Measured
+  on CPU through the server, with a **random-weight** IR (HF is unreachable from the dev
+  container; it is the harshest test, since unconstrained it never emits JSON):
+  20 sampled turns unconstrained -> **0/20** valid, `json_object` -> **17/20** valid
+  and 3 truncated, **zero violated** -- every run that stopped on its own parsed.
+  Three choices to keep. (1) `json_object` uses a compact EBNF grammar, not the schema
+  `{"type":"object"}`: xgrammar's schema path admits unbounded whitespace and a model
+  can loop on `\n` to `max_tokens` (measured: 9/20 finish as a schema, 16/20 as the
+  grammar, genai exposes no whitespace knob). (2) A device that cannot constrain gets a
+  **400 and is remembered** per (device, model); retrying unconstrained would return the
+  malformed JSON the client asked to be protected from. **NPU support is unverified** --
+  no NPU here -- so a finished answer that does not parse marks the slot `violated` and
+  later requests are refused, which catches a pipeline that accepts the config and
+  ignores it. (3) Tool turns keep their tools and skip the format
+  (`X-Structured-Output: skipped-tools`); the built-in tools are not offered on a
+  constrained turn. Schema errors from xgrammar all come from `json_schema_converter.cc`
+  and are 400s; `_check_schema` catches typo'd types and remote `$ref`s first.
+  Constraining tool calls themselves is the follow-up (structural tags), not done.
 - Observability: per-request log lines include TTFT (streaming: wall-clock to first token;
   non-streaming: `perf_metrics` via `extract_perf`) — a prefix-cache hit is sub-second vs a
   cold multi-second/minute prefill, so hits/misses are visible without instrumentation.

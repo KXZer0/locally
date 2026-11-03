@@ -8,6 +8,7 @@ from datetime import datetime
 import openvino_genai as ovg
 
 from core import config, runtime
+from core.chat import structured as structured_output
 from core.chat.common import apply_penalties, overall_status, parse_messages
 from core.chat.images import _image_urls_in, _ocr_for_text_model
 from core.errors import _TurnError, openai_error
@@ -118,6 +119,10 @@ def _prepare_turn(body, native=False):
 
     max_tokens = body.get("max_tokens", 4096)
     tools = _filter_tools(body.get("tools") or [])
+    try:
+        structured = structured_output.from_openai(body.get("response_format"))
+    except structured_output.StructuredRequestError as e:
+        raise _TurnError(openai_error(str(e)))
 
     try:
         text_prompt, images, raw_messages = parse_messages(messages, config.MAX_IMAGE_DIM)
@@ -179,7 +184,9 @@ def _prepare_turn(body, native=False):
     # switched on by the caller. The old body flag came from a composer button;
     # deciding whether a question needs a calculation or a search is the
     # model's job, and the tool descriptions say when.
-    builtin_specs = builtin_tools_for(slot, {
+    # Not on a constrained turn: the grammar would forbid the call markup, so
+    # an offered tool could never be called -- only cost prompt tokens.
+    builtin_specs = [] if structured else builtin_tools_for(slot, {
         "web_search": body.get("web_search", True) is not False,
         "calculator": body.get("calculator", True) is not False,
     })
@@ -213,6 +220,16 @@ def _prepare_turn(body, native=False):
         print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] "
               f"{_tools_refused_note(slot, tools)}", flush=True)
 
+    # A tool turn keeps its tools and drops the format: a constrained answer
+    # cannot be a tool call. Said in a header, never silently.
+    structured_skipped = bool(structured and tools_active)
+    if structured_skipped:
+        print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] response_format "
+              "ignored: tools are active on this turn", flush=True)
+        structured = None
+    if structured is not None and structured_output.refusal(slot):
+        raise _TurnError(structured_output.refusal_response(slot))
+
     if images and slot.model_type == "llm":
         # Only reachable when OCR fusion above could not run (no utility models
         # installed, or every image failed to read).
@@ -242,8 +259,12 @@ def _prepare_turn(body, native=False):
                     repetition=body.get("repetition_penalty"),
                     frequency=body.get("frequency_penalty"),
                     presence=body.get("presence_penalty"))
+    structured_output.apply(gen, structured)
 
-    native_prompt, thinking = None, thinking_requested(body)
+    # A thought channel cannot open under a JSON grammar; asking for one would
+    # put the reasoning inside the document.
+    native_prompt = None
+    thinking = thinking_requested(body) and structured is None
     if native and not images and not python_tool_active:
         chat = slot.native_chat()
         if chat is not None and not has_images(messages):
@@ -277,6 +298,7 @@ def _prepare_turn(body, native=False):
             "images": images, "raw_messages": raw_messages,
             "python_tool_active": python_tool_active, "native_builtin": native_builtin,
             "builtin_specs": builtin_specs,
+            "structured": structured, "structured_skipped": structured_skipped,
             "native_prompt": native_prompt, "thinking": thinking,
             "max_dim": config.MAX_IMAGE_DIM,
             "max_tokens": max_tokens, "t0": time.perf_counter(),
