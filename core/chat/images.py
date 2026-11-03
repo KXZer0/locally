@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from core import runtime
+from core import config, runtime
 from core.genai.tokens import _count_tokens
 from core.media.images import load_image
 from core.slots.select import _slot_serviceable
@@ -20,6 +20,46 @@ def _image_urls_in(messages):
                 if url:
                     urls.append(url)
     return urls
+
+
+# Template tokens, role headers and the truncation notice itself. The rest of
+# the conversation is counted, so this only has to cover what is not text.
+_NPU_OCR_RESERVE = 256
+# Used when the conversation cannot be counted (no tokenizer): the old fixed
+# reserve, which covered a ~220-token system prompt plus a short question.
+_NPU_OCR_FALLBACK_RESERVE = 700
+_NPU_OCR_MIN_BUDGET = 256
+
+
+def _message_text(messages):
+    """The text of every message, images left out — what OCR shares room with."""
+    parts = []
+    for msg in messages or []:
+        content = msg.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            parts.extend(str(b.get("text") or "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text")
+    return "\n".join(p for p in parts if p)
+
+
+def _npu_ocr_budget(slot, messages):
+    """Tokens of OCR text an NPU turn has room for.
+
+    Derived from config.NPU_MAX_PROMPT_LEN, read at call time because it is a
+    flag (--npu-prompt-len). It was a literal `4096 - 700` that outlived the
+    raise to 8192, so every screenshot sent to an NPU model was cut to about
+    half the room it had. The reply is not charged here: the NPU pipeline
+    sizes its response separately (MIN_RESPONSE_LEN), so MAX_PROMPT_LEN is
+    the prompt's alone — and that prompt also holds the system prompt, the
+    history and the question, which are counted rather than guessed.
+    """
+    limit = config.NPU_MAX_PROMPT_LEN
+    text = _message_text(messages)
+    used = _count_tokens(slot, text) if text else 0
+    reserve = _NPU_OCR_RESERVE if used is not None else _NPU_OCR_FALLBACK_RESERVE
+    return max(_NPU_OCR_MIN_BUDGET, limit - (used or 0) - reserve)
 
 
 def _ocr_for_text_model(messages, slot):
@@ -73,13 +113,14 @@ def _ocr_for_text_model(messages, slot):
     block = ("Text read from the attached image(s) by local OCR:\n\n"
              + "\n\n".join(parts))
 
-    # The NPU slot is built with MAX_PROMPT_LEN=4096 and that is a hard cap, so
-    # a dense multi-page scan cannot simply be pasted in. Trim the OCR text —
-    # never the user's own question — and say so, because an answer drawn from
-    # half a document without a word of warning is the worst outcome here.
+    # The NPU slot is built with MAX_PROMPT_LEN=config.NPU_MAX_PROMPT_LEN and
+    # that is a hard cap, so a dense multi-page scan cannot simply be pasted
+    # in. Trim the OCR text — never the user's own question — and say so,
+    # because an answer drawn from half a document without a word of warning
+    # is the worst outcome here.
     note = None
     if slot is not None and slot.device_name == "NPU":
-        budget = 4096 - 700            # leaves room for system prompt + reply
+        budget = _npu_ocr_budget(slot, messages)
         n = _count_tokens(slot, block)
         if n and n > budget:
             keep = max(200, int(len(block) * budget / n))
