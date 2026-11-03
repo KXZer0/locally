@@ -107,6 +107,21 @@ OFFLOAD_RATIO = "auto"
 GPU_RESERVE_BYTES = 3 * 2 ** 30
 
 
+# --- speech to text (Parakeet) ---------------------------------------------
+
+# Longest audio one Parakeet encoder pass sees on CPU/GPU (--asr-chunk-seconds).
+# FastConformer attention is quadratic in length, so a long upload is cut into
+# overlapping windows and stitched; a voice turn is far shorter than this and
+# never is. 30 s keeps the encoder's working set small on a shared-RAM iGPU.
+ASR_CHUNK_SECONDS = 30.0
+# The NPU compiles static shapes only, so on the NPU the encoder is reshaped to
+# exactly this window and shorter audio is zero-padded with the true length
+# passed alongside. 10 s is the window FluidInference's static v2 export uses
+# (160,000 samples -> 1,001 mel frames), i.e. the shape their NPU numbers were
+# measured on. --asr-npu-window-seconds.
+ASR_NPU_WINDOW_SECONDS = 10.0
+
+
 # --- prewarm ----------------------------------------------------------------
 
 # Path (--prewarm) to a saved prompt, prefilled at startup and auto-captured

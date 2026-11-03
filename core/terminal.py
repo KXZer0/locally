@@ -52,7 +52,7 @@ COMMANDS = {
     "/find": "Search the last index: /find query",
     "/upscale": "Upscale an image: /upscale IN [OUT] (writes a PNG)",
     "/util": "Utility engine state; /util off unloads them, chat untouched",
-    "/voice": "Talk instead of typing (needs sounddevice, Whisper and TTS)",
+    "/voice": "Talk instead of typing (needs sounddevice, speech-to-text and TTS)",
     "/new": "Clear conversation and last answer",
     "/copy": "Copy the last answer as original Markdown",
     "/save": "Save the last answer: /save path.md (never overwrites)",
@@ -604,9 +604,9 @@ class Chat:
         from core import terminal_voice as voice
         audio = voice.import_audio()          # raises with the pip line
         health = self.client.json("/health", timeout=10)
-        missing = [n for n, k in (("Whisper (--whisper-dir)", "whisper"),
-                                  ("a TTS voice (--tts-dir)", "tts"))
-                   if k not in health]
+        missing = [n for n, ks in (("speech-to-text (--asr-dir)", ("asr", "whisper")),
+                                   ("a TTS voice (--tts-dir)", ("tts",)))
+                   if not any(k in health for k in ks)]
         if missing:
             raise ApiError("Voice needs " + " and ".join(missing) +
                            " on the server. The rest of the client still works.")

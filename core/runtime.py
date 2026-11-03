@@ -23,7 +23,7 @@ primary = None      # main model (NPU, GPU, CPU, or REMOTE via --proxy-url)
 secondary = None    # optional second model (GPU, for vision or a bigger LLM)
 
 # --- audio ------------------------------------------------------------------
-whisper_slot = None    # speech to text
+whisper_slot = None    # speech to text: WhisperSlot or ParakeetSlot (--asr-dir decides)
 tts_slot = None        # text to speech
 _vad_slot = None       # Silero: is anyone speaking
 _speaker_slot = None   # ECAPA: is it the enrolled user
