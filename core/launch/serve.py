@@ -74,7 +74,7 @@ def serve(app, ollama_app, args, model_dir, devices, setup_only, all_slots):
     if runtime.whisper_slot:
         tw = threading.Thread(
             target=_load_in_background,
-            args=(runtime.whisper_slot, args.whisper_dir, devices, args.port,
+            args=(runtime.whisper_slot, args.asr_dir, devices, args.port,
                   args.ollama_port, all_slots),
             daemon=True,
         )

@@ -56,6 +56,10 @@ param(
     # Optional models stay off unless named. API startup should not compile
     # audio engines merely because conventional folders happen to exist.
     [string] $Whisper   = '',
+    # Speech-to-text by folder: a Parakeet TDT export (FluidInference/
+    # parakeet-tdt-0.6b-v3-ov) or a Whisper one; the server reads which. Takes
+    # precedence over -Whisper, since one ASR model is served at a time.
+    [string] $Asr       = '',
     [string] $Tts       = '',
     [string] $Speaker   = '',
     # Silero voice-activity model -- one 1.3 MB file, and it is what lets the
@@ -92,6 +96,11 @@ param(
     # ASR sits in the voice critical path and is ~3x faster on the GPU.
     [ValidateSet('GPU', 'CPU', 'NPU')]
     [string] $WhisperDevice = 'GPU',
+    # Parakeet device. CPU by default: the chat model usually holds the GPU,
+    # and the NPU path is static-shape and not yet verified here -- run
+    # scripts/parakeet-check.py on this machine before choosing NPU.
+    [ValidateSet('GPU', 'CPU', 'NPU')]
+    [string] $AsrDevice = 'CPU',
     # Kokoro text-to-speech device. CPU keeps the GPU free; GPU is faster for voice apps (Pumpkin Trivia).
     [ValidateSet('GPU', 'CPU')]
     [string] $TtsDevice = 'CPU',
@@ -273,7 +282,11 @@ if ($OffloadRatio -and $OffloadRatio -ne 'auto') {
 # ASR on the GPU: measured 0.3 s against ~1.05 s on CPU for the same clip, and
 # it sits directly in the voice turn's critical path. 245 MB next to a
 # multi-GB chat model is noise.
-if ($Whisper -and (Test-Path $Whisper)) { $serverArgs += @('--whisper-dir', $Whisper, '--whisper-device', $WhisperDevice) }
+if ($Asr -and (Test-Path $Asr)) {
+    $serverArgs += @('--asr-dir', $Asr, '--asr-device', $AsrDevice)
+} elseif ($Whisper -and (Test-Path $Whisper)) {
+    $serverArgs += @('--whisper-dir', $Whisper, '--whisper-device', $WhisperDevice)
+}
 if ($Tts -and (Test-Path $Tts))         { $serverArgs += @('--tts-dir', $Tts, '--tts-device', $TtsDevice) }
 # VAD on the CPU deliberately: ~1M parameters, running on every 32 ms frame
 # for as long as the mic is open. That belongs nowhere near the NPU, which is

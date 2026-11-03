@@ -81,7 +81,11 @@ def _health_data():
               },
               "service": "locally", "mode": "headless"}
     if runtime.whisper_slot and runtime.whisper_slot.status != "not_configured":
-        result["whisper"] = runtime.whisper_slot.info
+        # `asr` is the ASR slot under its honest name, with `engine` saying
+        # whisper or parakeet. `whisper` stays, same object, because clients
+        # (the terminal's /voice among them, before this change) gate on it.
+        result["asr"] = runtime.whisper_slot.info
+        result["whisper"] = result["asr"]
     if runtime.tts_slot and runtime.tts_slot.status != "not_configured":
         result["tts"] = runtime.tts_slot.info
     # The Voice tab enables auto turn-taking from this. Reported only when the

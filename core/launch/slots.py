@@ -11,7 +11,9 @@ from core.slots.speaker import SpeakerSlot
 from core.slots.tts import TtsSlot
 from core.slots.util import UtilSlot
 from core.slots.vad import VadSlot
+from core.slots.parakeet import ParakeetSlot
 from core.slots.whisper import WhisperSlot
+from core.asr.layout import asr_engine, describe_unknown
 from core.startup import check_port, detect_devices
 
 
@@ -61,6 +63,47 @@ def _auto_device(args, model_dir, devices):
     return name
 
 
+
+def _asr_slot(args, devices, _id_of):
+    """The speech-to-text slot --asr-dir / --whisper-dir asks for, or None.
+
+    One slot, whichever engine: runtime.whisper_slot keeps its name because
+    every audio path already reads it, and what it holds is now "the ASR
+    slot". The folder decides the engine. `--whisper-dir` on a Parakeet
+    export therefore loads Parakeet rather than failing inside genai, which
+    is what a user who has just swapped the folder means.
+    """
+    if args.asr_dir and args.whisper_dir and (
+            os.path.abspath(args.asr_dir) != os.path.abspath(args.whisper_dir)):
+        print("ERROR: --asr-dir and --whisper-dir name different folders; "
+              "one speech-to-text model is served at a time. Pass one.")
+        sys.exit(1)
+    model_dir = args.asr_dir or args.whisper_dir
+    if not model_dir:
+        return None
+    if not os.path.isdir(model_dir):
+        print(f"ERROR: speech-to-text model directory not found: {model_dir}")
+        sys.exit(1)
+    engine = asr_engine(model_dir)
+    if engine is None:
+        if args.asr_dir:
+            print(f"ERROR: {describe_unknown(model_dir)}")
+            sys.exit(1)
+        engine = "whisper"      # --whisper-dir always meant Whisper; let genai say why
+    device = (args.asr_device or args.whisper_device or "CPU").upper()
+    if device == "NPU" and engine == "whisper":
+        print("WARNING: Whisper is not run on the NPU here; using CPU. "
+              "Parakeet can take --asr-device NPU.")
+        device = "CPU"
+    if device not in devices and device != "CPU":
+        print(f"WARNING: speech-to-text device {device} not available, "
+              f"falling back to CPU.")
+        device = "CPU"
+    args.asr_dir = model_dir     # serve.py loads from here
+    cls = ParakeetSlot if engine == "parakeet" else WhisperSlot
+    print(f"  Speech-to-text: {engine} on {device} ({model_dir})", flush=True)
+    return cls(device, _id_of(device))
+
 def build_slots(args, model_dir):
     # 1. Check ports
     if not check_port(args.port):
@@ -102,9 +145,6 @@ def build_slots(args, model_dir):
               "POST /v1/models/load, or /load in terminal chat.", flush=True)
     if args.gpu_model_dir and not os.path.isdir(args.gpu_model_dir):
         print(f"ERROR: GPU model directory not found: {args.gpu_model_dir}")
-        sys.exit(1)
-    if args.whisper_dir and not os.path.isdir(args.whisper_dir):
-        print(f"ERROR: Whisper model directory not found: {args.whisper_dir}")
         sys.exit(1)
     if args.tts_dir and not os.path.isdir(args.tts_dir):
         print(f"ERROR: TTS model directory not found: {args.tts_dir}")
@@ -170,13 +210,10 @@ def build_slots(args, model_dir):
             runtime.secondary = DeviceSlot("GPU", _id_of("GPU"))
             all_slots.append(runtime.secondary)
 
-    if args.whisper_dir:
-        whisper_device = args.whisper_device.upper()
-        if whisper_device not in devices and whisper_device != "CPU":
-            print(f"WARNING: Whisper device {whisper_device} not available, falling back to CPU.")
-            whisper_device = "CPU"
-        runtime.whisper_slot = WhisperSlot(whisper_device, _id_of(whisper_device))
-        all_slots.append(runtime.whisper_slot)
+    slot = _asr_slot(args, devices, _id_of)
+    if slot is not None:
+        runtime.whisper_slot = slot
+        all_slots.append(slot)
 
     if args.tts_dir:
         tts_device = args.tts_device.upper()

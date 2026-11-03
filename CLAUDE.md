@@ -371,6 +371,29 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   `Got unfinished GenerationStatus`, issue #21; `explain_genai_error` annotates that error
   with a `--cache-size-gb` hint wherever it surfaces).
 - Whisper: WhisperSlot + WhisperPipeline for STT, `POST /v1/audio/transcriptions`, CPU or GPU
+- **Parakeet TDT replaces Whisper when you point `--asr-dir` at it** (2026-11-03,
+  `core/slots/parakeet.py` + `core/asr/`). The folder decides the engine, and
+  `runtime.whisper_slot` is "the ASR slot" whichever engine it holds, so
+  transcription, the voice session and `/v1/audio/warm` needed no second code
+  path. `/health` shows it as `asr` (plus the old `whisper` key, which the
+  terminal used to check). genai has no Parakeet pipeline, so this runs on the
+  plain runtime: preprocessor on CPU, encoder, then LSTM predictor + joint,
+  greedy TDT. Target: `FluidInference/parakeet-tdt-0.6b-v3-ov`. **The IO contract
+  was READ, not guessed**, from FluidInference's own C++ runtime (eddy-audio:
+  file names, port names, blank = vocab size, durations `[0..4]`, the v3
+  preprocessor's round-to-1000-samples workaround). The decode loop follows
+  NeMo/onnx-asr. Ports are still matched by role as well as by name, so a
+  renamed re-export loads. **What is verified:** decode rules on hand-built
+  logits; the Slaney mel filterbank against onnx-asr's NeMo tables (3e-8); the
+  whole slot against a tiny real OpenVINO export with the same ports, compiled on
+  CPU, including the NPU static reshape and long-audio windowing. **What is NOT:**
+  any real Parakeet weights. huggingface.co was unreachable from the build
+  sandbox, so no real transcription, accuracy or speed was measured, and the NPU
+  path has never compiled. The "~25x realtime on NPU" figure is FluidInference's
+  (155H), not ours. `scripts/parakeet-check.py` is how it becomes ours. Parakeet
+  has no language token; `language` is accepted and reported as not applied.
+  Newer but not supported here: `FluidInference/parakeet-unified-en-0.6b-ov`
+  (English-only streaming RNN-T, different `nemotron_*` + `metadata.json` layout).
 - VAD: `VadSlot` + Silero on plain OpenVINO (`--vad-dir`, `--vad-device`, default CPU —
   it is ~1M parameters and has no business on the NPU). Not a genai pipeline; there
   isn't one. Drives auto turn-taking over the `/v1/audio/stream` WebSocket

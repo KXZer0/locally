@@ -35,6 +35,8 @@ def configure(args):
                         (args.anthropic_model_map or "").split(","))
         if k.strip() and v.strip()}
     config.MAX_IMAGE_DIM = args.max_dim
+    config.ASR_CHUNK_SECONDS = max(5.0, float(args.asr_chunk_seconds))
+    config.ASR_NPU_WINDOW_SECONDS = max(2.0, float(args.asr_npu_window_seconds))
     config.DEBUG_REQUESTS = args.debug
     config.VSCODE_COMPAT = args.vscode_compat
     config.ALLOW_FROM = args.allow_from

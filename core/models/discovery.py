@@ -47,7 +47,8 @@ def _models_data():
             })
     if runtime.whisper_slot and runtime.whisper_slot.status == "ready":
         data.append({
-            "id": f"whisper@{runtime.whisper_slot.device_name}",
+            "id": f"{getattr(runtime.whisper_slot, 'engine', 'whisper')}"
+                  f"@{runtime.whisper_slot.device_name}",
             "object": "model",
             "created": 0,
             "owned_by": f"local-{runtime.whisper_slot.device_name.lower()}",

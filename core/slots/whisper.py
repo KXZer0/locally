@@ -10,6 +10,8 @@ from core.slots.locks import _device_lock
 class WhisperSlot:
     """Holds a WhisperPipeline for speech-to-text."""
 
+    engine = "whisper"
+
     def __init__(self, device_name, device_id=None):
         self.device_name = device_name
         self.device_id = device_id or device_name
@@ -88,6 +90,7 @@ class WhisperSlot:
             "status": self.status,
             "model": self.model_name,
             "type": self.model_type,
+            "engine": self.engine,
             # device_name is the canonical "NPU"/"GPU"/"CPU" the UI colour-codes
             # by; device_full is the marketing name. The generative slots report
             # both, so this one does too.

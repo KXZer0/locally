@@ -10,6 +10,8 @@ import json
 import os
 from pathlib import Path
 
+from core.asr.layout import parakeet_files
+
 
 def is_vlm(model_dir):
     """Detect if a model is a VLM.
@@ -136,6 +138,8 @@ def _is_generative_dir(path):
         return True
     if os.path.isdir(os.path.join(path, "voices")):
         return False                                   # Kokoro-style TTS
+    if parakeet_files(path):
+        return False                                   # Parakeet ASR: no config.json
     try:
         with open(os.path.join(path, "config.json")) as f:
             cfg = json.load(f)
