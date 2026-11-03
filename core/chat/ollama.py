@@ -11,6 +11,7 @@ import openvino_genai as ovg
 from flask import Response, jsonify, request
 
 from core import config, runtime
+from core.chat import structured
 from core.chat.common import (apply_penalties, _maybe_capture_prewarm,
                               overall_status, parse_messages)
 from core.chat.openai import chat_completions
@@ -141,6 +142,10 @@ def ollama_chat():
     max_tokens = body.get("options", {}).get("num_predict", 2048)
     temperature = body.get("options", {}).get("temperature", 0.0)
     tools = body.get("tools") or []
+    try:
+        spec = structured.from_ollama(body.get("format"))
+    except structured.StructuredRequestError as e:
+        return jsonify({"error": str(e)}), 400
 
     # Translate Ollama messages to internal format
     has_images = False
@@ -181,6 +186,14 @@ def ollama_chat():
     elif tools:
         print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] [Ollama] "
               f"{_tools_refused_note(slot, tools)}", flush=True)
+    if spec is not None and tools_active:
+        # Same rule as the OpenAI path: a constrained answer cannot be a call.
+        print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] [Ollama] "
+              "format ignored: tools are active on this turn", flush=True)
+        spec = None
+    if spec is not None and structured.refusal(slot):
+        return structured.refusal_response(slot, ollama=True)
+    turn = {"slot": slot, "structured": spec}
 
     # Parse through same pipeline as OpenAI
     try:
@@ -218,6 +231,7 @@ def ollama_chat():
                     repetition=_opts.get("repeat_penalty"),
                     frequency=_opts.get("frequency_penalty"),
                     presence=_opts.get("presence_penalty"))
+    structured.apply(gen, spec)
 
     print(f"\n{datetime.now():%H:%M:%S} <- [{slot.device_name}] [Ollama] "
           f"{'image, ' if has_images else ''}{len(text_prompt)} chars"
@@ -230,7 +244,10 @@ def ollama_chat():
         try:
             text = slot.generate_vlm(text_prompt, images, gen)
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            return (structured.error_response(turn, e, ollama=True) or
+                    (jsonify({"error": str(e)}), 500))
+        if spec is not None:
+            structured.verdict(slot, spec, text)
 
         elapsed = time.perf_counter() - t0
         print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "
@@ -253,7 +270,10 @@ def ollama_chat():
     try:
         text = slot.generate_llm(raw_messages, gen)
     except Exception as e:
-        return jsonify({"error": explain_genai_error(e)}), 500
+        return (structured.error_response(turn, e, ollama=True) or
+                (jsonify({"error": explain_genai_error(e)}), 500))
+    if spec is not None:
+        structured.verdict(slot, spec, text)
 
     elapsed = time.perf_counter() - t0
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "

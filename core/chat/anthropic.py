@@ -7,6 +7,7 @@ from datetime import datetime
 from flask import Response, jsonify, request
 
 from core import config, runtime
+from core.chat import structured
 from core.chat.common import (_maybe_capture_prewarm, _sse_tool_stream,
                               _turn_headers, make_id, parse_messages)
 from core.chat.turn import _builtin_tool_turn, _prepare_turn
@@ -130,6 +131,9 @@ def _anthropic_to_openai(body):
         out["temperature"] = body["temperature"]
     if body.get("top_p") is not None:
         out["top_p"] = body["top_p"]
+    response_format = structured.anthropic_to_response_format(body)
+    if response_format:
+        out["response_format"] = response_format
     client_tools, server_tools = _split_tools(body.get("tools"))
     if client_tools:
         out["tools"] = [{"type": "function",
@@ -354,7 +358,8 @@ def anthropic_messages():
         err = explain_genai_error(e)
         print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] "
               f"error: {err}", flush=True)
-        return openai_error(f"Inference failed: {err}", "server_error", 500)
+        return (structured.error_response(turn, e) or
+                openai_error(f"Inference failed: {err}", "server_error", 500))
 
     generation_finish = getattr(text, "finish_reason", "stop")
     reasoning = getattr(text, "reasoning", "") if turn.get("thinking") else ""

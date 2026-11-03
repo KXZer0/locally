@@ -6,12 +6,13 @@ from datetime import datetime
 
 from flask import Response, jsonify, request
 
+from core.chat import structured
 from core.chat.common import (_debug_raw, _maybe_capture_prewarm, _sse_tool_stream,
                               _tool_message,
                               _turn_headers, make_id)
 from core.chat.turn import _builtin_tool_turn, _prepare_turn
 from core.errors import _TurnError, openai_error
-from core.genai.results import explain_genai_error, usage_block
+from core.genai.results import GeneratedText, explain_genai_error, usage_block
 from core.tools.builtin import _builtin_generator, _builtin_stream
 from core.tools.parse import parse_tool_calls
 
@@ -68,7 +69,8 @@ def chat_completions():
 
     if stream and not tools_active and not images:
         return Response(
-            slot.stream_llm(raw_messages, gen, completion_id, created, t0),
+            structured.watch_stream(
+                slot.stream_llm(raw_messages, gen, completion_id, created, t0), turn),
             mimetype="text/event-stream",
             headers=_turn_headers(turn, slot),
         )
@@ -86,7 +88,9 @@ def chat_completions():
             )
         if stream:
             return Response(
-                slot.stream_vlm(text_prompt, images, gen, completion_id, created, t0),
+                structured.watch_stream(
+                    slot.stream_vlm(text_prompt, images, gen, completion_id, created, t0),
+                    turn),
                 mimetype="text/event-stream",
                 headers=_turn_headers(turn, slot),
             )
@@ -95,7 +99,8 @@ def chat_completions():
             text = slot.generate_vlm(text_prompt, images, gen)
         except Exception as e:
             print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] VLM error: {e}", flush=True)
-            return openai_error(f"Inference failed: {e}", "server_error", 500)
+            return (structured.error_response(turn, e) or
+                    openai_error(f"Inference failed: {e}", "server_error", 500))
 
         elapsed = time.perf_counter() - t0
         print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
@@ -120,6 +125,7 @@ def chat_completions():
             "usage": usage,
         })
         resp.headers.extend(_turn_headers(turn, slot))
+        _judge(resp, turn, text)
         return resp
 
     # Capture a big agent prompt so the next startup can pre-warm it (no-op
@@ -144,7 +150,8 @@ def chat_completions():
     except Exception as e:
         err = explain_genai_error(e)
         print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] LLM error: {err}", flush=True)
-        return openai_error(f"Inference failed: {err}", "server_error", 500)
+        return (structured.error_response(turn, e) or
+                openai_error(f"Inference failed: {err}", "server_error", 500))
 
     elapsed = time.perf_counter() - t0
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
@@ -178,6 +185,7 @@ def chat_completions():
         "usage": usage,
     })
     resp.headers.extend(_turn_headers(turn, slot))
+    _judge(resp, turn, GeneratedText(text, generation_finish))
     return resp
 
 
@@ -210,7 +218,8 @@ def _native_response(turn, completion_id, created, t0):
     except Exception as e:
         err = explain_genai_error(e)
         print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] LLM error: {err}", flush=True)
-        return openai_error(f"Inference failed: {err}", "server_error", 500)
+        return (structured.error_response(turn, e) or
+                openai_error(f"Inference failed: {err}", "server_error", 500))
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
           f"Response completed in {time.perf_counter() - t0:.1f}s", flush=True)
     finish, usage = getattr(text, "finish_reason", "stop"), usage_block(text)
@@ -227,7 +236,15 @@ def _native_response(turn, completion_id, created, t0):
         "usage": usage,
     })
     resp.headers.extend(_turn_headers(turn, slot))
+    _judge(resp, turn, GeneratedText(message.get("content") or "", finish))
     return resp
+
+
+def _judge(resp, turn, text):
+    """Replace the 'constrained' header with what the answer turned out to be."""
+    if turn.get("structured") is not None:
+        resp.headers["X-Structured-Output"] = structured.verdict(
+            turn["slot"], turn["structured"], text)
 
 
 # ---------------------------------------------------------------------------

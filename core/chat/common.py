@@ -13,6 +13,7 @@ from pathlib import Path
 import openvino_genai as ovg
 
 from core import config, runtime
+from core.chat.structured import header_value
 from core.genai.results import explain_genai_error
 from core.media.images import load_image, pil_to_tensor
 from core.tools.gemma import split_reasoning
@@ -336,6 +337,8 @@ def _turn_headers(turn, slot):
     headers = {"X-Device": slot.device_name, "X-Model": slot.model_name}
     if turn.get("vision_path"):
         headers["X-Vision-Path"] = turn["vision_path"]
+    if header_value(turn):
+        headers["X-Structured-Output"] = header_value(turn)
     return headers
 
 
