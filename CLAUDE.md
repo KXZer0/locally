@@ -444,6 +444,10 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   picker reading that list (the terminal's `/load`, Open WebUI, Copilot)
   offers each entry as a chat model, and one that cannot chat is a trap;
   embedding clients do not discover the name anyway.
+  `POST /v1/rerank` (`core/util/rerank.py`) is the same idea for the
+  cross-encoder, in the Cohere/Jina shape; `relevance_score` is the sigmoid of
+  the logit (how BGE's own library normalises it), which orders one query's
+  documents and is not a calibrated probability across queries.
 - **`/v1/util/read` returns structure, not a wall of text.** PP-DocLayoutV3
   segments the page and supplies a reading order (the 7th output column — sorting
   by y alone interleaves the columns of a two-column page). Headings become

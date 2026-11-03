@@ -7,6 +7,7 @@ from core.util.images import (util_background, util_detect, util_generate,
                               util_upscale)
 from core.util.python import util_python
 from core.util.read import util_read
+from core.util.rerank import rerank
 from core.util.search import util_index, util_search
 from core.web.api import read_url, web_search
 
@@ -24,6 +25,7 @@ bp.add_url_rule("/v1/util/search", view_func=util_search, methods=["POST"])
 bp.add_url_rule("/v1/read-url", view_func=read_url, methods=["POST"])
 bp.add_url_rule("/v1/search", view_func=web_search, methods=["POST"])
 bp.add_url_rule("/v1/embeddings", view_func=embeddings, methods=["POST"])
+bp.add_url_rule("/v1/rerank", view_func=rerank, methods=["POST"])
 
 # The Ollama port answers /v1/* for clients configured with :11434/v1 as an
 # OpenAI base URL (see routes/models.py), so it gets the OpenAI shape too.
