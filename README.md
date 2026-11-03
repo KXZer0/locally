@@ -265,6 +265,7 @@ Unloading gives it back. `POST /v1/models/unload {}`, or `--idle-timeout`, retur
 | `POST /v1/messages` | Anthropic Messages compatibility |
 | `POST /v1/util/read` | Read a document or image to Markdown |
 | `POST /v1/util/index`, `/v1/util/search` | Index and search local files |
+| `POST /v1/embeddings` | OpenAI embeddings from the search embedder (all-MiniLM-L6-v2, 384 dims, NPU first); `model` is ignored, `input` is a string or up to 256 strings, inputs over 256 tokens are truncated (`X-Truncated-Inputs`) unless `"truncate": false`. Also on the Ollama port, with `/api/embed` |
 | `POST /v1/util/upscale`, `/background`, `/detect` | Image utilities |
 | `POST /v1/audio/transcriptions`, `/v1/audio/speech` | Speech to text, text to speech |
 | `GET /v1/memory` | Available memory and offload state |

@@ -428,6 +428,22 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   Responses carry `score` (embedding cosine, same meaning in both modes) *and*
   `rerank_score`, because a reranked list shows a lower cosine above a higher
   one and that reads as a bug without the number the sort actually used.
+- **`POST /v1/embeddings` is the search embedder in the OpenAI shape**
+  (`core/util/embeddings.py`, also `/api/embed` + `/v1/embeddings` on the
+  Ollama port). A wire format, not a model: same MiniLM-L6 INT8, same
+  `_util_slot` -> `ensure_loaded` -> `run_utility` path (NPU lock included) as
+  `/v1/util/search`, and the compiling-engine 503 gains `Retry-After` because
+  the OpenAI SDKs retry on it. `model` is accepted and IGNORED -- clients send
+  anything from a hard-coded `text-embedding-3-small` to the chat model's
+  name -- and the response names the model that ran. Over-256-token input is
+  truncated as sentence-transformers does, but never silently: the
+  `X-Truncated-Inputs` header names the indexes and `usage` counts what the
+  model read; `"truncate": false` makes it a 400. Base64 is little-endian
+  float32, which is what the SDKs decode -- and the Python SDK asks for base64
+  by default, so it is not optional. **Not listed in `/v1/models`**: every
+  picker reading that list (the terminal's `/load`, Open WebUI, Copilot)
+  offers each entry as a chat model, and one that cannot chat is a trap;
+  embedding clients do not discover the name anyway.
 - **`/v1/util/read` returns structure, not a wall of text.** PP-DocLayoutV3
   segments the page and supplies a reading order (the 7th output column — sorting
   by y alone interleaves the columns of a two-column page). Headings become
