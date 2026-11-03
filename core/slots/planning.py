@@ -13,13 +13,10 @@ RAM everything else is using, and trusting it once put a 20.2 GB model on a
 machine with 0.9 GB free, which then decoded out of the pagefile at 0.5 tok/s.
 It fit the policy, not the machine.
 """
-import gc
 
-import openvino as ov
 
 from core import config
 from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx, _usable_gpu_bytes
-from core.hardware.memory import _mem_status
 from core.models.geometry import (_effective_kv_bytes_per_token,
                                   _kv_bytes_for_context, _model_max_context,
                                   _moe_expert_fraction, _text_config)

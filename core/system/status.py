@@ -2,7 +2,6 @@
 
 import atexit
 import json
-import time
 from datetime import datetime
 
 from flask import jsonify, request

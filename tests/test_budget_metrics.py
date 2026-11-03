@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 import sys
 import types
@@ -16,6 +17,7 @@ except (ImportError, OSError):
 
 from core import config
 from core.hardware import devices
+from core.hardware import memory
 from core.metrics import (clear_metrics, metrics_snapshot, record_turn,
                           register_metrics_route)
 from core.models import availability
@@ -173,6 +175,100 @@ class MetricsTests(unittest.TestCase):
         response = app.test_client().get("/v1/metrics")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), [])
+
+
+class MemorySnapshotTests(unittest.TestCase):
+    def test_proc_meminfo_applies_declared_units_only(self):
+        values = memory._parse_proc_meminfo([
+            "MemTotal:       32768 kB\n",
+            "CommitLimit:    48 MB\n",
+            "HugePages_Total: 7\n",
+        ])
+
+        self.assertEqual(values["MemTotal"], 32768 * 1024)
+        self.assertEqual(values["CommitLimit"], 48 * 1024 ** 2)
+        self.assertEqual(values["HugePages_Total"], 7)
+
+    def test_snapshot_keeps_physical_and_commit_counters_distinct(self):
+        gib = 2 ** 30
+        with (mock.patch.object(memory, "_memory_status", return_value={
+                "physical_total": 32 * gib, "physical_available": 9 * gib,
+                "system_commit_total": 33 * gib, "system_commit_limit": 48 * gib,
+                "system_commit_available": 15 * gib,
+                "system_cache": 4 * gib, "system_kernel_total": 3 * gib,
+                "system_kernel_paged": 2 * gib, "system_kernel_nonpaged": gib}),
+              mock.patch.object(memory, "_process_memory",
+                                return_value=(2 * gib, 6 * gib))):
+            snapshot = memory._memory_snapshot()
+
+        self.assertEqual(snapshot["physical_available_mb"], 9 * 1024)
+        self.assertEqual(snapshot["system_commit_total_mb"], 33 * 1024)
+        self.assertEqual(snapshot["system_commit_limit_mb"], 48 * 1024)
+        self.assertEqual(snapshot["system_commit_available_mb"], 15 * 1024)
+        self.assertEqual(snapshot["system_cache_mb"], 4 * 1024)
+        self.assertEqual(snapshot["system_kernel_nonpaged_mb"], 1024)
+        self.assertEqual(snapshot["process_private_commit_mb"], 6 * 1024)
+        self.assertEqual(snapshot["process_working_set_mb"], 2 * 1024)
+
+    def test_snapshot_reports_each_quantity_under_exactly_one_name(self):
+        """No two keys may carry the same number: that is how a client
+        renders one figure twice and a reader doubles the machine's usage."""
+        snapshot = memory._memory_snapshot()
+
+        self.assertNotIn("system_available_mb", snapshot)
+        self.assertNotIn("process_ws_mb", snapshot)
+        self.assertNotIn("process_private_mb", snapshot)
+        self.assertNotIn("commit_available_mb", snapshot)
+        self.assertNotIn("commit_limit_mb", snapshot)
+        # Distinct quantities may coincide by accident on a given machine, so
+        # compare names rather than asserting all values differ.
+        self.assertEqual(len(set(snapshot)), len(snapshot))
+
+
+class ManualUnloadScopeTests(unittest.TestCase):
+    class _Slot:
+        def __init__(self, model):
+            self.status = "ready"
+            self.device_name = "CPU"
+            self.model_name = model
+            self.model_dir = None
+            self.lock = threading.Lock()
+            self.unloaded = False
+
+        def unload(self):
+            self.unloaded = True
+            self.status = "idle_unloaded"
+
+    def test_audio_scope_releases_vad_and_speaker_models_too(self):
+        """`scope: audio` must cover every audio slot, not only TTS/STT."""
+        from flask import Flask
+        from core import runtime
+        from core.models import manage
+
+        vad = self._Slot("vad")
+        speaker = self._Slot("speaker")
+        snapshot = {"physical_available_mb": 100,
+                    "system_commit_available_mb": 200,
+                    "process_private_commit_mb": 30}
+        with (mock.patch.object(runtime, "primary", None),
+              mock.patch.object(runtime, "secondary", None),
+              mock.patch.object(runtime, "whisper_slot", None),
+              mock.patch.object(runtime, "tts_slot", None),
+              mock.patch.object(runtime, "_vad_slot", vad),
+              mock.patch.object(runtime, "_speaker_slot", speaker),
+              mock.patch.object(runtime, "util_npu", None),
+              mock.patch.object(runtime, "util_gpu", None),
+              mock.patch.object(runtime, "util_cpu", None),
+              mock.patch.object(manage, "_memory_snapshot", return_value=snapshot),
+              mock.patch.object(manage, "_settle_memory", return_value=(snapshot, 0.0))):
+            app = Flask(__name__)
+            with app.test_request_context("/v1/models/unload",
+                                          method="POST", json={"scope": "audio"}):
+                response = manage.unload_model()
+
+        self.assertTrue(vad.unloaded)
+        self.assertTrue(speaker.unloaded)
+        self.assertEqual(response.get_json()["memory"]["physical_available_delta_mb"], 0)
 
 
 if __name__ == "__main__":

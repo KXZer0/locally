@@ -541,7 +541,7 @@ locally" button, since only process exit would return the RAM.
 **Verdict:** neither. There was nothing to fix — **`unload()` already returns
 the memory to Windows** — and `EmptyWorkingSet` adds nothing measurable on
 top. What was missing was not a mechanism but a *measurement*, so the endpoint
-now reports before/after numbers instead (`memory.returned_mb`).
+now reports before/after numbers instead (`memory.physical_available_delta_mb`).
 
 **Why not (358H, 32 GB unified, genai 2026.3, all figures MB; ws = working
 set, priv = private commit, avail = system-wide available):**
@@ -584,7 +584,7 @@ states the two facts separately: what was dropped (`weights_mb`, on-disk and
 auditable) and what the machine reads before/after.
 
 Re-evaluate if: a future OpenVINO or driver starts leaking on unload — the
-tell is `memory.returned_mb` in the unload reply coming back far smaller than
+tell is `memory.physical_available_delta_mb` in the unload reply coming back far smaller than
 the `weights_mb` of what was unloaded, and both numbers are now in every
 response.
 

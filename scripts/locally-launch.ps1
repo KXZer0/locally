@@ -21,6 +21,18 @@
     .\scripts\locally-launch.ps1
     .\scripts\locally-launch.ps1 -IdleTimeout 0 --no-prompt-cache
 #>
+# PositionalBinding=$false is load-bearing, not tidiness. `api.ps1` forwards
+# `--port 8000` GNU-style, because the installer-generated start.ps1 hands its
+# arguments straight to locally.py. PowerShell does not recognise `--port` as a
+# parameter name, so with default binding it fills the POSITIONAL parameters
+# instead: `$ChatModels = '--port'` and `$ModelsDir = '8000'`. Measured -- that
+# is every model on this machine except the two symlinks in the repo root
+# vanishing from `/v1/models`, which is what "not all models are showing" was.
+# `--port` never reached python either, so `api.ps1 -Port 9000` served 8000.
+# Both symptoms are silent: the launcher starts, and the wrong answer looks
+# like a correct one. With positional binding off, an unrecognised flag lands
+# in $ExtraArgs and is forwarded, which is where it was always meant to go.
+[CmdletBinding(PositionalBinding = $false)]
 param(
     # ONE chat model at a time, Ollama-style. The NPU has no memory of its own
     # -- it allocates from the same RAM as the GPU -- so a second resident
@@ -37,7 +49,8 @@ param(
     # disk wins, and if none of them are, the launcher asks locally.py what IS
     # there (--list-models) rather than insisting on a model you deleted.
     # Names are resolved under -ModelsDir; an absolute path also works.
-    [string[]] $ChatModels = @('Qwen3-8B-abliterated-int4-cw-ov',
+    [string[]] $ChatModels = @('gemma-4-E4B-it-int4-ov',
+                               'Qwen3-8B-abliterated-int4-cw-ov',
                                'Qwen3-8B-int4-cw-ov'),
     [string] $ModelsDir = "$env:USERPROFILE\models",
     # Optional models stay off unless named. API startup should not compile
@@ -49,6 +62,19 @@ param(
     # audio socket take turns on its own. Take the openvino_16k build: the
     # stock silero_vad.onnx has a sample-rate branch OpenVINO cannot convert.
     [string] $Vad       = '',
+    # Utility models are NOT like the audio ones and must not be treated like
+    # them. Audio engines compile eagerly and sit in the voice critical path;
+    # utility slots wait on the chat model's load event and then compile on
+    # first use, so the only startup cost is OCR's ~160 MB. Measured
+    # 2026-09-10 on this box: chat-ready at 9.7 s with utilities on, against
+    # 9.6 s with them off.
+    #
+    # So the default is the conventional directory, gated on the OCR pair
+    # actually being there. Requiring a flag is what left `/health.util` null
+    # on an ordinary start, with document reading, OCR, local search and
+    # upscaling silently dead while the models sat on disk -- reported as
+    # "does it still support images and documents". Pass '' to turn them off.
+    [string] $UtilModels = "$env:USERPROFILE\models\util",
     [int]    $Port      = 8000,
     # 'auto' is right for almost everyone: the server computes the smallest
     # ratio that makes the model fit, and stays off when it already does.
@@ -66,8 +92,11 @@ param(
     # ASR sits in the voice critical path and is ~3x faster on the GPU.
     [ValidateSet('GPU', 'CPU', 'NPU')]
     [string] $WhisperDevice = 'GPU',
+    # Kokoro text-to-speech device. CPU keeps the GPU free; GPU is faster for voice apps (Pumpkin Trivia).
+    [ValidateSet('GPU', 'CPU')]
+    [string] $TtsDevice = 'CPU',
     # Unload models after this many seconds idle (0 = never).
-    [int]    $IdleTimeout = 900,
+    [int]    $IdleTimeout = 0,
     # Regenerate locally.lnk and install it as a Windows app entry, then exit.
     # The shortcut points at locally-key.ps1; API is the default action and
     # -ShortcutMode chat makes it open the optional terminal client instead.
@@ -140,6 +169,17 @@ if ($CreateShortcut) {
 }
 
 if (-not (Test-Path -LiteralPath $python)) { throw "Run install.ps1 first: no venv Python at $python" }
+
+# A forwarded `--port N` reaches argparse and wins there, so the SERVER lands on
+# the right port either way. What it does not do on its own is tell this script,
+# which then pre-checks the wrong port and can refuse to start over a listener
+# that has nothing to do with the port being asked for.
+for ($i = 0; $i -lt $ExtraArgs.Count - 1; $i++) {
+    if ($ExtraArgs[$i] -eq '--port') {
+        $forwarded = 0
+        if ([int]::TryParse($ExtraArgs[$i + 1], [ref]$forwarded)) { $Port = $forwarded }
+    }
+}
 
 # A TCP connect, not an HTTP request: /health is served by the same process
 # that may be busy compiling a 14 GB model, so it can take seconds to answer,
@@ -234,12 +274,26 @@ if ($OffloadRatio -and $OffloadRatio -ne 'auto') {
 # it sits directly in the voice turn's critical path. 245 MB next to a
 # multi-GB chat model is noise.
 if ($Whisper -and (Test-Path $Whisper)) { $serverArgs += @('--whisper-dir', $Whisper, '--whisper-device', $WhisperDevice) }
-if ($Tts -and (Test-Path $Tts))         { $serverArgs += @('--tts-dir', $Tts, '--tts-device', 'CPU') }
+if ($Tts -and (Test-Path $Tts))         { $serverArgs += @('--tts-dir', $Tts, '--tts-device', $TtsDevice) }
 # VAD on the CPU deliberately: ~1M parameters, running on every 32 ms frame
 # for as long as the mic is open. That belongs nowhere near the NPU, which is
 # answering, or the GPU, which is doing ASR.
 if ($Vad -and (Test-Path $Vad))         { $serverArgs += @('--vad-dir', $Vad, '--vad-device', 'CPU') }
 if ($Speaker -and (Test-Path $Speaker)) { $serverArgs += @('--speaker-dir', $Speaker, '--speaker-device', 'CPU') }
+# OCR is the minimum the utilities need, so the detector/recognizer pair is
+# the sentinel: present means the models were downloaded on purpose, absent
+# means there is nothing to turn on. Only a directory the user NAMED earns a
+# warning -- warning about the default on a machine that simply has no utility
+# models would fire on every start of a clean install.
+if ($UtilModels) {
+    $ocrDet = Join-Path $UtilModels 'ocr-det\inference.onnx'
+    $ocrRec = Join-Path $UtilModels 'ocr-rec\inference.onnx'
+    if ((Test-Path -LiteralPath $ocrDet) -and (Test-Path -LiteralPath $ocrRec)) {
+        $serverArgs += @('--util-models-dir', $UtilModels)
+    } elseif ($PSBoundParameters.ContainsKey('UtilModels')) {
+        Write-Warning "Utilities were requested, but $UtilModels does not contain the OCR detector and recognizer (ocr-det\inference.onnx, ocr-rec\inference.onnx). Utilities remain off."
+    }
+}
 $serverArgs += $ExtraArgs
 
 & $python @serverArgs

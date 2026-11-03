@@ -164,9 +164,16 @@ class VadSlot:
 
     def unload(self):
         """Release the compiled model. Caller must hold self.lock."""
-        if self.compiled is None:
+        if (self.compiled is None and self._audio_in is None and
+                self._sr_in is None and not self._state_ins):
             return
         print(f"  [{self.device_name}] Idle — unloading {self.model_name}", flush=True)
+        # State-input ports are native objects from compiled.inputs. Keeping
+        # them would leave a path back to the compiled graph after it is
+        # otherwise released.
+        self._audio_in = None
+        self._sr_in = None
+        self._state_ins = []
         self.compiled = None
         self.status = "idle_unloaded"
         import gc

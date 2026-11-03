@@ -5,7 +5,6 @@ they are read from three places.
 """
 import re
 
-from core import config
 from core.genai.tokens import _count_tokens
 from core.web.search import _WEB_ANSWER_RESERVE
 from core.web.search import _web_grounded_blocks

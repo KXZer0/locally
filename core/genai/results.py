@@ -11,11 +11,42 @@ from core import config
 
 
 class GeneratedText(str):
-    """String-compatible answer carrying this generation's own finish reason."""
-    def __new__(cls, text, finish_reason="stop"):
+    """String-compatible answer carrying this generation's finish reason and
+    token counts.
+
+    A plain `str` is what the chat paths pass around, so anything the pipeline
+    reported about the generation has to travel attached to it or be recomputed
+    from a `result` object those paths never see. `usage` is the pipeline's own
+    counts as `extract_token_metrics` read them -- possibly empty, when the
+    runtime supplies no perf_metrics.
+    """
+    def __new__(cls, text, finish_reason="stop", usage=None):
         value = super().__new__(cls, text)
         value.finish_reason = finish_reason
+        value.usage = usage or {}
         return value
+
+
+def usage_block(text):
+    """OpenAI `usage` for an answer, from whatever the pipeline reported.
+
+    Every non-streaming reply used to send `{-1, -1, -1}`. That is not a
+    missing value in OpenAI's schema -- the fields are non-negative integers --
+    so a client budgeting context against it reads a real number that happens
+    to be nonsense, and clients do budget against it (Obsidian's Copilot and
+    Claude Code both size their next request from what the last one reported).
+    The counts already existed: `_record_turn` pulls them off the same result
+    to write /v1/metrics. They only had nowhere to ride back to the caller.
+
+    Unknown stays 0 rather than -1: zero is at least a legal value for the
+    field, and a client treating it as "nothing spent" is no worse off than one
+    reading a negative count.
+    """
+    usage = getattr(text, "usage", None) or {}
+    prompt = int(usage.get("prompt_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or 0)
+    return {"prompt_tokens": prompt, "completion_tokens": completion,
+            "total_tokens": prompt + completion}
 
 
 def extract_token_metrics(result):

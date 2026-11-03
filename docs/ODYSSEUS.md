@@ -326,14 +326,20 @@ Get-NetFirewallRule -Direction Inbound -Action Block |
 Anything that returns must go. See §7 for why `$target` is read that way and not
 from the command line.
 
-**3. Point Odysseus at the gateway address.** Settings → Added Models → the
-endpoint's URL:
+**3. Point Odysseus at the gateway address.** Run `.\odysseus.ps1` once. It
+derives the current Docker or Podman host address, reapplies the Compose
+environment, probes `/v1/models` from inside the container, and prints the URL
+it verified. Use that URL in Settings → Added Models if this is the first
+provider entry:
 
 ```
 http://172.17.96.1:8000/v1
 ```
 
-Press **Probe**. It should report 1/1 and the model list should fill.
+Press **Probe**. It should report 1/1 and the model list should fill. If an
+older provider entry still points at `localhost:8000`, update that saved entry;
+Odysseus keeps provider settings in its database and those settings take
+precedence over Compose environment defaults.
 
 **4. Check the whole path in one command.**
 
@@ -389,6 +395,18 @@ Note the two protocols disagree on purpose:
 
 The Ollama shim omits the device suffix because Ollama clients treat the tag as a
 name, not an address.
+
+They no longer disagree about *which* models are listed. `/api/tags` used to
+show the resident slot alone, and only while its status was `ready` — so on the
+Ollama path (Odysseus's best-trodden one) a picker offered a single choice on a
+server holding six loadable models, and went empty after an idle unload. Both
+surfaces now build their listing from the same `_models_data()`, which counts an
+idle-unloaded slot as serving and adds every loadable directory on disk.
+
+Port 11434 also answers `GET /v1/models` now. It already served
+`/v1/chat/completions`, so a client configured with `http://host:11434/v1` as a
+plain OpenAI base URL could chat but got a 404 from the one call a model picker
+makes first.
 
 ### Changing models from Odysseus
 

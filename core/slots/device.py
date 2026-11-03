@@ -17,13 +17,11 @@ from core.genai.results import (explain_genai_error, extract_finish_reason,
                                 extract_perf, extract_text, extract_token_metrics,
                                 GeneratedText)
 from core.genai.tokens import _count_tokens
-from core.hardware.devices import _device_mem_bytes, _gpu_has_xmx, _usable_gpu_bytes
 from core.metrics import record_turn
 from core.models.gguf import (chat_template as gguf_chat_template,
                               unsupported_reason as gguf_unsupported_reason)
-from core.models.geometry import _kv_bytes_per_token, _model_max_context, _moe_expert_fraction, _text_config
 from core.models.identity import is_vlm, model_display_name
-from core.models.integrity import _dir_size_bytes, _verify_weights_integrity
+from core.models.integrity import _verify_weights_integrity
 from core.slots.capability import _tools_supported
 from core.slots.locks import SlotLock
 from core.slots.planning import MemoryPlanning
@@ -122,7 +120,7 @@ class DeviceSlot(MemoryPlanning):
             # is precisely the pairing a large MoE on a small device needs —
             # so the one case that most wanted half-size KV was the one case
             # that never got it.
-            offload["config.OFFLOAD_RATIO"] = self.offload_ratio
+            offload["OFFLOAD_RATIO"] = self.offload_ratio
             print(f"  [{self.device_name}] MoE disk offload on "
                   f"({self.offload_ratio}% of expert weights streamed)"
                   f"{self.offload_note}", flush=True)
@@ -241,10 +239,16 @@ class DeviceSlot(MemoryPlanning):
         return "\n".join(str(msg.get("content") or "") for msg in raw_messages)
 
     def _record_turn(self, prompt_text, completion_text, completion_tokens,
-                     started, finish_reason="stop", ttft_ms=None, result=None):
-        """Turn the measurements already used by log lines into JSON data."""
+                     started, finish_reason="stop", ttft_ms=None, result=None,
+                     native=None):
+        """Turn the measurements already used by log lines into JSON data.
+
+        `native` is the pipeline's own counts when the caller has already
+        extracted them. It lets the response metadata and the metrics record
+        share one normalized value.
+        """
         total_ms = (time.perf_counter() - started) * 1000
-        native = extract_token_metrics(result)
+        native = extract_token_metrics(result) if native is None else native
         prompt_tokens = native.get("prompt_tokens")
         if prompt_tokens is None:
             prompt_tokens = _count_tokens(self, prompt_text)
@@ -298,9 +302,14 @@ class DeviceSlot(MemoryPlanning):
 
     def unload(self):
         """Release the loaded pipeline. Caller must hold self.lock."""
-        if self.pipe is None:
+        if self.pipe is None and self.tokenizer is None:
             return
         print(f"  [{self.device_name}] Idle — unloading {self.model_name}", flush=True)
+        # `ovg.Tokenizer` is a separate native object, lazily created for
+        # token counting. It can retain the model graph after the pipeline is
+        # dropped, so it must leave with the pipeline rather than waiting for
+        # the next model load to replace it.
+        self.tokenizer = None
         self.pipe = None
         self.status = "idle_unloaded"
         import gc
@@ -337,9 +346,106 @@ class DeviceSlot(MemoryPlanning):
         text = extract_text(result)
         ttft_ms, _ = extract_perf(result)
         self.last_ttft_ms = ttft_ms
-        self._record_turn(text_prompt, text, None, started,
-                          extract_finish_reason(result), ttft_ms=ttft_ms, result=result)
-        return GeneratedText(text, extract_finish_reason(result))
+        # Preserve the native counts on the string returned to the chat path;
+        # it has no access to the pipeline result itself.
+        native = extract_token_metrics(result)
+        finish = extract_finish_reason(result)
+        self._record_turn(text_prompt, text, None, started, finish,
+                          ttft_ms=ttft_ms, result=result, native=native)
+        return GeneratedText(text, finish, native)
+
+    def native_chat(self):
+        """Gemma 4's own prompt renderer for this slot's model, or None.
+
+        Cached per model_dir, so a model swap cannot keep the previous
+        model's template. See core/tools/gemma.py for why the template is
+        rendered outside genai.
+        """
+        if self.model_type != "vlm" or not self.model_dir:
+            return None
+        key = str(self.model_dir)
+        if getattr(self, "_native_key", None) != key:
+            from core.tools.gemma import GemmaChat
+            self._native_chat, self._native_key = GemmaChat.for_model(key), key
+        return self._native_chat
+
+    def generate_native(self, prompt, gen, cancel_event=None):
+        """VLM generate from a FINISHED prompt string (no template applied),
+        returning the text with its special tokens intact.
+
+        genai strips `<|tool_call>`, `<|"|>` and `<|channel>` when it decodes,
+        which makes a string argument ambiguous and glues the thought channel
+        onto the answer. A StreamerBase sees raw token ids, so they are decoded
+        here with skip_special_tokens=False.
+        """
+        from core.tools.gemma import THOUGHT_PREFIX
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Request cancelled before generation started")
+        self.last_ttft_ms = None
+        ids = []
+        from core.tools.native_diagnostics import NativeTrace, repeating_thought
+        trace = NativeTrace()
+        loop_detected = [False]
+        tokenizer = self.pipe.get_tokenizer()
+        prefix = THOUGHT_PREFIX if prompt.endswith(THOUGHT_PREFIX) else ""
+        checkpoint = [0]
+
+        class _Ids(ovg.StreamerBase):
+            def write(self, token):
+                ids.extend([token] if isinstance(token, int) else token)
+                if len(ids) - checkpoint[0] >= 16:
+                    checkpoint[0] = len(ids)
+                    raw = prefix + tokenizer.decode(ids, skip_special_tokens=False)
+                    trace.emit("progress", generated_tokens=len(ids), text=raw)
+                    if repeating_thought(ids, raw):
+                        loop_detected[0] = True
+                        return ovg.StreamingStatus.STOP
+                return (ovg.StreamingStatus.STOP
+                        if self._cancel.is_set() or (cancel_event is not None and cancel_event.is_set())
+                        else ovg.StreamingStatus.RUNNING)
+
+            def end(self):
+                pass
+
+        streamer = _Ids()
+        streamer._cancel = self._cancel
+        gen.apply_chat_template = False
+        with self.lock:
+            # A disconnected request may have spent time waiting behind another
+            # generation. Never clear its cancellation and run it afterwards.
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("Request cancelled before generation started")
+            self._cancel.clear()
+            started = time.perf_counter()
+            trace.emit("start", prompt=prompt, model=self.model_name,
+                       max_tokens=gen.max_new_tokens, do_sample=gen.do_sample,
+                       temperature=gen.temperature, top_p=gen.top_p, top_k=gen.top_k)
+            try:
+                result = self.pipe.generate(prompt=prompt, generation_config=gen,
+                                            streamer=streamer)
+            except Exception as exc:
+                trace.emit("error", error=str(exc), token_ids=ids,
+                           text=prefix + tokenizer.decode(ids, skip_special_tokens=False))
+                raise
+            finally:
+                self.last_used = time.time()
+            text = self.pipe.get_tokenizer().decode(ids, skip_special_tokens=False)
+        # With thinking on, a prompt that ends in a tool response already
+        # carries the opening of the thought channel; restore it so the output
+        # reads the same as any other thinking turn.
+        if prompt.endswith(THOUGHT_PREFIX):
+            text = THOUGHT_PREFIX + text
+        trace.emit("end", text=text, token_ids=ids, seconds=time.perf_counter()-started,
+                   stop_reason="repetition" if loop_detected[0] else extract_finish_reason(result))
+        if loop_detected[0]:
+            raise RuntimeError("Reasoning repetition detected during generation. Stop repeating the plan; inspect the page and choose one next action.")
+        ttft_ms, _ = extract_perf(result)
+        self.last_ttft_ms = ttft_ms
+        native = extract_token_metrics(result)
+        finish = extract_finish_reason(result)
+        self._record_turn(prompt, text, None, started, finish,
+                          ttft_ms=ttft_ms, result=result, native=native)
+        return GeneratedText(text, finish, native)
 
     def generate_llm(self, raw_messages, gen, record_metric=True):
         """LLM generate — non-streaming."""
@@ -354,11 +460,13 @@ class DeviceSlot(MemoryPlanning):
         ttft_ms, _ = extract_perf(result)
         self.last_ttft_ms = ttft_ms
         text = extract_text(result)
+        native = extract_token_metrics(result)
+        finish = extract_finish_reason(result)
         if record_metric:
             self._record_turn(self._message_text(raw_messages), text, None,
-                              started, extract_finish_reason(result),
-                              ttft_ms=ttft_ms, result=result)
-        return GeneratedText(text, extract_finish_reason(result))
+                              started, finish, ttft_ms=ttft_ms, result=result,
+                              native=native)
+        return GeneratedText(text, finish, native)
 
     def cancel(self):
         """Signal the current generation to stop."""

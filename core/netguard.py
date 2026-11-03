@@ -93,6 +93,33 @@ def virtual_networks():
     return found
 
 
+def virtual_ipv4_adapters():
+    """Private IPv4 addresses that can act as a container-to-host gateway.
+
+    The source guard needs whole networks; Odysseus also needs the host-side
+    address inside one of those networks.  Keep both answers derived from the
+    same adapter-name and private-address rules so the URL we hand to a
+    container is always inside a network the API will admit.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return []
+    found = []
+    for name, addrs in psutil.net_if_addrs().items():
+        if not _looks_virtual(name):
+            continue
+        for addr in addrs:
+            if addr.family != socket.AF_INET:
+                continue
+            net = _network_of(addr.address, addr.netmask)
+            if not net or not net.is_private or net.is_link_local:
+                continue
+            found.append({"name": name, "address": addr.address,
+                          "network": str(net)})
+    return found
+
+
 def allowed_networks():
     """Resolve --allow-from. None means 'no source filter' (--allow-from any)."""
     global _cached_networks, _cache_token

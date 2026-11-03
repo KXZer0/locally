@@ -14,7 +14,6 @@ except ImportError:
     sf = None
 
 from core import runtime
-from core.coding_mode import _coding_mode_error
 from core.errors import openai_error
 from core.slots.select import _slot_serviceable
 from core.slots.speaker import SpeakerSlot
@@ -122,9 +121,6 @@ def audio_warm():
     Best-effort: a slot that fails to load is reported, not raised, because a
     warm-up failing must not stop someone from trying to talk.
     """
-    blocked = _coding_mode_error("the audio models")
-    if blocked is not None:
-        return blocked
     out = {}
     for key, slot in (("whisper", runtime.whisper_slot), ("tts", runtime.tts_slot),
                       ("vad", runtime._vad_slot)):
@@ -227,9 +223,6 @@ def audio_verify():
 @bp.route("/v1/audio/transcriptions", methods=["POST"])
 def audio_transcriptions():
     """OpenAI-compatible speech-to-text. Accepts multipart form with audio file."""
-    blocked = _coding_mode_error("speech-to-text")
-    if blocked is not None:
-        return blocked
     if not runtime.whisper_slot or not _slot_serviceable(runtime.whisper_slot):
         return openai_error(
             "No speech-to-text model loaded. Use --whisper-dir.", "server_error", 503,
@@ -287,9 +280,6 @@ def audio_speech():
             "No text-to-speech model loaded. Use --tts-dir.", "server_error", 503,
         )
 
-    blocked = _coding_mode_error("text-to-speech")
-    if blocked is not None:
-        return blocked
     body = request.get_json(silent=True) or {}
     text = (body.get("input") or "").strip()
     if not text:

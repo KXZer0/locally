@@ -1,27 +1,12 @@
 """Command-line parsing and process startup."""
 
 import argparse
-import logging
 import os
-import sys
-import threading
 import time
 from pathlib import Path
 
-from core import cachetrim, config, odysseus, runtime
+from core import config, odysseus, runtime
 from core.chat.ollama import VSCODE_OLLAMA_VERSION
-from core.hardware.devices import _gpu_has_xmx
-from core.models.describe import scan_models
-from core.slots.device import DeviceSlot
-from core.slots.proxy import ProxySlot
-from core.slots.speaker import SpeakerSlot
-from core.slots.tts import TtsSlot
-from core.slots.util import UtilSlot
-from core.slots.vad import VadSlot
-from core.slots.whisper import WhisperSlot
-from core.startup import check_port, detect_devices, _idle_watchdog, _load_in_background
-from core.routes import audio as audio_routes
-from core.system.updates import _schedule_update_refresh
 from core.launch.configure import configure
 from core.launch.slots import build_slots
 from core.launch.serve import serve
@@ -308,6 +293,13 @@ def parse_args(argv=None):
                         "on. Default is per-device: on for CPU, OFF for GPU, "
                         "where it measured ~10x slower and hangs on repeated "
                         "prefixes (TODONT.md).")
+    p.add_argument("--anthropic-model-map", default=None, metavar="MAP",
+                   help="Route claude-* model names on /v1/messages to a local "
+                        "model: comma-separated KEY=MODEL, KEY a substring of "
+                        "the requested name, e.g. "
+                        "\"opus=gemma-4-26b-a4b-it@GPU\". Unmapped claude-* "
+                        "names use whatever model is resident. Naming a model "
+                        "that is not loaded swaps it in.")
     p.add_argument("--agent-tools", default=None, metavar="NAMES",
                    help="Comma-separated tool names to keep from a client's "
                         "tool list; the rest are dropped before the prompt is "

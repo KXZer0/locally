@@ -16,7 +16,7 @@ general:
 
 server:
   bind_address: "127.0.0.1"
-  port: 8080
+  port: 8081
   # Loopback only, so this is not a shared secret in any meaningful sense.
   secret_key: "locally-local-instance-not-public"
   limiter: false

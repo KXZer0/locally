@@ -19,6 +19,7 @@ from core.genai.results import extract_perf, explain_genai_error, extract_finish
 from core.media.images import load_image, pil_to_tensor
 from core.slots.capability import (_tool_capable, _tools_refused_note,
                                    _tools_supported)
+from core.models.discovery import _models_data, canonical_model_name
 from core.slots.route import _route_request
 from core.tools.parse import parse_tool_calls
 from core.tools.render import prepare_messages_for_tools
@@ -45,20 +46,43 @@ def ollama_version():
     return jsonify({"version": version})
 
 
+def _tag_entry(name, size=0):
+    return {
+        "name": name,
+        "model": name,
+        "size": size,
+        "details": {
+            "family": name.split("-")[0],
+            "parameter_size": "",
+            "quantization_level": "int4",
+        },
+    }
+
+
 def ollama_tags():
-    models = []
-    for slot in (runtime.primary, runtime.secondary):
-        if slot and slot.status == "ready":
-            models.append({
-                "name": slot.model_name,
-                "model": slot.model_name,
-                "size": slot.info.get("size", 0),
-                "details": {
-                    "family": slot.model_name.split("-")[0],
-                    "parameter_size": "",
-                    "quantization_level": "int4",
-                },
-            })
+    """/api/tags -- the same set of models /v1/models advertises.
+
+    Both fixes the OpenAI surface got, this one had not. It listed a slot only
+    while `status == "ready"`, so an idle-unloaded model (which still SERVES --
+    the chat path reloads it on demand) vanished from the listing and a client
+    that discovers models by polling read the empty list as "backend offline".
+    And it listed nothing but the resident slot, so on a one-model-at-a-time
+    server the picker offered exactly one choice: a dropdown with a single
+    possible answer. Naming any of these in a request loads it
+    (core/slots/route.py:_load_on_demand), so what is advertised and what can
+    answer are the same set here as on port 8000.
+
+    Ollama ids carry no @DEVICE suffix -- an Ollama client treats the tag as a
+    name, not an address -- which is why this builds its own entries from
+    `_models_data()` rather than returning them.
+    """
+    models, seen = [], set()
+    for entry in _models_data()["data"]:
+        name = canonical_model_name(entry["id"])
+        if not name or name in seen or entry["id"].startswith("whisper@"):
+            continue
+        seen.add(name)
+        models.append(_tag_entry(entry["id"].partition("@")[0]))
     return jsonify({"models": models})
 
 
@@ -73,8 +97,14 @@ def ollama_show():
     if request.headers.get("User-Agent", "").startswith("GitHubCopilotChat/"):
         model_info["general.basename"] = model_name
 
+    wanted = canonical_model_name(model_name)
     for slot in (runtime.primary, runtime.secondary):
-        if slot and slot.model_name == model_name:
+        # Canonical comparison, like everywhere else identity is decided: an
+        # exact `==` on the raw string made a differently-cased id, or one
+        # carrying the @DEVICE suffix the OpenAI surface hands out, look like
+        # a model this server has never heard of -- and the answer to that is
+        # the conservative "completion only" below.
+        if slot and slot.model_name and canonical_model_name(slot.model_name) == wanted:
             # Deliberately _tools_supported, not _tool_capable: an advert is
             # answered before any tool set exists, and the NPU's budget is a
             # property of the REQUEST. Claiming `tools` here would invite
@@ -336,7 +366,3 @@ def _ollama_stream_chat(slot, raw_messages, gen, t0):
         yield json.dumps(final) + "\n"
     finally:
         slot._cancel.set()
-
-from core.chat.ollama_generate import (ollama_copy, ollama_delete,
-                                         ollama_generate, ollama_pull,
-                                         ollama_v1_chat_completions)

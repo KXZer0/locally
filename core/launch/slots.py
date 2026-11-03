@@ -15,6 +15,52 @@ from core.slots.whisper import WhisperSlot
 from core.startup import check_port, detect_devices
 
 
+def _auto_device(args, model_dir, devices):
+    """Which device hosts the startup model under `--device auto`.
+
+    The same question POST /v1/models/load answers, so it is answered by the
+    same function. It used to be answered from the device list alone -- "NPU
+    if there is one" -- without ever looking at the model, and the model is
+    the half that decides: gemma-4-26b is a VLM, the NPU has no vision path,
+    and starting `--device auto --model-dir <gemma>` therefore died inside the
+    vpux compiler ("Chunking is not implemented for Gemma model family yet")
+    under locally's own "Is another process using the NPU?" -- a wrong
+    question about a model that was placed on hardware that cannot run it.
+    _choose_device reads the IR's rt_info and rules the NPU out for vision and
+    for group-quantized int4 before anything is compiled, which is exactly the
+    check the swap path has always run and the startup path never did.
+    """
+    from core.models.discovery import _choose_device, _device_can_host
+    from core.models.identity import is_vlm
+
+    order = "NPU" if "NPU" in devices else ("GPU" if "GPU" in devices else "CPU")
+    if args.proxy_url or not os.path.isdir(model_dir):
+        # No model to read. Keep the old preference order so a server started
+        # without one still comes up on the device it always did.
+        return order
+    if args.gpu_model_dir:
+        # Dual mode: --gpu-model-dir has claimed the GPU, so the primary is
+        # choosing between the NPU and the CPU. Still ask rather than assume --
+        # a VLM or a group-quantized int4 crashes the NPU here just the same.
+        if "NPU" in devices:
+            ok, why = _device_can_host("NPU", devices["NPU"]["id"], model_dir,
+                                       is_vlm(model_dir))
+            if ok:
+                return "NPU"
+            print(f"  Placement: ruled out NPU: {why}; CPU", flush=True)
+        return "CPU"
+    name, _, why = _choose_device(model_dir)
+    if name is None:
+        # Every device refused it. Load anyway on the device auto would have
+        # picked: the refusal is a prediction, and a prediction is a worse
+        # reason to refuse to start than the driver's own verdict.
+        print(f"  WARNING: no device reports it can host this model ({why}); "
+              f"trying {order}", flush=True)
+        return order
+    print(f"  Placement: {why}", flush=True)
+    return name
+
+
 def build_slots(args, model_dir):
     # 1. Check ports
     if not check_port(args.port):
@@ -42,15 +88,7 @@ def build_slots(args, model_dir):
     # 3. Resolve primary device
     device = args.device.upper()
     if device == "AUTO":
-        if args.gpu_model_dir:
-            # Dual mode: primary goes on NPU (or CPU if no NPU)
-            device = "NPU" if "NPU" in devices else "CPU"
-        elif "NPU" in devices:
-            device = "NPU"
-        elif "GPU" in devices:
-            device = "GPU"
-        else:
-            device = "CPU"
+        device = _auto_device(args, model_dir, devices)
 
     if device not in devices and device != "CPU":
         print(f"ERROR: Device {device} not available. Found: {list(devices.keys())}")

@@ -6,7 +6,6 @@ import io
 import os
 import re
 from core.errors import _TurnError, openai_error
-from core.slots.select import _util_slot
 
 from flask import request
 

@@ -84,10 +84,6 @@ PROMPT_CACHE_GB = 2
 KV_PRECISION = None    # --kv-precision: "u8" halves KV bytes/token, or None
 CONTEXT_TOKENS = None  # --context-tokens: int, "auto", or None (use the GB flag)
 
-# Claude Code's own system prompt measured ~35k tokens, and it requests up to
-# 32k of output; the KV pool must hold both at once.
-CODE_MIN_CONTEXT = 70000
-
 
 # --- model loading ----------------------------------------------------------
 
@@ -123,6 +119,7 @@ PREWARM_MIN_CHARS = 4000   # only capture agent-sized system prompts, not chat
 # --- tool calling -----------------------------------------------------------
 
 AGENT_TOOLS = None   # --agent-tools: set of names to keep, or None (all)
+ANTHROPIC_MODEL_MAP = {}   # --anthropic-model-map: {substring of claude-* name: local model}
 
 # Measured on Qwen3-8B-int4-cw's own tokenizer, 2026-08-29, against the 8192
 # cap (scripts/measure-tool-budget.py reproduces it):
@@ -174,9 +171,3 @@ ODYSSEUS_START_TIMEOUT = 180
 # extra_hosts: host.docker.internal:host-gateway explicitly, so the one
 # Docker-shaped dependency in this architecture is honoured by Podman too.
 CONTAINER_ENGINE = None
-
-
-# --- coding mode ------------------------------------------------------------
-# While on, the utility and audio paths are refused rather than quietly
-# competing for the device holding the coder.
-CODING_MODE = False

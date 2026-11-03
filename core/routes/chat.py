@@ -5,9 +5,10 @@ from flask import Blueprint, jsonify
 from core import runtime
 from core.chat.anthropic import anthropic_count_tokens, anthropic_messages
 from core.chat.openai import chat_completions
-from core.chat.ollama import (ollama_chat, ollama_copy, ollama_delete,
-                              ollama_generate, ollama_health, ollama_pull,
-                              ollama_v1_chat_completions, ollama_version)
+from core.chat.ollama import ollama_chat, ollama_health, ollama_version
+from core.chat.ollama_generate import (ollama_copy, ollama_delete,
+                                       ollama_generate, ollama_pull,
+                                       ollama_v1_chat_completions)
 
 
 bp = Blueprint("chat", __name__)

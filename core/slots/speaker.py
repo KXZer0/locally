@@ -159,9 +159,22 @@ class SpeakerSlot:
             print(f"  [{self.device_name}] Speaker ID failed: {e}", flush=True)
 
     def unload(self):
-        if self.compiled is None:
+        if (self.compiled is None and self._audio_in is None and
+                self._len_in is None and self._window is None and
+                self._melbank is None):
             return
         print(f"  [{self.device_name}] Idle — unloading {self.model_name}", flush=True)
+        # These are OpenVINO input ports from `compiled.inputs`; do not leave
+        # them as a secondary native reference after dropping the graph. The
+        # fbank caches are derived from that model's input geometry and will be
+        # rebuilt on demand after a reload. Profile data is deliberately kept:
+        # it is user state, not a model allocation.
+        self._audio_in = None
+        self._len_in = None
+        self._needs_fbank = False
+        self._n_mels = 80
+        self._window = None
+        self._melbank = None
         self.compiled = None
         self.status = "idle_unloaded"
         import gc

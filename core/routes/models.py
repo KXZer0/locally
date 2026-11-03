@@ -26,3 +26,9 @@ bp.add_url_rule("/v1/models/unload", view_func=unload_model, methods=["POST"])
 ollama_bp = Blueprint("ollama_models", __name__)
 ollama_bp.add_url_rule("/api/tags", view_func=ollama_tags, methods=["GET"])
 ollama_bp.add_url_rule("/api/show", view_func=ollama_show, methods=["POST"])
+# Real Ollama serves an OpenAI-compatible /v1 alongside /api, and clients
+# configured with `http://host:11434/v1` as a plain OpenAI base URL ask this
+# first. The port already answered /v1/chat/completions, so a client could
+# chat but could not enumerate -- a model picker that 404s against a server
+# that answers every other call reads as a broken server.
+ollama_bp.add_url_rule("/v1/models", view_func=list_models, methods=["GET"])

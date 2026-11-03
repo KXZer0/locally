@@ -11,7 +11,7 @@ from core import config, runtime
 from core.chat.common import apply_penalties, overall_status, parse_messages
 from core.chat.images import _image_urls_in, _ocr_for_text_model
 from core.errors import _TurnError, openai_error
-from core.genai.results import explain_genai_error
+from core.genai.results import explain_genai_error, GeneratedText
 from core.genai.tokens import _count_tokens
 from core.sandbox.python_exec import sandbox_status
 from core.slots.capability import _tool_capable, _tools_refused_note
@@ -19,6 +19,7 @@ from core.slots.route import _route_request
 from core.tools.builtin import (BUILTIN_TOOLS, _builtin_runs,
                                 _builtin_tools_supported, _fit_tool_output,
                                 builtin_tools_for)
+from core.tools.gemma import has_images, thinking_requested
 from core.tools.parse import parse_tool_calls
 from core.tools.registry import PYTHON_TOOL
 from core.tools.render import (_tool_calls_to_text, prepare_messages_for_tools,
@@ -72,13 +73,38 @@ def _filter_tools(tools):
     return kept
 
 
-def _prepare_turn(body):
+def _with_no_think(messages):
+    """Copy of `messages` with /no_think appended to the last user turn."""
+    out = list(messages)
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].get("role") != "user":
+            continue
+        c = out[i].get("content")
+        if isinstance(c, str):
+            if "/no_think" not in c:
+                out[i] = dict(out[i], content=c.rstrip() + " /no_think")
+        elif isinstance(c, list):
+            parts = list(c)
+            for j in range(len(parts) - 1, -1, -1):
+                if isinstance(parts[j], dict) and parts[j].get("type") == "text":
+                    parts[j] = dict(parts[j], text=parts[j]["text"].rstrip() + " /no_think")
+                    out[i] = dict(out[i], content=parts)
+                    break
+        break
+    return out
+
+
+def _prepare_turn(body, native=False):
     """Everything a chat turn needs before generation, for either dialect.
 
     Parse, route to a device, reload it if it was idle-unloaded, and build the
     generation config. The OpenAI and Anthropic endpoints differ only in how
     the request and the answer are *shaped* — the work between those two points
     is identical, and duplicating it is how the two would drift apart.
+
+    `native=True` (the OpenAI endpoint) lets a Gemma 4 slot answer a tool turn
+    in its own dialect: `turn["native_prompt"]` is then the finished prompt and
+    `turn["thinking"]` says whether the thought channel was switched on.
     """
     if overall_status() != "ready":
         raise _TurnError(openai_error(
@@ -101,6 +127,17 @@ def _prepare_turn(body):
         raise _TurnError(openai_error(f"Failed to parse request: {e}"))
 
     slot = _route_request(bool(images), body.get("model", ""))
+
+    # Anthropic requests without extended thinking: Qwen3's /no_think, on a COPY
+    # of the last user turn (CLAUDE.md: never keep the token in history).
+    if body.get("no_think") and slot is not None and \
+            re.match(r"qwen3-", (slot.model_name or "").lower()):
+        messages = _with_no_think(messages)
+        try:
+            text_prompt, images, raw_messages = parse_messages(
+                messages, config.MAX_IMAGE_DIM)
+        except Exception as e:
+            raise _TurnError(openai_error(f"Failed to parse request: {e}"))
 
     # Images with no vision path: read them with the NPU utilities and hand a
     # TEXT model the result, instead of refusing the turn. Done here rather
@@ -144,9 +181,11 @@ def _prepare_turn(body):
     # model's job, and the tool descriptions say when.
     builtin_specs = builtin_tools_for(slot, {
         "web_search": body.get("web_search", True) is not False,
+        "calculator": body.get("calculator", True) is not False,
     })
     python_tool_active = bool(builtin_specs) and not tools
-    if python_tool_active:
+    native_builtin = bool(python_tool_active and not images and not body.get("stream") and getattr(slot, "native_chat", lambda: None)() is not None)
+    if python_tool_active and not native_builtin:
         try:
             # Re-render from raw_messages when OCR has already rewritten them.
             # Parsing the ORIGINAL `messages` here threw the OCR work away: the
@@ -204,18 +243,41 @@ def _prepare_turn(body):
                     frequency=body.get("frequency_penalty"),
                     presence=body.get("presence_penalty"))
 
+    native_prompt, thinking = None, thinking_requested(body)
+    if native and not images and not python_tool_active:
+        chat = slot.native_chat()
+        if chat is not None and not has_images(messages):
+            try:
+                native_prompt = chat.render(messages, tools if tools_active else [], thinking)
+            except Exception as e:
+                print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] native Gemma "
+                      f"prompt failed ({e}); using the generic tool prompt", flush=True)
+            else:
+                # A repetition penalty looks at the prompt too, and an agent
+                # prompt is full of the very ids and URLs a tool call must copy
+                # back exactly; the 1.05 default corrupts them.
+                if body.get("repetition_penalty") is None:
+                    gen.repetition_penalty = 1.0
+                if thinking and tools_active:
+                    from core.tools.native_diagnostics import tune_agent_generation
+                    tune_agent_generation(gen, body)
+                print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] native Gemma prompt: "
+                      f"{len(native_prompt)} chars, thinking={'on' if thinking else 'off'}",
+                      flush=True)
+
     stream = bool(body.get("stream", False))
     n_images = len(images)
     tag = f"{n_images} image{'s' if n_images != 1 else ''}, " if n_images else ""
     print(f"\n{datetime.now():%H:%M:%S} <- [{slot.device_name}] {tag}"
-          f"{len(text_prompt)} chars, max_tokens={max_tokens}"
+          f"{len(text_prompt)} chars, max_tokens={gen.max_new_tokens}"
           f"{' (stream)' if stream else ''}", flush=True)
 
     return {"slot": slot, "gen": gen, "stream": stream, "tools": tools,
             "tools_active": tools_active, "text_prompt": text_prompt,
             "images": images, "raw_messages": raw_messages,
-            "python_tool_active": python_tool_active,
+            "python_tool_active": python_tool_active, "native_builtin": native_builtin,
             "builtin_specs": builtin_specs,
+            "native_prompt": native_prompt, "thinking": thinking,
             "max_dim": config.MAX_IMAGE_DIM,
             "max_tokens": max_tokens, "t0": time.perf_counter(),
             # "npu-ocr" when images were read as text rather than seen. Callers
@@ -242,7 +304,7 @@ def _prepare_turn(body):
 # ---------------------------------------------------------------------------
 
 
-def _builtin_tool_turn(generate, raw_messages, specs, slot_for_fit=None):
+def _builtin_tool_turn(generate, raw_messages, specs, slot_for_fit=None, native=False):
     """Run the bounded server-side tool loop and return answer + audit data.
 
     Bounded on purpose. An unbounded loop on a small model is how a whole
@@ -253,15 +315,43 @@ def _builtin_tool_turn(generate, raw_messages, specs, slot_for_fit=None):
     A call to a tool that is not ours is not our business: it is left in the
     text and returned, so a client that sent its own `tools` array still gets
     its call back the way it always did.
+
+    The answer comes back as a GeneratedText carrying the FINAL round's token
+    counts and finish reason. `parse_tool_calls` returns an ordinary string, so
+    without re-wrapping, every turn that reached this loop -- which is every
+    ordinary turn once --search-url or --python-tool is on, since the tools are
+    offered rather than requested -- reported `usage` of zero and a finish
+    reason of "stop" whatever actually happened. The final round is the right
+    round to report: its prompt is the one that produced the answer being
+    returned, so the numbers stay comparable with a turn that called no tool.
+    Summing the rounds would say what the turn COST, which is a different
+    question from the one a client budgeting its next request is asking.
     """
+    from core.tools.activity import record
+    from core.tools.gemma import split_reasoning
     messages = list(raw_messages)
     _builtin_runs().clear()
     for round_no in range(BUILTIN_TOOL_MAX_ROUNDS + 1):
         try:
+            record("thinking", "Choosing the next step…")
             generated = generate(messages)
         except Exception as e:
             raise RuntimeError(explain_genai_error(e))
-        text, calls = parse_tool_calls(generated, specs)
+        thought = ""
+        if native:
+            thought, visible = split_reasoning(str(generated))
+        else:
+            visible = generated
+        text, calls = parse_tool_calls(visible, specs)
+
+        def answer(body):
+            """Re-attach what parse_tool_calls dropped off the string."""
+            result = GeneratedText(body,
+                                 getattr(generated, "finish_reason", "stop"),
+                                 getattr(generated, "usage", None))
+            result.reasoning = thought
+            return result
+
         accepted = []
         for call in calls:
             fn = call.get("function") or {}
@@ -274,10 +364,11 @@ def _builtin_tool_turn(generate, raw_messages, specs, slot_for_fit=None):
                 args = {}
             accepted.append((call, name, args if isinstance(args, dict) else {}))
         if not accepted:
-            return text.strip(), list(_builtin_runs())
+            record("answering", "Writing the answer…")
+            return answer(text.strip()), list(_builtin_runs())
         if round_no >= BUILTIN_TOOL_MAX_ROUNDS:
-            return (text.strip() or
-                    "I stopped after the tool-round limit."), list(_builtin_runs())
+            return answer(text.strip() or
+                          "I stopped after the tool-round limit."), list(_builtin_runs())
 
         results = []
         for call, name, args in accepted:
@@ -289,6 +380,11 @@ def _builtin_tool_turn(generate, raw_messages, specs, slot_for_fit=None):
                 # it could not check, which is far better than a 500.
                 results.append((name, "The tool failed: " + str(e)))
 
+        if native:
+            messages.append({"role":"assistant", "content":text, "tool_calls":[c for c, _n, _a in accepted]})
+            for (call, name, _args), (_name, output) in zip(accepted, results):
+                messages.append({"role":"tool", "tool_call_id":call["id"], "name":name, "content":output})
+            continue
         call_text = _tool_calls_to_text([c for c, _n, _a in accepted])
         messages.append({"role": "assistant",
                          "content": (text + "\n" + call_text).strip()})

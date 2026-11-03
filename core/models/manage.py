@@ -214,6 +214,8 @@ def swap_model(name, device=""):
                 "server_error", 500)
         slot.warmup()
         if slot.status == "error":
+            slot.unload()
+            gc.collect()
             raise _refuse("Model loaded but warmup failed; check server logs", "server_error", 500)
         slot.prewarmed = False
         slot.last_ttft_ms = None
@@ -226,6 +228,21 @@ def swap_model(name, device=""):
             "placement": placement, "load_seconds": round(elapsed, 1)}
 
 
+def _nothing_freed():
+    """The memory block for an unload that had nothing to release.
+
+    Both "nothing of that kind is loaded" branches return it, so a client
+    parsing the reply sees the same keys whether or not a model was dropped.
+    They used to differ — one carried four fields, the other one — which meant
+    the shape of the answer depended on which of two equivalent no-ops ran.
+    """
+    snapshot = _memory_snapshot()
+    return {"before": snapshot, "after": snapshot, "settle_seconds": 0.0,
+            "physical_available_delta_mb": 0,
+            "system_commit_available_delta_mb": 0,
+            "process_freed_mb": 0, "weights_mb": 0}
+
+
 def unload_model():
     """Free a slot's memory now, without stopping the server.
 
@@ -236,7 +253,7 @@ def unload_model():
     Measured before and after, and the numbers are returned: the caller is
     about to launch something heavy and needs to know what it actually got,
     not that the call returned 200. See the memory notes in TODONT.md for
-    why the answer is system-available RAM and not process RSS.
+    why the answer is physical-available RAM and not process RSS.
 
     Two different numbers, deliberately kept apart. `weights_mb` is ours and
     auditable — the on-disk size of what was just dropped. `system_available`
@@ -244,7 +261,9 @@ def unload_model():
     move by far more than we released (measured: +22.8 GB after unloading
     4.8 GB of models at 368 MB free, as Windows dumped standby pages at the
     same time). Attributing that to locally would be a lie, so the caller
-    gets both and the UI reports them as what they are.
+    gets both and the UI reports them as what they are. The snapshot also
+    exposes commit headroom, separately: it is not a claim about reclaimable
+    physical memory or about this process's native allocations.
     """
     body = request.get_json(silent=True) or {}
     if not isinstance(body, dict) or not isinstance(body.get("device", ""), str):
@@ -258,9 +277,11 @@ def unload_model():
     scope = str(body.get("scope") or "all").lower()
     kinds = {
         "all": (runtime.primary, runtime.secondary, runtime.whisper_slot,
-                runtime.tts_slot, runtime.util_npu, runtime.util_gpu, runtime.util_cpu),
+                runtime.tts_slot, runtime._vad_slot, runtime._speaker_slot,
+                runtime.util_npu, runtime.util_gpu, runtime.util_cpu),
         "chat": (runtime.primary, runtime.secondary),
-        "audio": (runtime.whisper_slot, runtime.tts_slot),
+        "audio": (runtime.whisper_slot, runtime.tts_slot, runtime._vad_slot,
+                  runtime._speaker_slot),
         "util": (runtime.util_npu, runtime.util_gpu, runtime.util_cpu),
     }
     if scope not in kinds:
@@ -270,10 +291,7 @@ def unload_model():
                if s and s.status not in ("not_configured", "idle_unloaded")]
     if not targets and scope != "all":
         # Nothing of that kind is loaded, which is the state the caller wanted.
-        return jsonify({"status": "ok", "unloaded": [],
-                        "memory": {"before": _memory_snapshot(),
-                                   "after": _memory_snapshot(),
-                                   "weights_mb": 0}})
+        return jsonify({"status": "ok", "unloaded": [], "memory": _nothing_freed()})
     if want:
         targets = [s for s in targets if s.device_name == want]
         if not targets:
@@ -283,11 +301,7 @@ def unload_model():
         # Everything is already unloaded — that's the desired state, not an
         # error, and it must not be reported as "busy" (which is what the
         # 409 below would say if we fell through to it).
-        return jsonify({"status": "ok", "unloaded": [],
-                        "memory": {"before": _memory_snapshot(),
-                                   "after": _memory_snapshot(),
-                                   "returned_mb": 0, "process_freed_mb": 0,
-                                   "weights_mb": 0, "settle_seconds": 0.0}})
+        return jsonify({"status": "ok", "unloaded": [], "memory": _nothing_freed()})
 
     before = _memory_snapshot()
     freed = []
@@ -315,24 +329,31 @@ def unload_model():
         a, b = before.get(key), after.get(key)
         return None if a is None or b is None else b - a
 
-    # returned_mb is machine-wide movement, NOT a claim about this process
+    # Physical availability is machine-wide movement, NOT a claim about this process
     # (see the docstring). process_freed_mb is what python.exe itself gave
     # up — a lower bound, since NPU/GPU driver allocations are never fully
     # charged to it (measured: 1.6 GB of process drop for 6.7 GB of system
     # movement on the same unload).
-    returned = _delta("system_available_mb")
-    dropped = _delta("process_private_mb")
+    # One name per quantity. This used to also carry `returned_mb` as a second
+    # spelling of the physical delta, which is exactly the duplication that
+    # makes a reader add a number to itself; TODONT.md's "the tell is the
+    # returned figure coming back far smaller than weights_mb" now names
+    # physical_available_delta_mb, and that is the only name.
+    returned = _delta("physical_available_mb")
+    commit_headroom = _delta("system_commit_available_mb")
+    dropped = _delta("process_private_commit_mb")
     memory = {"before": before, "after": after,
-              "settle_seconds": settled, "returned_mb": returned,
+              "settle_seconds": settled,
+              "physical_available_delta_mb": returned,
+              "system_commit_available_delta_mb": commit_headroom,
               "process_freed_mb": None if dropped is None else -dropped,
               "weights_mb": sum(f["weights_mb"] or 0 for f in freed) or None}
 
     print(f"{datetime.now():%H:%M:%S} <> Unloaded on request: "
           + ", ".join(f"{f['model']}@{f['device']}" for f in freed)
           # ASCII arrow on purpose: this line goes to a cp1252 console.
-          + (f" -- system available {before['system_available_mb']} -> "
-             f"{after['system_available_mb']} MB "
+          + (f" -- physical available {before['physical_available_mb']} -> "
+             f"{after['physical_available_mb']} MB "
              f"({returned:+d}, {settled}s)" if returned is not None else ""),
           flush=True)
     return jsonify({"status": "ok", "unloaded": freed, "memory": memory})
-

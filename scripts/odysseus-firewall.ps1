@@ -13,15 +13,23 @@ param([int] $Port = 8000)
 
 $ErrorActionPreference = 'Stop'
 $ruleName = 'locally (Podman to API, scoped)'
-$oldRuleName = 'locally (WSL/Podman)'
-$adapterName = 'vEthernet (WSL (Hyper-V firewall))'
+$oldRuleNames = @('locally (WSL/Podman)', 'locally API (WSL/Podman only)')
 
-$adapter = Get-NetIPAddress -InterfaceAlias $adapterName -AddressFamily IPv4 |
-    Where-Object { $_.IPAddress -notlike '169.254.*' } |
+$adapter = Get-NetIPAddress -AddressFamily IPv4 |
+    Where-Object {
+        $_.InterfaceAlias -match 'WSL|Podman|vEthernet' -and
+        $_.IPAddress -notlike '169.254.*'
+    } |
+    Sort-Object @{ Expression = {
+        if ($_.InterfaceAlias -match 'WSL') { 0 }
+        elseif ($_.InterfaceAlias -match 'Podman') { 1 }
+        else { 2 }
+    } } |
     Select-Object -First 1
 if (-not $adapter) {
-    throw "The WSL virtual adapter is not available. Start the Podman machine first."
+    throw "No private WSL/Podman virtual adapter is available. Start the container engine first."
 }
+$adapterName = $adapter.InterfaceAlias
 
 $bytes = ([Net.IPAddress]::Parse($adapter.IPAddress)).GetAddressBytes()
 $bits = [int]$adapter.PrefixLength
@@ -61,9 +69,12 @@ Get-NetFirewallRule -Direction Inbound -Action Block -Enabled True |
 
 Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue |
     Remove-NetFirewallRule
-# Remove the older port-only rule if an earlier setup attempt created it.
-Get-NetFirewallRule -DisplayName $oldRuleName -ErrorAction SilentlyContinue |
-    Remove-NetFirewallRule
+# Remove older port-only rules if an earlier setup attempt created one.  They
+# were restricted by subnet but not by the serving executable or adapter.
+foreach ($oldRuleName in $oldRuleNames) {
+    Get-NetFirewallRule -DisplayName $oldRuleName -ErrorAction SilentlyContinue |
+        Remove-NetFirewallRule
+}
 
 New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow `
     -Program $program -Protocol TCP -LocalPort $Port -RemoteAddress $subnet `

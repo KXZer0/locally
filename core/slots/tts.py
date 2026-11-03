@@ -81,6 +81,7 @@ class TtsSlot:
         self.last_used = time.time()
         self.model_dir = model_dir
         self.model_name = model_display_name(model_dir)
+        self.default_voice = None
         print(f"  [{self.device_name}] Loading TTS ({self.model_name})...", flush=True)
         TtsPipe = getattr(ovg, "Text2SpeechPipeline", None)
         if TtsPipe is None:
@@ -107,9 +108,13 @@ class TtsSlot:
 
     def unload(self):
         """Release the loaded pipeline. Caller must hold self.lock."""
-        if self.pipe is None:
+        if self.pipe is None and not self._emb_cache:
             return
         print(f"  [{self.device_name}] Idle — unloading {self.model_name}", flush=True)
+        # These tensors belong to the current pipeline's expected embedding
+        # shape. Retaining them can keep native allocations alive after the
+        # pipeline has gone, and a reload will construct fresh tensors anyway.
+        self._emb_cache = {}
         self.pipe = None
         self.status = "idle_unloaded"
         import gc

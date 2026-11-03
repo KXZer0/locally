@@ -15,6 +15,7 @@ import openvino_genai as ovg
 from core import config, runtime
 from core.genai.results import explain_genai_error
 from core.media.images import load_image, pil_to_tensor
+from core.tools.gemma import split_reasoning
 from core.tools.parse import parse_tool_calls
 
 _ini = configparser.ConfigParser()
@@ -127,6 +128,32 @@ def overall_status():
     return "loading"
 
 
+def _debug_raw(label, text):
+    """--debug: the model's raw output, before tool-call parsing rewrites it."""
+    if config.DEBUG_REQUESTS or os.environ.get("LOCALLY_DEBUG_RAW"):
+        # ascii(): a Windows console is cp1252 and a debug print must never
+        # take the request down with it.
+        print(f"{datetime.now():%H:%M:%S} [DEBUG/raw {label}] {ascii(str(text))}", flush=True)
+
+
+def _tool_message(text, tools):
+    """(assistant message, tool_calls) for a finished buffered generation.
+
+    Gemma 4's thought channel is lifted into `reasoning_content` (the OpenAI-
+    compatible field Hermes and most harnesses read) so it never lands in
+    `content`; for any other model there is no channel and nothing changes.
+    """
+    _debug_raw("tools", text)
+    reasoning, text = split_reasoning(text)
+    text, tool_calls = parse_tool_calls(text, tools)
+    message = {"role": "assistant", "content": (text or None) if tool_calls else text}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    if reasoning:
+        message["reasoning_content"] = reasoning
+    return message, tool_calls
+
+
 def _sse_replay(completion_id, created, model, message, finish_reason):
     """Emit a buffered chat result as an OpenAI streaming SSE sequence.
 
@@ -141,6 +168,8 @@ def _sse_replay(completion_id, created, model, message, finish_reason):
         }) + "\n\n"
 
     yield chunk({"role": "assistant"})
+    if message.get("reasoning_content"):
+        yield chunk({"reasoning_content": message["reasoning_content"]})
     if message.get("content"):
         yield chunk({"content": message["content"]})
     for i, tc in enumerate(message.get("tool_calls") or []):
@@ -152,7 +181,8 @@ def _sse_replay(completion_id, created, model, message, finish_reason):
     yield "data: [DONE]\n\n"
 
 
-def _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0):
+def _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0,
+                     generate=None):
     """Buffered tool turn, streamed with keep-alive frames.
 
     A tool turn must be fully generated before we can emit a structured
@@ -167,7 +197,8 @@ def _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0)
 
     def _run():
         try:
-            result["text"] = slot.generate_llm(raw_messages, gen)
+            result["text"] = (generate() if generate is not None
+                              else slot.generate_llm(raw_messages, gen))
         except Exception as e:  # noqa: BLE001 — surfaced to the client below
             result["error"] = e
 
@@ -213,15 +244,13 @@ def _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0)
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
           f"Buffered tool response completed in {elapsed:.1f}s", flush=True)
 
-    text, tool_calls = parse_tool_calls(text, tools)
+    message, tool_calls = _tool_message(text, tools)
     if tool_calls:
         print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
               f"{len(tool_calls)} tool call(s): "
               f"{', '.join(tc['function']['name'] for tc in tool_calls)}", flush=True)
-        message = {"role": "assistant", "content": text or None, "tool_calls": tool_calls}
         finish_reason = "tool_calls"
     else:
-        message = {"role": "assistant", "content": text}
         finish_reason = generation_finish
 
     # Reuse the replay emitter (it re-sends a role frame — harmless, clients

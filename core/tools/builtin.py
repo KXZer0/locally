@@ -20,12 +20,10 @@ from core.tools.parse import parse_tool_calls
 import threading
 
 from core import config
-from core.documents.inputs import _util_chunks
-from core.errors import _TurnError, openai_error
 from core.tools.registry import PYTHON_TOOL, WEB_SEARCH_TOOL
-from core.web.fetch_page import _web_search_answer
+from core.tools.activity import record, request_id
+from core.tools.calculator import calculate, CALCULATOR_TOOL
 from core.web import search as web_search_mod
-from core.slots.select import _slot_serviceable
 from core.tools.render import _tool_calls_to_text
 from core.web.fetch_page import _web_search_run
 from core.voice.think_filter import _HOLD_CHARS
@@ -38,7 +36,7 @@ _BUILTIN_RUNS = threading.local()
 # Openers every format parse_tool_calls knows. A turn is held back only while
 # its visible text could still be growing into one of these.
 _TOOL_OPENERS = ("<tool_call", "<function=", "[TOOL_CALLS]", "<|python_tag|>",
-                 "｜tool▁calls▁begin｜", '{"name"')
+                 "｜tool▁calls▁begin｜", "<|tool_call_start|>", "<|tool_call>", '{"name"')
 
 
 
@@ -52,7 +50,9 @@ def _run_python_tool(args):
     code = args.get("code") if isinstance(args, dict) else None
     if not isinstance(code, str):
         return "No code was given."
+    record("calculating", "Calculating with local Python…", code=code[:6000])
     run = execute_python(code)
+    record("calculated", "Calculation finished", result=str(run.get("stdout") or run.get("stderr") or "")[:2000])
     _builtin_runs().append(dict(run, tool="python"))
     return ("stdout:\n" + (run["stdout"] or "(empty)") +
             "\nstderr:\n" + (run["stderr"] or "(empty)") +
@@ -63,27 +63,56 @@ def _run_python_tool(args):
 def _run_web_search_tool(args):
     """Retrieval only. The model still does the answering, as it always has."""
     query = (args.get("query") or "").strip() if isinstance(args, dict) else ""
+    # A model often wraps the query in quotes; as a search operator that means
+    # "exact phrase", and the engine returns nothing for a whole sentence.
+    query = query.strip("\"' ")
     if not query:
         return "No query was given."
     if not web_search_mod.WEB_SEARCH_URL:
         return ("Web search is not configured on this server. Answer from what "
                 "you know, and say you could not check.")
+    record("searching", "Searching the web…", query=query)
     payload = None
-    for kind, value in _web_search_run({"query": query, "answer": False}):
+    for kind, value in _web_search_run({"query": query, "answer": False,
+                                        "top_k": 5, "per_url": 1}):
+        if kind == "stage":
+            record("reading" if value.get("stage") == "reading" else "searching", value.get("detail") or "Searching the web…")
         if kind == "error":
+            record("tool_error", "Search failed: " + str(value[0])[:200])
             return "The search failed: " + str(value[0])
         if kind == "done":
             payload = value
-    passages = (payload or {}).get("passages") or []
+    payload = payload or {}
+    passages = payload.get("results") or payload.get("passages") or []
     if not passages:
         return "The search returned nothing usable."
     _builtin_runs().append({"tool": "web_search", "query": query,
-                            "sources": (payload or {}).get("sources") or []})
-    blocks = []
-    for i, psg in enumerate(passages, 1):
-        blocks.append("[" + str(i) + "] " + str(psg.get("title") or "") + "\n"
-                      + str(psg.get("url") or "") + "\n"
-                      + str(psg.get("text") or "").strip())
+                            "sources": payload.get("sources") or []})
+    # One block per page, best passage first. Ranked passages alone let one
+    # long page (a docs index full of nav links) fill every slot, and the
+    # engine's own snippet -- short, dated, usually where the answer sits --
+    # never reached the model because the ranker penalises snippets.
+    snippets = payload.get("snippets") or {}
+    blocks, seen = [], set()
+    for psg in passages:
+        url = str(psg.get("url") or "")
+        if url in seen:
+            continue
+        seen.add(url)
+        body = str(snippets.get(url) or "").strip()
+        text = str(psg.get("text") or "").strip()
+        if text and text != body:
+            body = (body + "\n" + text[:500]).strip()
+        blocks.append("[" + str(len(blocks) + 1) + "] "
+                      + str(psg.get("title") or "") + "\n" + url + "\n" + body)
+        if len(blocks) >= 5:
+            break
+    receipts = [{"url":str(psg.get("url") or ""),"title":str(psg.get("title") or "")} for psg in passages if psg.get("url")]
+    record("sources", "Writing an answer from the sources…", sources=receipts[:5])
+    print(f"  [search] model query: {query!r} -> {len(blocks)} sources",
+          flush=True)
+    if request_id():
+        return "\n\n".join(blocks) + "\n\nAnswer from the evidence. Sources appear below the answer in the app; do not include [1] or any numbered citation markers or a source list in your text."
     return ("\n\n".join(blocks) + "\n\n"
             "Answer from these sources and cite them inline as [1], [2]. If "
             "they do not contain the answer, say so plainly.")
@@ -317,6 +346,9 @@ def _builtin_generator(slot, gen, turn):
     tool round trip -- but it is driven by (prompt, images) rather than a
     message list, so each round has to be re-rendered for it.
     """
+    if turn.get("native_builtin"):
+        return lambda messages: slot.generate_native(
+            slot.native_chat().render(messages, turn["builtin_specs"], turn.get("thinking", False)), gen)
     if slot.model_type == "vlm":
         # Same rule as _builtin_streamer: reuse the pair, never re-parse.
         base = turn.get("text_prompt") or ""
@@ -331,7 +363,17 @@ def _builtin_generator(slot, gen, turn):
     return lambda messages: slot.generate_llm(messages, gen)
 
 
+def _run_calculator(args):
+    expression = str(args.get("expression") or "")
+    record("calculating", "Calculating…", expression=expression)
+    result = calculate(args)
+    record("calculated", "Calculation finished", result=result)
+    _builtin_runs().append({"tool":"calculator", "expression":expression, "result":result})
+    return result
+
+
 BUILTIN_TOOLS = {
+    "calculator": {"spec":CALCULATOR_TOOL,"run":_run_calculator,"enabled":lambda:True},
     # Read through the module every time. Both of these are set AFTER import,
     # by core/launch/configure.py from the command line, so a bound copy is
     # frozen at the default and the tool can never turn on -- which is exactly

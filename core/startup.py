@@ -3,11 +3,9 @@
 import socket
 import threading
 import time
-from datetime import datetime
 
 import openvino as ov
 
-from core import runtime
 from core.chat.common import _prewarm_slot
 from core.genai.results import explain_genai_error
 from core.slots.proxy import ProxySlot
@@ -99,8 +97,25 @@ def _load_in_background(slot, model_dir, devices, port, ollama_port, banner_slot
                 slot.device_full = devices.get(slot.device_name, {}).get("name", slot.device_name)
                 slot.load(model_dir)
                 slot.warmup()
+                if slot.status == "error":
+                    raise RuntimeError(f"{slot.model_name or 'model'} warmup failed")
                 _prewarm_slot(slot)
     except Exception as e:
+        # A pipeline can be constructed before a later template or warmup
+        # check fails. Drop it while no request can reach the slot; otherwise
+        # the error state looks unloaded but still owns native allocations.
+        # ProxySlot owns no local weights and its unload is intentionally a
+        # no-op, so do not give a failed upstream probe lifecycle semantics it
+        # does not have.
+        if not isinstance(slot, ProxySlot):
+            try:
+                with slot.lock:
+                    slot.unload()
+            except Exception as cleanup_error:
+                # The original load failure is what the user can act on. A
+                # best-effort release must not hide it.
+                print(f"  [{slot.device_name}] cleanup after failed load: "
+                      f"{cleanup_error}", flush=True)
         slot.status = "error"
         print(f"\n  [{slot.device_name}] ERROR: Failed to load model: {explain_genai_error(e)}")
         if (not isinstance(slot, ProxySlot)

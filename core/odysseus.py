@@ -41,6 +41,7 @@ import urllib.request
 # The module, never the names: main() reassigns ODYSSEUS_PORT/ODYSSEUS_DIR
 # after the command line is parsed.
 from core import config
+from core.netguard import virtual_ipv4_adapters
 from core.portprobe import CachedProbe
 
 # Odysseus's own default (APP_PORT, compose publishes
@@ -187,7 +188,48 @@ def command():
     return None
 
 
-def _compose_env():
+def _container_host():
+    """Address an Odysseus container can use for this Windows host.
+
+    Docker's host-gateway alias is reliable.  **Podman on Windows resolves that
+    alias inside its own WSL VM**, which is the whole failure: measured in a
+    real container on the development box 2026-09-10,
+    `getent hosts host.docker.internal` -> `169.254.1.2` (the VM), while the
+    default route -> `172.17.96.1` answered `/v1/models` with HTTP 200. A URL
+    built on the alias therefore fails under Podman with a connection error
+    that reads as "locally is down". So use the Windows side of the live
+    WSL/Podman adapter there.
+
+    Discovered each launch, never hardcoded: WSL assigns that subnet per
+    machine and reassigns it when the virtual switch is recreated -- the same
+    reason netguard cannot ship a fixed --allow-from. Both answers come from
+    `virtual_ipv4_adapters()`, so an address handed to a container is always
+    inside a network the API will admit.
+    """
+    if os.name == "nt" and engine_name() == "podman":
+        adapters = virtual_ipv4_adapters()
+        if adapters:
+            def rank(item):
+                name = item["name"].lower()
+                return (0 if "wsl" in name else
+                        1 if "podman" in name else
+                        2 if "vethernet" in name else 3)
+            return sorted(adapters, key=rank)[0]["address"]
+    return "host.docker.internal"
+
+
+def api_base_url(api_port=None):
+    """OpenAI base URL as seen from the managed Odysseus container."""
+    try:
+        port = int(api_port or getattr(config, "SERVER_PORT", 8000))
+    except (TypeError, ValueError):
+        port = 8000
+    if not 1 <= port <= 65535:
+        port = 8000
+    return f"http://{_container_host()}:{port}/v1"
+
+
+def _compose_env(api_port=None):
     """Environment for a compose call, with our own venv on PATH.
 
     `podman compose` is a THIN WRAPPER, not an implementation: it shells out to
@@ -208,6 +250,10 @@ def _compose_env():
     own_bin = os.path.dirname(sys.executable)
     if own_bin and own_bin not in env.get("PATH", "").split(os.pathsep):
         env["PATH"] = own_bin + os.pathsep + env.get("PATH", "")
+    # Shell environment outranks a checkout's .env during Compose
+    # interpolation.  This repairs a stale WSL gateway without rewriting the
+    # user's Odysseus checkout or any credentials stored alongside it.
+    env["OLLAMA_BASE_URL"] = api_base_url(api_port)
     return env
 
 
@@ -365,33 +411,98 @@ def _autostart_path():
     return os.path.join(config.SCRIPT_DIR, "odysseus-autostart.json")
 
 
-def load_autostart():
-    """The persisted 'start it with locally' preference.
+# Written into every file this module saves, so a preference can be told from
+# the fossil described below. The retired web UI's settings endpoint was
+# save_autostart()'s only caller and went with the UI (2026-09-09), which left
+# `{"autostart": false}` -- dated 2026-08-30 on the development box -- being
+# read on every start with no supported way to change it: a preference nobody
+# could set and nobody could clear, pinning the feature off forever.
+_AUTOSTART_WRITER = "locally odysseus autostart"
 
-    A toggle that only lived in memory would be useless for this setting: the
+
+def load_autostart():
+    """True, False, or **None** when nobody has expressed a preference.
+
+    Tri-state on purpose: "the user said no" and "nobody has said anything"
+    need different answers, because the second one is where a sensible default
+    belongs and the first one is not ours to override.
+
+    A toggle that only lived in memory would be useless for this setting -- the
     thing it controls happens at startup, so a value that does not survive a
     restart can never take effect. It is a small JSON file rather than a new
-    section in locally.ini because writing that back through configparser
-    would silently strip the user's comments out of a file they hand-edited.
+    section in locally.ini because writing that back through configparser would
+    silently strip the user's comments out of a file they hand-edited.
     """
+    saved = _saved_autostart()
+    if saved is None or saved.get("set_by") != _AUTOSTART_WRITER:
+        return None
+    return bool(saved.get("autostart"))
+
+
+def _saved_autostart():
+    """The preference file's contents as a dict, or None when there is none."""
     try:
         with open(_autostart_path(), "r", encoding="utf-8") as fh:
-            return bool(json.load(fh).get("autostart"))
+            saved = json.load(fh)
     except (OSError, ValueError):
-        return False
+        return None
+    return saved if isinstance(saved, dict) and "autostart" in saved else None
+
+
+def fossil_autostart_file():
+    """(path, value) of a preference file the deleted UI wrote, else None.
+
+    Startup uses this to SAY the file is being ignored. Quietly overriding a
+    value someone once set -- even through a settings panel that no longer
+    exists -- is the kind of change that reads as a bug when the behaviour
+    flips and nothing on screen accounts for it.
+    """
+    saved = _saved_autostart()
+    if saved is None or saved.get("set_by") == _AUTOSTART_WRITER:
+        return None
+    return _autostart_path(), bool(saved.get("autostart"))
+
+
+def autostart_setting(explicit=None, directory=None):
+    """Whether to bring Odysseus up at startup, and why. Returns (bool, str).
+
+    Precedence is what locally.ini.example states for every setting: an
+    explicit flag, then the saved preference, then the default.
+
+    **The default is "yes when a checkout is actually here."** Starting nothing
+    is the right behaviour on a machine with no Odysseus, and on a machine that
+    has one it costs nothing to try, because start() adopts a stack that is
+    already running rather than racing it. This replaces an off-by-default that
+    was argued from the four containers holding the user's calendar, mail and
+    notes -- a real concern, but the checkout is the consent: it is not
+    something that appears on a machine by accident, and the user's report that
+    forced this was "odysseus cant reach my endpoint ... i didnt even try to
+    fix because it should work automatically."
+    """
+    if explicit is not None:
+        return bool(explicit), ("--odysseus-autostart" if explicit
+                                else "--no-odysseus-autostart")
+    saved = load_autostart()
+    if saved is not None:
+        return saved, f"saved in {os.path.basename(_autostart_path())}"
+    found = find_dir(directory or getattr(config, "ODYSSEUS_DIR", None))
+    if found:
+        return True, f"a checkout is here ({found})"
+    return False, "no Odysseus checkout found"
 
 
 def save_autostart(enabled):
     try:
         with open(_autostart_path(), "w", encoding="utf-8") as fh:
-            json.dump({"autostart": bool(enabled)}, fh)
+            json.dump({"autostart": bool(enabled),
+                       "set_by": _AUTOSTART_WRITER}, fh)
         return True
     except OSError:
         return False
 
 
-def status(port=None, directory=None):
-    """Everything the UI needs to decide what to offer. Never raises."""
+def status(port=None, directory=None, api_port=None):
+    """Everything a caller needs to decide what to offer. Never raises."""
     try:
         port = int(port or getattr(config, "ODYSSEUS_PORT", DEFAULT_PORT))
     except (TypeError, ValueError):
@@ -401,6 +512,7 @@ def status(port=None, directory=None):
         # Cached -- see the comment on _probe. start()/stop() record what they
         # learn, so a change we caused shows up at once.
         running = _probe.get()
+        autostart, autostart_why = autostart_setting(directory=directory)
         return {
             "installed": bool(found),
             "dir": found,
@@ -418,7 +530,12 @@ def status(port=None, directory=None):
             # tell them apart can only offer one wrong instruction.
             "docker_installed": bool(command()),
             "engine": engine_name(),
-            "autostart": load_autostart(),
+            # The RESOLVED setting, not the raw file: with a tri-state
+            # preference and a checkout-dependent default, the file alone
+            # answers a different question than "will it start".
+            "autostart": autostart,
+            "autostart_reason": autostart_why,
+            "endpoint": api_base_url(api_port),
         }
     except Exception as exc:
         return {"installed": False, "dir": None, "running": False,
@@ -434,12 +551,38 @@ def _tail(text, lines=8, limit=800):
     return "\n".join(text.splitlines()[-lines:])[-limit:]
 
 
-def start(port=None, directory=None, timeout=180):
+def _sync_running_endpoint(port, found, api_port, timeout):
+    """Reapply the current endpoint environment to a running stack.
+
+    `odysseus.ps1` is commonly run after the API port or virtual gateway has
+    changed. Adoption used to return before Compose saw the new URL, leaving a
+    healthy-looking Odysseus pointed at a dead address. Re-applying the service
+    environment is safe and idempotent; it does not remove containers or
+    volumes. Compose avoids a restart when the environment is already current.
+    """
+    if api_port is None or not found or not command():
+        return True, "adopted"
+
+    with _lock:
+        result = _run([command(), "compose", "up", "-d", "odysseus"],
+                      cwd=found, timeout=max(30, int(timeout)),
+                      env=_compose_env(api_port))
+    if result is None:
+        return False, (f"Odysseus is running, but synchronizing its Locally "
+                       f"endpoint timed out after {int(timeout)}s.")
+    if result.returncode != 0:
+        detail = _tail(result.stderr) or _tail(result.stdout) or "no output"
+        return False, (f"Odysseus is running, but its Locally endpoint could "
+                       f"not be synchronized:\n{detail}")
+    return True, "adopted; endpoint synchronized"
+
+
+def start(port=None, directory=None, timeout=180, api_port=None):
     """Adopt a running Odysseus, or bring the compose stack up. Returns (ok, detail).
 
-    Adoption comes first and touches Docker not at all: a user who already has
-    Odysseus up gets their session, not a redundant `compose up` that races
-    their own containers for the port.
+    Adoption comes first. If an API port is supplied, a running stack gets an
+    idempotent Compose environment refresh when its endpoint is stale; this is
+    what makes the launcher repair a moved Windows gateway automatically.
 
     Every failure returns a sentence a person can act on. "Failed" plus a
     Docker exit code is what makes people uninstall things.
@@ -449,9 +592,12 @@ def start(port=None, directory=None, timeout=180):
 
     if _serves(port):
         _probe.set(True)
-        _started_dir = _started_dir or find_dir(
+        found = _started_dir or find_dir(
             directory or getattr(config, "ODYSSEUS_DIR", None))
-        return True, "adopted"
+        ok, detail = _sync_running_endpoint(port, found, api_port, timeout)
+        if ok:
+            _started_dir = found
+        return ok, detail
 
     found = find_dir(directory or getattr(config, "ODYSSEUS_DIR", None))
     if not found:
@@ -481,7 +627,7 @@ def start(port=None, directory=None, timeout=180):
         # also builds/pulls images, which is minutes. It gets the whole budget,
         # and the port poll below gets whatever is left.
         result = _run([command(), "compose", "up", "-d"], cwd=found,
-                      timeout=max(30, int(timeout)), env=_compose_env())
+                      timeout=max(30, int(timeout)), env=_compose_env(api_port))
     if result is None:
         _stop_managed_podman_machine_if_idle()
         return False, (f"`{engine_name()} compose up -d` did not finish within "
@@ -515,6 +661,63 @@ def start(port=None, directory=None, timeout=180):
     return False, (f"Odysseus's containers started but nothing answered on port "
                    f"{port} within {int(timeout)}s. Check `{engine_name()} compose logs` "
                    f"in {found}, and that APP_PORT is {port}.")
+
+
+_CONTAINER_API_PROBE = r"""
+import json, sys, urllib.request
+url = sys.argv[1].rstrip('/') + '/models'
+with urllib.request.urlopen(url, timeout=float(sys.argv[2])) as response:
+    body = json.load(response)
+models = [item.get('id') for item in body.get('data', [])
+          if isinstance(item, dict) and item.get('id')]
+print(json.dumps({'status': response.status, 'models': models}))
+""".strip()
+
+
+def probe_api(api_port=None, directory=None, timeout=6):
+    """Read /v1/models from inside the managed Odysseus container.
+
+    A host curl proves only that locally answered itself.  This crosses the
+    Compose network and Windows firewall using the same address Odysseus was
+    given, so success here is evidence for the integration the user runs.
+    """
+    base = api_base_url(api_port)
+    found = find_dir(directory or getattr(config, "ODYSSEUS_DIR", None))
+    exe = command()
+    result = {"reachable": False, "url": base, "models": []}
+    if not found:
+        result["detail"] = "No Odysseus checkout found."
+        return result
+    if not exe:
+        result["detail"] = "No Docker-compatible container engine was found."
+        return result
+    try:
+        seconds = max(1, min(60, int(timeout)))
+    except (TypeError, ValueError):
+        seconds = 6
+    completed = _run(
+        [exe, "compose", "exec", "-T", "odysseus", "python", "-c",
+         _CONTAINER_API_PROBE, base, str(seconds)],
+        cwd=found, timeout=seconds + 10, env=_compose_env(api_port))
+    if completed is None:
+        result["detail"] = f"Container probe timed out after {seconds}s."
+        return result
+    if completed.returncode != 0:
+        result["detail"] = (_tail(completed.stderr) or _tail(completed.stdout)
+                            or "Container probe failed with no output.")
+        return result
+    try:
+        line = next(line for line in reversed(completed.stdout.splitlines())
+                    if line.strip().startswith("{"))
+        body = json.loads(line)
+        result["reachable"] = int(body.get("status", 0)) == 200
+        result["models"] = [str(m) for m in body.get("models", []) if m]
+        result["detail"] = (f"HTTP 200; {len(result['models'])} model(s)"
+                            if result["reachable"] else
+                            f"HTTP {body.get('status', 'unknown')}")
+    except (StopIteration, ValueError, TypeError, json.JSONDecodeError) as exc:
+        result["detail"] = f"Container returned an unreadable probe result: {exc}"
+    return result
 
 
 def stop(port=None):

@@ -245,6 +245,70 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   **75 s cold / 66 s warm per turn**, vs 369 s before. Tool calls execute
   correctly; answer *quality* is a separate question — a 30B int4 miscounted
   files in a Glob result on the first try.
+- **`api.ps1` was silently discarding the launcher's whole model configuration**
+  (fixed 2026-09-10, and this is the one that actually hid the user's models).
+  `api.ps1` forwards `--port 8000` GNU-style, because an installer-generated
+  `start.ps1` passes its arguments straight to locally.py. PowerShell does not
+  recognise `--port` as a parameter name, so under default binding it fills the
+  POSITIONAL parameters instead: `$ChatModels = '--port'`, `$ModelsDir = '8000'`.
+  Neither model name exists, `Test-Path '8000'` is false, so the launcher fell
+  back to searching the REPO ROOT and started from the `model` symlink with
+  `--models-dir C:\Projects\Nollama`. Result: `/v1/models` advertising **two**
+  models -- the two symlinks in the repo root -- on a machine holding six.
+  Qwen3.5-9B and Ornith were missing exactly as reported.
+  Two things make this worth the entry. It is **completely silent**: the server
+  starts, answers, and its short list looks like a correct list, which is why
+  three sessions of work on discovery and on Odysseus found nothing wrong with
+  either -- both were right, and both were being handed the wrong directory.
+  And it **only reproduces through the documented entry point**: running
+  `scripts/locally-launch.ps1 -Port 8000` directly binds correctly and shows
+  all six, so every test that skipped `api.ps1` passed. `--port` also never
+  reached argparse, so `api.ps1 -Port 9000` served 8000.
+  `[CmdletBinding(PositionalBinding = $false)]` is the fix: an unrecognised
+  flag lands in `$ExtraArgs` and is forwarded, which is where it was always
+  meant to go. The script then reads a forwarded `--port` back out, or its
+  preflight would probe a port nobody asked about. **Test the entry point the
+  user runs, not the script it calls.**
+- **"Odysseus sees no models" was never a discovery bug** (fixed 2026-09-10).
+  Both surfaces had already been made to advertise what is on disk, and they
+  were doing it correctly: measured with the ordinary launcher, `/v1/models`,
+  `:11434/v1/models` and `/api/tags` each returned all six, and Odysseus's OWN
+  `ModelDiscovery` run inside its own container found all six on both ports.
+  Nothing was asking, because **nothing brought Odysseus up or told it where
+  the API was**. Three causes, and the third is the one that hides:
+  (1) `odysseus-autostart.json` was a **fossil**. `save_autostart()` was its
+  only writer and went with the retired web UI, while `configure.py` kept
+  READING it -- so a `false` clicked once in a settings panel that no longer
+  exists pinned the feature off forever, with no supported way to clear it. A
+  read with no write is the bug; `load_autostart` is now tri-state (None means
+  nobody has said anything), a file without the `set_by` stamp is reported as
+  a fossil and IGNORED OUT LOUD rather than silently overridden, and
+  `locally.py odysseus autostart on|off` is the writer it lacked. The default
+  is now "yes when a checkout is actually here" -- the checkout is the consent,
+  and `start()` adopts a running stack rather than racing it.
+  (2) The autostart path called `start(timeout=...)` with **no `api_port`**, and
+  `_sync_running_endpoint` early-returns on `api_port is None`. So the endpoint
+  repair -- the entire point of which is fixing a moved WSL gateway -- existed
+  only for a human typing `odysseus.ps1`, and an already-running Odysseus
+  pointed at a dead address stayed that way. This is why the symptom survived
+  a session that "fixed" it.
+  (3) **`host.docker.internal` does not point at Windows under Podman.**
+  Measured in a container here: it resolves to `169.254.1.2`, the Podman VM's
+  own gateway, while `default via 172.17.96.1` is the host. Anything configured
+  with that name fails with a connection error indistinguishable from "locally
+  is down". `_container_host()` prefers the live WSL/Podman adapter on
+  Windows+Podman and keeps the alias elsewhere; the address comes from
+  `netguard.virtual_ipv4_adapters()`, so it is always inside a subnet
+  `--allow-from auto` already admits. Never hardcode it -- WSL reassigns it.
+  The endpoint is handed over as **shell environment for the Compose call**,
+  which outranks the checkout's `.env` during interpolation, so the user's
+  Odysseus directory is never written to. Verified through `api.ps1` with
+  nothing configured: autostart on from the checkout, stack up in 19.3 s
+  (3.0 s adopting one already running, endpoint synchronized), and
+  `[odysseus] container reached http://172.17.96.1:8000/v1: 6 model(s)`.
+  **A host-side curl is not evidence for any of this** and must never again be
+  accepted as the acceptance test; `locally.py odysseus probe` runs the request
+  from inside the container, which is the only version that can fail.
 - **The 0.0.0.0 bind is required, so the filter is in the app** (`core/netguard.py`,
   2026-09-09). `--host` defaults to 0.0.0.0 because a container reaches the host
   over a virtual adapter and cannot see a loopback socket -- ODYSSEUS.md is built
@@ -526,6 +590,28 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   which is how "unload frees nothing" was once concluded. `_mem_status` reads
   `ullAvailPhys`, `_process_memory` reads `PrivateUsage`, and `_settle_memory`
   polls because the GPU driver releases asynchronously (~2 s, ~3 GB late).
+- **The model lifecycle does not leak, and the measurement is the deliverable**
+  (2026-09-10). Reported as "why is Windows using most of my RAM"; the useful
+  answer came from measuring the machine with locally **not running at all**:
+  31.5 GB total, 7.9 GB available, and 15.6 GB of private commit belonging to
+  ordinary desktop applications (three Electron assistants, two browser
+  processes, OneNote, Defender) plus a 1.3 GB WSL VM, plus ~2.2 GB kernel and
+  ~8 GB of reclaimable cache. Nothing in this repo moves that, and a change
+  that claimed to would be a lie.
+  Three unload/reload cycles and three swaps on `Qwen3-8B`/NPU: system
+  availability 8.95/8.94/8.93 GB loaded against 15.66/15.75/15.74 unloaded,
+  process private commit after unload **0.580 / 0.586 / 0.582 GB — 6 MB of
+  drift across the whole run**, working set 6.86 GB loaded and 0.14 GB
+  unloaded, identical every cycle. No retained native reference exists to find.
+  **The shape is the part worth knowing**: a loaded IR is mostly file-backed
+  mapped weights, so it is 6.9 GB of WORKING SET against 1.4 GB of PRIVATE
+  COMMIT. Task Manager shows the working set. Measuring this with RSS alone
+  says a model was never released; measuring with private commit alone says it
+  was never loaded. `_mem_status` reads `ullAvailPhys`, and every *commit*
+  figure now comes from `GetPerformanceInfo` (`CommitTotal`/`CommitLimit`) --
+  `GlobalMemoryStatusEx`'s `ullTotalPageFile`/`ullAvailPageFile` are the
+  CALLING PROCESS's commit limits, and labelling those `system_commit_*` is the
+  plausible-looking wrong number this file exists to prevent.
 - **GPU memory ceiling is a Windows policy, not hardware.** On the 358H,
   `GPU_DEVICE_TOTAL_MEM_SIZE` is 16.4 GB — exactly 52% of 31.5 GB RAM. The NPU
   reserves nothing (it exposes no memory-budget property and allocates from system
@@ -715,6 +801,119 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   diff them against every `Name` loaded. It found all five in one pass and reports
   zero across `locally.py` and every module in `core/`. Run it before trusting a
   future split.
+- **The split's fifth casualty was inside a string, where the AST sweep cannot
+  look** (fixed 2026-09-09). The rewrite that turned bare module globals into
+  `config.<NAME>` also rewrote `offload["OFFLOAD_RATIO"]` into
+  `offload["config.OFFLOAD_RATIO"]` -- an OpenVINO plugin property spelled as a
+  Python module path. OpenVINO answers an unknown property with `Check 'it !=
+  m_options_map.end()' failed ... Option not found: config.OFFLOAD_RATIO`, 12-25 s
+  into the load, naming the option and nothing that would point back here, so
+  **every model large enough to need MoE offload stopped loading on the GPU** --
+  gemma-4-26b and Qwen3-Coder-30B, i.e. exactly the two models offload exists for.
+  It survived a month because nothing reaches it without compiling a 14 GB MoE
+  onto a device: no test could afford it and no reader could see it. The sweep in
+  `tests/test_placement_and_listing.py` is the affordable half -- every legitimate
+  `config.NAME` in a string in this codebase is an f-string interpolation, so a
+  `config.<UPPER>` sitting in a *constant* (docstrings excepted) is the bug, and
+  the check is a parse rather than a load.
+- **`--device auto` never looked at the model** (fixed 2026-09-09). It read the
+  device list -- "NPU if there is one" -- which is right for the text model the
+  launcher usually picks and wrong for every other kind. `_choose_device` had
+  known the real answer since dynamic placement was written; only
+  `POST /v1/models/load` ever asked it, so the swap path placed models correctly
+  and the STARTUP path guessed. Starting `--device auto --model-dir <gemma-4-26b>`
+  therefore put a VLM on the NPU and died in the vpux compiler with `Chunking is
+  not implemented for Gemma model family yet`, under locally's own "Is another
+  process using the NPU?" -- a wrong question about a model that was placed on
+  hardware with no vision path at all. `core/launch/slots.py:_auto_device` now
+  calls the same function the swap path calls, and prints what it decided:
+  `Placement: ruled out NPU: NPU has no working vision path; GPU: fits (15.7/25.3
+  GB)`. Two bugs, one symptom: with the offload string above still broken, the
+  correctly-placed GPU load then failed too, which is why "gemma will not load"
+  looked like one fault and was two.
+- **Both fixes `/v1/models` got, `/api/tags` did not** (fixed 2026-09-09). List an
+  idle-unloaded slot (f706201), list what is on disk (6de0d52) -- both landed on
+  the OpenAI surface alone, and the Ollama surface is Odysseus's best-trodden
+  path. So a picker built from `/api/tags` showed **one** model on a server
+  holding six loadable ones, and showed **none** after an idle unload, which a
+  polling client reads as "backend offline". Both surfaces now build from
+  `_models_data()`; the Ollama one strips the `@DEVICE` suffix on the way out,
+  because an Ollama client treats the tag as a name rather than an address. Port
+  11434 also answers `GET /v1/models` now: it already served
+  `/v1/chat/completions`, so `http://host:11434/v1` as a plain OpenAI base URL
+  could chat but 404'd the one call a model picker makes first.
+- **The launcher never turned the utility models on** (fixed 2026-09-09).
+  `scripts/locally-launch.ps1` passed neither `--util-models-dir` nor
+  `--auto-util`, so a normal `api.ps1` start had document reading, OCR, local
+  search and upscaling **off** while the models sat in `~/models/util` and
+  `/health.util` reported `null`. The auto-discovery written to end exactly this
+  ("a setup error dressed up as a missing download") could not fire either,
+  because the flag that enables it is opt-in and nothing opted in. The test is
+  now `ocr-det/inference.onnx` -- OCR is the minimum the utilities need -- and
+  unlike the audio engines this costs nothing at startup, since utility slots
+  already wait on the chat model's load event. Verified through the launcher:
+  `/health.util.npu` ready with read, layout, search, upscale, detect,
+  background and rerank; `/v1/util/read` returning 12,842 chars of README.md and
+  OCRing a rendered PNG word for word.
+  **This was reverted once and had to be put back** (2026-09-10). The revert
+  argued that a conventional `~/models/util` directory is not consent to
+  reserve accelerator memory -- which is the right rule for the AUDIO engines
+  and the wrong one here, and the difference is measurable rather than a
+  matter of taste. Audio slots compile eagerly and sit in the voice critical
+  path; utility slots wait on the chat model's load event and then compile on
+  first USE, so the whole startup cost is OCR's ~160 MB: chat-ready at 9.7 s
+  with utilities on against 9.6 s with them off. What the revert cost was
+  `/health.util` back to `null` on an ordinary start, i.e. exactly the silent
+  failure the fix above exists to prevent, reported the same way both times
+  ("do they still support images, documents"). The default is the conventional
+  directory gated on the OCR pair; `-UtilModels ''` turns it off. The warning
+  about a missing OCR pair fires only for a directory the user NAMED --
+  warning about the default would fire on every start of a clean install.
+- **Every non-streaming reply reported `usage: {-1, -1, -1}`** (fixed
+  2026-09-09). Not a missing value: OpenAI's schema makes those fields
+  non-negative integers, so a client reads -1 as a *number* and budgets its next
+  request from it, and both Obsidian's Copilot and Claude Code do exactly that.
+  The counts were never missing either -- `_record_turn` pulls them off the same
+  `result` to write `/v1/metrics`. They had nowhere to ride back to the caller,
+  because the chat paths pass a plain `str` and never see the result object. So
+  `GeneratedText` carries `usage` alongside `finish_reason` (same reasoning that
+  put `finish_reason` there), and `usage_block()` shapes it. Read it BEFORE
+  `parse_tool_calls`, which returns an ordinary string and drops the attribute.
+  Unknown is now 0, not -1 -- at least a legal value for the field. Measured:
+  Qwen3-8B/NPU, `{prompt 18, completion 7, total 25}`.
+  **Two things this uncovered, both invisible until the number was real.**
+  (1) Reading a genai result's `perf_metrics` TWICE is not idempotent -- on the
+  VLM pipeline the second read comes back empty. `_record_turn` read it, then
+  `GeneratedText` read it again and got nothing, so `/v1/metrics` logged
+  `token_count_source: native` for a turn whose reply carried zeros. One read,
+  two consumers. (2) `_builtin_tool_turn` returns whatever `parse_tool_calls`
+  hands back, which is an ordinary `str`, so it dropped the counts AND the
+  finish reason -- and since the built-in tools are OFFERED rather than
+  requested, **every ordinary turn goes through that loop whenever
+  `--search-url` or `--python-tool` is set**, which the launcher does the moment
+  `searxng-src` exists. So on a normal start every answer was labelled
+  `finish_reason: "stop"`, including one cut off at `max_tokens` -- the exact
+  mislabelling `extract_finish_reason` was written to end, regressed on a
+  different path. It re-wraps now, reporting the FINAL round's counts: that
+  round's prompt is the one that produced the answer, which keeps the numbers
+  comparable with a turn that called no tool. Summing the rounds would answer
+  "what did this turn cost", which is not what a client sizing its next request
+  is asking. Measured on gemma-4-26b/GPU: `max_tokens 12` now returns
+  `finish_reason: length` with `{prompt 262, completion 12}`.
+- **The retired UI's server side is gone** (2026-09-09). An import-graph walk from
+  the four entry points (`locally`, `core.cli`, `core.app`, `core.terminal`) found
+  eight modules nothing could reach: `core/opencode_web.py`, and
+  `core/system/{access,browser,coding,odysseus_api,setup,setup_actions,setup_info}.py`
+  -- the first-run setup wizard, the Code tab's OpenCode embedding, the browser
+  handoff, and the Odysseus control-panel endpoints. **The bullets below still
+  describe them as live; they are history now.** `/health` no longer carries
+  `opencode_web`, and framing OpenCode is not a thing this program does.
+  `core/odysseus.py` is untouched and still reachable -- autostart and
+  `odysseus.ps1` work as documented; only the HTTP buttons went. Coding mode went
+  with them: `config.CODING_MODE` was still read on the audio and utility paths,
+  but its only writer was the deleted UI endpoint and there is no flag, so the
+  refusal could never fire and its message told you to turn it off in a Settings
+  panel that no longer exists. 1,538 lines out of `core/`, 140 tests still green.
 - Web UI: `templates/index.html` + **nine** stylesheets in `static/css/` + ES modules
   under `static/js/` (`main.js` is the entry point and does nothing but import and
   `init()`), four tabs (Chat / Voice / Code / Tools). Chat and Voice share **one**

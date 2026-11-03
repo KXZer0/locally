@@ -27,6 +27,36 @@ function Show-LaunchError([string]$Message) {
     }
 }
 
+function Invoke-ContainerProbe([int]$TimeoutSeconds = 6) {
+    $python = Join-Path $PSScriptRoot 'venv\Scripts\python.exe'
+    $entry = Join-Path $PSScriptRoot 'locally.py'
+    $lines = @(& $python $entry odysseus probe --port "$Port" `
+        --api-port "$ApiPort" --timeout "$TimeoutSeconds" 2>&1)
+    $json = $lines | Where-Object { "$_" -match '^\s*\{' } | Select-Object -Last 1
+    if (-not $json) {
+        return [pscustomobject]@{ reachable = $false; models = @(); detail = ($lines -join "`n") }
+    }
+    try { return $json | ConvertFrom-Json }
+    catch { return [pscustomobject]@{ reachable = $false; models = @(); detail = ($lines -join "`n") } }
+}
+
+function Repair-ContainerFirewall {
+    $repair = Join-Path $PSScriptRoot 'scripts\odysseus-firewall.ps1'
+    if (-not (Test-Path -LiteralPath $repair)) {
+        throw "Scoped firewall repair was not found at $repair."
+    }
+    $hostCommand = Get-Command pwsh -ErrorAction SilentlyContinue
+    if (-not $hostCommand) { $hostCommand = Get-Command powershell -ErrorAction SilentlyContinue }
+    if (-not $hostCommand) { throw 'PowerShell was not found for the scoped firewall repair.' }
+    $quotedRepair = '"' + ($repair -replace '"', '\"') + '"'
+    $arguments = "-NoProfile -ExecutionPolicy Bypass -File $quotedRepair -Port $ApiPort"
+    $process = Start-Process -FilePath $hostCommand.Source -Verb RunAs -WindowStyle Hidden `
+        -ArgumentList $arguments -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "Scoped firewall repair exited with code $($process.ExitCode)."
+    }
+}
+
 if ($CreateShortcut) {
     if ($env:OS -ne 'Windows_NT') { throw '-CreateShortcut is available on Windows.' }
     $shortcutPath = Join-Path $PSScriptRoot 'odysseus.lnk'
@@ -95,7 +125,9 @@ if (-not $apiRunning) {
     }
 }
 
-if (-not $odysseusRunning) {
+# Always call the lifecycle command. When the stack is already running it
+# adopts it and reapplies the current Locally endpoint/gateway environment;
+# this repairs a stale Podman/WSL address without asking the user to edit .env.
     $python = Join-Path $PSScriptRoot 'venv\Scripts\python.exe'
     $entry = Join-Path $PSScriptRoot 'locally.py'
     if (-not (Test-Path -LiteralPath $python)) {
@@ -103,7 +135,8 @@ if (-not $odysseusRunning) {
         exit 1
     }
     try {
-        $output = @(& $python $entry odysseus start --port "$Port" --timeout 240 2>&1)
+        $output = @(& $python $entry odysseus start --port "$Port" `
+            --api-port "$ApiPort" --timeout 240 2>&1)
         if ($LASTEXITCODE -ne 0) {
             $detail = $output -join "`n"
             try {
@@ -119,11 +152,39 @@ if (-not $odysseusRunning) {
         Show-LaunchError "Odysseus did not start.`n`n$detail"
         exit 1
     }
-}
 
 if (-not $odysseusRunning) {
     Show-LaunchError "Odysseus did not answer on port $Port."
     exit 1
+}
+
+# A loopback curl proves that Locally can call itself.  Odysseus has to cross
+# the Compose network and Windows firewall, so verify from the real container.
+$link = Invoke-ContainerProbe 6
+if (-not $link.reachable) {
+    $listener = Get-NetTCPConnection -State Listen -LocalPort $ApiPort -ErrorAction SilentlyContinue
+    if (-not ($listener.LocalAddress -contains '0.0.0.0')) {
+        Show-LaunchError "Locally is not listening on 0.0.0.0:$ApiPort, so Odysseus cannot reach it. Start the normal API with api.ps1."
+        exit 1
+    }
+    try {
+        Repair-ContainerFirewall
+    } catch {
+        Show-LaunchError "Odysseus could not reach Locally from its container, and the scoped firewall repair failed.`n`n$($_.Exception.Message)`n`nProbe: $($link.detail)"
+        exit 1
+    }
+    $link = Invoke-ContainerProbe 10
+}
+if (-not $link.reachable) {
+    Show-LaunchError "Odysseus still cannot reach Locally from its container.`n`n$($link.detail)"
+    exit 1
+}
+
+$modelNames = @($link.models)
+if ($modelNames.Count) {
+    Write-Host "Odysseus reached Locally; models: $($modelNames -join ', ')"
+} else {
+    Write-Warning 'Odysseus reached Locally, but the API currently advertises no chat models.'
 }
 
 Start-Process $odysseusUrl

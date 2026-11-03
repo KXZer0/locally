@@ -6,7 +6,6 @@ point of reporting the device is that the answer is checkable.
 """
 from core import runtime
 from core.errors import _TurnError, openai_error
-from core.coding_mode import _coding_mode_error
 
 
 def _slot_serviceable(slot):
@@ -61,9 +60,6 @@ def _util_slot(engine):
     if want not in UTIL_ENGINES:
         raise _TurnError(openai_error(
             f"Unknown engine '{engine}'. Use 'npu', 'gpu' or 'cpu'."))
-    blocked = _coding_mode_error("the local utility models")
-    if blocked is not None:
-        raise _TurnError(blocked)
     slot = _util_slots()[want]
     if slot is not None and slot.status in ("loading", "warming_up"):
         # Configured and on its way, which is a different sentence from "not

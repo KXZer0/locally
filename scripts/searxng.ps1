@@ -27,7 +27,7 @@
 #requires -Version 7.0
 param(
     [string] $SearxRoot = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'searxng-src'),
-    [int]    $Port      = 8080,
+    [int]    $Port      = 8081,
     [switch] $Install,
     [switch] $Update
 )

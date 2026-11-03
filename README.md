@@ -119,7 +119,11 @@ Type a question and press Enter. Alt+Enter inserts a newline. Type `/` to browse
 
 `/load` clears the current conversation, and model load/unload affects every client connected to that API. `/copy` and `/save` preserve the original Markdown, not terminal formatting; `/save` never overwrites an existing file. Pasted multiline text remains editable before you send it in terminals that support bracketed paste. Use Ctrl+V or Ctrl+Shift+V, depending on your terminal, or use `/paste`.
 
-`/read`, `/index`, `/find`, `/upscale`, and `/voice` need optional models. Start the API with `--whisper-dir`, `--tts-dir`, or `--util-models-dir` to enable those features. Voice also needs `sounddevice` on the client: `python -m pip install sounddevice`.
+`/read`, `/index`, `/find`, `/upscale`, and `/voice` need optional models.
+
+The document and image utilities come up on their own when the models are there: `api.ps1` looks in `%USERPROFILE%\models\util` and enables them if it finds both `ocr-det\inference.onnx` and `ocr-rec\inference.onnx`. They cost nothing at startup, because utility slots wait for the chat model to finish loading and then compile on first use. Point somewhere else with `-UtilModels DIR`, or turn them off with `-UtilModels ''`. Starting `locally.py` directly, the flag is `--util-models-dir DIR`. `GET /health` names each engine and the tasks it can serve.
+
+Audio models stay off unless named, because they compile eagerly and sit in the voice critical path: pass `--whisper-dir` and `--tts-dir`. Voice also needs `sounddevice` on the client: `python -m pip install sounddevice`.
 
 ## Shortcut and Copilot key
 
@@ -150,9 +154,13 @@ Windows’ built-in **Customize Copilot key** option accepts signed MSIX apps in
 
 ## Connect another client
 
-Use an OpenAI-compatible provider with the base URL `http://127.0.0.1:8000/v1`. Read loaded model IDs from `GET /v1/models`; they look like `model-name@NPU`. If your client insists on an API key, enter `local`; locally does not validate it.
+Use an OpenAI-compatible provider with the base URL `http://127.0.0.1:8000/v1`. If your client insists on an API key, enter `local`; locally does not validate it.
 
-Ollama compatibility is available on port 11434 unless disabled with `--ollama-port 0`. Anthropic Messages compatibility is available at `POST /v1/messages`.
+`GET /v1/models` lists **the resident model and every loadable model directory on disk**, so a client's model picker has something to pick from. The resident one carries a device suffix (`gemma-4-26b-a4b-it@GPU`); an unloaded one is named alone, because placement is decided at load time from the model's own IR. **Naming any of them in a chat request loads it** and answers from it — one model is resident at a time, so picking a different one is a swap that the triggering turn pays for (about 10–60 s). See [Copilot setup](docs/COPILOT.md) for the Obsidian version of this.
+
+Ollama compatibility is available on port 11434 unless disabled with `--ollama-port 0`; it advertises the same models through `/api/tags` and `/v1/models`, without the device suffix. Anthropic Messages compatibility is available at `POST /v1/messages`.
+
+Images, documents and audio still work headlessly. Send images as OpenAI `image_url` content blocks (data URLs included) to a vision model — or to a text model, which reads them with the OCR utilities instead. Send documents to `POST /v1/util/read`: images and scanned PDFs go through OCR, while PDF/DOCX/PPTX/XLSX/XLS/HTML/EPUB/CSV/text are converted in memory and return `engine: null`. Speech is `POST /v1/audio/transcriptions` and `POST /v1/audio/speech`.
 
 For a client in a Docker container on this Windows computer, start the API with `--host 0.0.0.0` and use `http://host.docker.internal:8000/v1` inside the container.
 
@@ -195,15 +203,19 @@ python locally.py --model-dir model --cors-origin 'vscode-webview://*'
 ## Use Odysseus
 
 Odysseus runs the assistant interface; Locally supplies its model over HTTP.
-In Odysseus, add an OpenAI-compatible model provider with this base URL:
+In Odysseus, add an OpenAI-compatible model provider with the URL printed by
+`.\odysseus.ps1` after it detects the container engine. For Docker Desktop it
+is:
 
 ```text
 http://host.docker.internal:8000/v1
 ```
 
 Use the exact model ID shown by `GET http://127.0.0.1:8000/v1/models`. The
-container must use `host.docker.internal`, because `localhost` inside the
-container points back to Odysseus itself.
+container must use a host-reachable address, because `localhost` inside the
+container points back to Odysseus itself. On Podman for Windows the launcher
+selects the live WSL gateway automatically; use the URL it reports rather than
+copying a stale numeric address.
 
 Once Odysseus and a Docker-compatible container engine are installed, this
 single command starts Locally and the Odysseus stack when needed, then opens
@@ -220,7 +232,8 @@ Install the same action as a Start-menu and Desktop shortcut with:
 ```
 
 The shortcut never stops either service. It adopts services that are already
-running and opens `http://127.0.0.1:7000`.
+running, refreshes a stale Locally endpoint, verifies the container can read
+`/v1/models`, and opens `http://127.0.0.1:7000`.
 
 ## Troubleshooting
 
@@ -232,20 +245,32 @@ running and opens `http://127.0.0.1:7000`.
 | The terminal says the model is loading | Wait. The client waits while `/health` reports `loading`; first compile takes longest. |
 | No model can be loaded | Run `.\venv\Scripts\python.exe locally.py --list-models $HOME\models`, or rerun the installer. |
 | The hardware key does nothing | Open the Start-menu shortcut once to confirm it works, then configure the key-remapping tool to launch that shortcut. |
+| Odysseus shows no models | Run `.\odysseus.ps1`. It refreshes the endpoint Odysseus was given and then reads `/v1/models` **from inside the container**, which is the only check that proves the link. A `curl` on the host only proves locally can call itself. |
+| Windows says memory is nearly full | See below — a loaded model is mostly mapped file pages, and it is probably not what is using your RAM. |
 
-## API reference and development
+### Where the memory goes
+
+A loaded model shows up as a large **working set** and a small **private commit**, because its weights are mapped from the IR on disk rather than allocated. Measured here on a 31.5 GB machine, `Qwen3-8B` int4 on the NPU: 6.9 GB working set against 1.4 GB private. Task Manager's *Memory* column shows the working set, which is why a loaded model looks like it has eaten the machine.
+
+Unloading gives it back. `POST /v1/models/unload {}`, or `--idle-timeout`, returned **7.1 GB** of system-wide availability, and three unload/reload cycles plus three model swaps drifted by 6 MB — that is, not at all. If Windows reports little free memory with locally unloaded, the memory is somewhere else: on the development machine, 15.6 GB of private commit belonged to ordinary desktop applications (several Electron apps, a browser, Defender) plus a 1.3 GB WSL VM, and about 8 GB more was reclaimable file cache that Windows hands back on demand.
 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Readiness and enabled model slots |
-| `GET /v1/models` | Loaded model IDs |
+| `GET /v1/models` | Resident model plus every loadable model on disk |
 | `GET /v1/models/available` | Local model discovery and placement information |
 | `POST /v1/models/load` | Load a model: `{ "model": "name", "device": "NPU" }` |
 | `POST /v1/models/unload` | Unload slots: `{}` or `{ "device": "NPU" }` |
-| `POST /v1/chat/completions` | OpenAI chat, including SSE streaming |
+| `POST /v1/chat/completions` | OpenAI chat, including SSE streaming and images |
 | `POST /v1/messages` | Anthropic Messages compatibility |
+| `POST /v1/util/read` | Read a document or image to Markdown |
+| `POST /v1/util/index`, `/v1/util/search` | Index and search local files |
+| `POST /v1/util/upscale`, `/background`, `/detect` | Image utilities |
+| `POST /v1/audio/transcriptions`, `/v1/audio/speech` | Speech to text, text to speech |
 | `GET /v1/memory` | Available memory and offload state |
 | `GET /v1/metrics` | Recent recorded turns |
+
+The `/v1/util/*` and `/v1/audio/*` rows need their optional models loaded; `GET /health` says which are available.
 
 Show server options with `.\venv\Scripts\python.exe locally.py --help` and chat options with `.\venv\Scripts\python.exe locally.py chat --help`. `--scan` inspects models without loading them; `--list-models [DIR]` prints script-friendly discovery.
 

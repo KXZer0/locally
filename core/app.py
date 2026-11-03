@@ -19,6 +19,8 @@ def create_app():
     app.config["MAX_CONTENT_LENGTH"] = config.MAX_REQUEST_BYTES
     attach_guard(app)
     attach_cors(app)
+    from core.tools.activity import register as register_activity
+    register_activity(app)
     app.register_blueprint(chat_bp)
     app.register_blueprint(models_bp)
     app.register_blueprint(audio.bp)

@@ -3,9 +3,10 @@
 A model often ignores the format it was asked for and falls back to what it
 was trained on, so every native dialect is recognised: Qwen3-Coder XML,
 Hermes JSON-in-<tool_call>, bare <function=> with no wrapper (Qwen2.5-Coder),
-Mistral [TOOL_CALLS], Llama <|python_tag|>, DeepSeek blocks, and a bare-JSON
+Mistral [TOOL_CALLS], Liquid <|tool_call_start|>, Llama <|python_tag|>, DeepSeek blocks, and a bare-JSON
 fallback."""
 
+import ast
 import json
 import re
 import uuid
@@ -30,6 +31,90 @@ _PARAM_RE = re.compile(r"<parameter=([^>\s]+)\s*>(.*?)</parameter>", re.DOTALL)
 #   DeepSeek  : <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME
 #               ```json\n{...}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>
 _MISTRAL_RE = re.compile(r"\[TOOL_CALLS\]")
+
+
+# Liquid LFM2/LFM2.5: <|tool_call_start|>[fn(a="x", b=2), g()]<|tool_call_end|>
+# -- a Python list of calls, not JSON.
+_LFM_RE = re.compile(r"<\|tool_call_start\|>(.*?)<\|tool_call_end\|>", re.DOTALL)
+
+
+def _lfm_calls(block):
+    """[(name, args)] from one Pythonic call list; [] when it is not one."""
+    try:
+        tree = ast.parse(block.strip(), mode="eval").body
+    except (SyntaxError, ValueError):
+        return []
+    nodes = tree.elts if isinstance(tree, ast.List) else [tree]
+    out = []
+    for node in nodes:
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            return []
+        try:
+            args = {kw.arg: ast.literal_eval(kw.value)
+                    for kw in node.keywords if kw.arg}
+        except (ValueError, SyntaxError):
+            return []
+        out.append((node.func.id, args))
+    return out
+
+
+# Google Gemma 4: <|tool_call>call:NAME{key:<|"|>text<|"|>,n:3,ok:true}<tool_call|>
+# -- unquoted keys, strings fenced by <|"|>, nested {..} and [..] allowed.
+_GEMMA_RE = re.compile(r"<\|tool_call>\s*call:([^\s{]+)\s*\{(.*?)\}\s*<tool_call\|>", re.DOTALL)
+_GEMMA_Q = '<|"|>'
+
+
+def _gemma_value(s, i):
+    """Parse one Gemma-encoded value starting at s[i]; return (value, next_i)."""
+    n = len(s)
+    if s.startswith(_GEMMA_Q, i):
+        j = s.index(_GEMMA_Q, i + len(_GEMMA_Q))
+        return s[i + len(_GEMMA_Q):j], j + len(_GEMMA_Q)
+    if s[i] == "{":
+        out, i = {}, i + 1
+        while i < n and s[i] != "}":
+            k = i
+            while s[i] != ":":
+                i += 1
+            key = s[k:i].strip().replace(_GEMMA_Q, "")
+            out[key], i = _gemma_value(s, i + 1)
+            if i < n and s[i] == ",":
+                i += 1
+        return out, i + 1
+    if s[i] == "[":
+        out, i = [], i + 1
+        while i < n and s[i] != "]":
+            v, i = _gemma_value(s, i)
+            out.append(v)
+            if i < n and s[i] == ",":
+                i += 1
+        return out, i + 1
+    j = i
+    while j < n and s[j] not in ",}]":
+        j += 1
+    raw = s[i:j].strip()
+    low = raw.lower()
+    if low in ("true", "false"):
+        return low == "true", j
+    if low in ("null", "none"):
+        return None, j
+    try:
+        return int(raw), j
+    except ValueError:
+        pass
+    try:
+        return float(raw), j
+    except ValueError:
+        return raw, j
+
+
+def _gemma_args(body):
+    """Arguments dict from the text between the call's outer braces."""
+    try:
+        val, _ = _gemma_value("{" + body + "}", 0)
+    except (ValueError, IndexError):
+        return None
+    return val if isinstance(val, dict) else None
 
 
 _PYTHON_TAG_RE = re.compile(r"<\|python_tag\|>")
@@ -69,6 +154,47 @@ def _coerce_value(raw, json_type):
     except (ValueError, TypeError):
         pass
     return raw
+
+
+_NAMED_PARAM_RE = re.compile(
+    r"<parameter(?:=([^>\s]+)|\s+name\s*=\s*[\"']?([^\"'>\s]+)[\"']?)\s*>(.*?)</parameter>",
+    re.DOTALL)
+_BARE_PARAM_RE = re.compile(r"<parameter\s*>(.*?)</parameter>", re.DOTALL)
+_CHILD_TAG_RE = re.compile(r"<([A-Za-z_][\w.-]*)\s*>(.*?)</\1\s*>", re.DOTALL)
+
+
+def _function_params(body, name, param_types):
+    """Arguments from the inside of one `<function=NAME>...</function>`.
+
+    Models say this several ways and only the first is the one we asked for:
+      <parameter=url>x</parameter>            (the requested form)
+      <parameter name="url">x</parameter>
+      <parameter>{"url": "x"}</parameter>     (JSON object, parameter unnamed)
+      <function=f>{"url": "x"}</function>     (JSON object, no parameter tag)
+      <parameter><url>x</url></parameter>     (child tags named for the argument)
+    Gemma 4 E4B drifts into the unnamed forms a few steps into a long run; each
+    used to parse to {} and go out as a tool call with no arguments at all.
+    """
+    types = param_types.get(name, {})
+    args = {}
+    for m in _NAMED_PARAM_RE.finditer(body):
+        k = (m.group(1) or m.group(2)).strip()
+        args[k] = _coerce_value(m.group(3), types.get(k, "string"))
+    if args:
+        return args
+    chunks = [m.group(1) for m in _BARE_PARAM_RE.finditer(body)] or [body]
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if chunk[:1] == "{":
+            for obj in _json_calls(chunk):
+                if isinstance(obj, dict):
+                    inner = obj.get("arguments") if isinstance(obj.get("arguments"), dict) else obj
+                    args.update(inner)
+        else:
+            for k, v in _CHILD_TAG_RE.findall(chunk):
+                if not types or k in types:
+                    args[k] = _coerce_value(v, types.get(k, "string"))
+    return args
 
 
 def _extract_name_args(obj):
@@ -179,6 +305,25 @@ def parse_tool_calls(text, tools):
                          "arguments": json.dumps(args, ensure_ascii=False)},
         })
 
+    lfm = _LFM_RE.findall(text)
+    if lfm:
+        content = _LFM_RE.sub("", text).strip()
+        for block in lfm:
+            for name, args in _lfm_calls(block):
+                add(name, args)
+        if tool_calls:
+            return content, tool_calls
+
+    gem = _GEMMA_RE.findall(text)
+    if gem:
+        content = _GEMMA_RE.sub("", text).strip()
+        for name, body in gem:
+            args = _gemma_args(body)
+            if args is not None:
+                add(name.strip(), args)
+        if tool_calls:
+            return content, tool_calls
+
     blocks = _TOOL_CALL_RE.findall(text)
     if blocks:
         content = _TOOL_CALL_RE.sub("", text).strip()
@@ -187,11 +332,7 @@ def parse_tool_calls(text, tools):
             m = _FUNCTION_RE.search(block)
             if m:
                 name = m.group(1).strip()
-                args = {}
-                for k, v in _PARAM_RE.findall(m.group(2)):
-                    k = k.strip()
-                    args[k] = _coerce_value(v, param_types.get(name, {}).get(k, "string"))
-                add(name, args)
+                add(name, _function_params(m.group(2), name, param_types))
             else:
                 # JSON inside <tool_call> (Hermes / Qwen2.5 style)
                 try:
@@ -213,11 +354,7 @@ def parse_tool_calls(text, tools):
         content = _strip_tool_markup(_FUNCTION_RE.sub("", text))
         for m in fn_blocks:
             name = m.group(1).strip()
-            args = {}
-            for k, v in _PARAM_RE.findall(m.group(2)):
-                k = k.strip()
-                args[k] = _coerce_value(v, param_types.get(name, {}).get(k, "string"))
-            add(name, args)
+            add(name, _function_params(m.group(2), name, param_types))
         if tool_calls:
             return content, tool_calls
 

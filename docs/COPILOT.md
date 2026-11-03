@@ -84,9 +84,39 @@ different on-disk model is therefore a swap when you pick it, not an instant
 switch. Keep a single entry for day-to-day use and add others only when you
 actually need to move between them.
 
+## Optional utilities
+
+Selecting a model in Copilot only selects a generative model; it does not turn
+on audio, OCR, document, image, or search utility models. The launcher leaves
+those optional models off by default. To serve document and image utilities,
+start the API with an explicit utility directory, for example
+`.\api.ps1 -UtilModels "$HOME\models\util"`; the directory needs both
+`ocr-det\inference.onnx` and `ocr-rec\inference.onnx`. When launching `locally.py`
+directly, use `--util-models-dir DIR` or the explicit discovery flag
+`--auto-util`. `GET /health` reports the enabled utility engines.
+
 ## Ollama surface
 
 Copilot can also use the Ollama provider type against `http://127.0.0.1:11434`
 (unless started with `--ollama-port 0`). That surface advertises the same models
 **without** the `@DEVICE` suffix — Ollama clients treat the tag as a name — so
-the bare id is the only form there.
+the bare id is the only form there. `GET /v1/models` answers on that port too,
+for a client configured with `http://127.0.0.1:11434/v1` as a plain
+OpenAI-compatible base URL.
+
+## If the picker shows only one model
+
+Check which port and path the plugin is pointed at, then ask that endpoint
+directly:
+
+```powershell
+curl.exe -s http://127.0.0.1:8000/v1/models
+curl.exe -s http://127.0.0.1:11434/api/tags
+```
+
+Both should list the resident model plus every loadable directory on disk. If
+they list one, the server predates the fix that made `/api/tags` and
+`/v1/models` build from the same discovery — pull and restart. If they list
+several and the plugin still shows one, the plugin is the limit, not the
+server: Copilot has no "list the provider's models" concept and needs **one
+custom-model entry per model**, as above.

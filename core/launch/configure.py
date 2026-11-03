@@ -29,6 +29,11 @@ def configure(args):
     config.CHECK_UPDATES = bool(args.check_updates)
     config.AGENT_TOOLS = ({t.strip() for t in args.agent_tools.split(",") if t.strip()}
                    if args.agent_tools else None)
+    config.ANTHROPIC_MODEL_MAP = {
+        k.strip().lower(): v.strip()
+        for k, _, v in (part.partition("=") for part in
+                        (args.anthropic_model_map or "").split(","))
+        if k.strip() and v.strip()}
     config.MAX_IMAGE_DIM = args.max_dim
     config.DEBUG_REQUESTS = args.debug
     config.VSCODE_COMPAT = args.vscode_compat
@@ -65,6 +70,10 @@ def configure(args):
                 root = guess
                 break
     config.SEARXNG_ROOT = root if root and os.path.isdir(root) else None
+    # core/web/search.py reads its own copies (same split trap as WEB_SEARCH_URL
+    # below); without these, on-demand SearXNG start and idle-stop never saw a root.
+    web_search_mod.SEARXNG_ROOT = config.SEARXNG_ROOT
+    web_search_mod.SEARXNG_IDLE = config.SEARXNG_IDLE
     # Assign the MODULE attribute, never a local copy. core/web/search.py owns
     # this value: it is what `web_search_status()` reads and what /health
     # reports. locally.py used to keep its own module-level WEB_SEARCH_URL and
@@ -85,17 +94,27 @@ def configure(args):
     config.ODYSSEUS_PORT = int(args.odysseus_port or config.ODYSSEUS_PORT)
     config.ODYSSEUS_DIR = (os.path.abspath(os.path.expanduser(args.odysseus_dir))
                            if args.odysseus_dir else None)
-    # None means the flag was not given, so fall back to what the settings
-    # toggle saved. An explicit --odysseus-autostart / --no- always wins, the
-    # same precedence locally.ini.example states for every other setting.
-    # The one persisted preference still read: it is machine-local state
+    # Flag, then the saved preference, then "yes when a checkout is here" --
+    # resolved in core/odysseus.py so `locally.py odysseus status` and the
+    # server cannot disagree about what will happen. The one persisted
+    # preference still read: it is machine-local state
     # (odysseus-autostart.json), not a browser setting, and the thing it
     # controls happens at startup, so a value that does not survive a restart
-    # could never take effect. An explicit flag still wins, which is the
-    # precedence locally.ini.example states for every other setting.
-    config.ODYSSEUS_AUTOSTART = (bool(args.odysseus_autostart)
-                                 if args.odysseus_autostart is not None
-                                 else odysseus.load_autostart())
+    # could never take effect.
+    fossil = odysseus.fossil_autostart_file()
+    if fossil:
+        # Say it rather than flipping the behaviour in silence: the file is a
+        # real click the user made, in a settings panel that has since been
+        # deleted along with its only writer.
+        path, value = fossil
+        print(f"  Ignoring {os.path.basename(path)} (autostart="
+              f"{str(bool(value)).lower()}): it was written by the retired "
+              f"settings panel and has had no writer since. Set it with "
+              f"`python locally.py odysseus autostart on|off`.", flush=True)
+    config.ODYSSEUS_AUTOSTART, autostart_why = odysseus.autostart_setting(
+        args.odysseus_autostart, config.ODYSSEUS_DIR)
+    if config.ODYSSEUS_AUTOSTART:
+        print(f"  Odysseus autostart: {autostart_why}", flush=True)
     config.PYTHON_TOOL_ENABLED = bool(args.python_tool)
     config.PYTHON_SANDBOX = args.python_sandbox
     config.PYTHON_TOOL_TIMEOUT = max(0.1, min(60.0, float(args.python_timeout)))

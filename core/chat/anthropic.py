@@ -9,11 +9,13 @@ from flask import Response, jsonify, request
 from core import config, runtime
 from core.chat.common import (_maybe_capture_prewarm, _sse_tool_stream,
                               _turn_headers, make_id, parse_messages)
-from core.chat.turn import _prepare_turn
+from core.chat.turn import _builtin_tool_turn, _prepare_turn
 from core.errors import _TurnError, openai_error
 from core.genai.results import explain_genai_error
 from core.genai.tokens import _count_tokens
 from core.slots.route import _match_loaded
+from core.tools.builtin import _builtin_generator, _builtin_stream
+from core.tools.gemma import split_reasoning
 from core.tools.parse import parse_tool_calls
 from core.tools.text import _strip_tool_markup, strip_thinking
 from core.voice.think_filter import _ThinkFilter
@@ -25,6 +27,45 @@ def _anthropic_text(content):
     parts = [b.get("text", "") for b in (content or [])
              if isinstance(b, dict) and b.get("type") == "text"]
     return "\n".join(p for p in parts if p)
+
+
+def _resolve_claude_model(name):
+    """Map a claude-* model name to what locally should serve.
+
+    Returns "" (= whatever is resident, the fast default) unless the user opted
+    in with --anthropic-model-map "opus=gemma-4-26b-a4b-it@GPU". Keys are
+    case-insensitive substrings of the requested name; only claude-* names are
+    touched, so a request naming a real local model is routed as before.
+    """
+    low = (name or "").lower()
+    if not low.startswith("claude"):
+        return name
+    for key, target in (config.ANTHROPIC_MODEL_MAP or {}).items():
+        if key in low:
+            return target
+    return ""
+
+
+def _thinking_off(raw):
+    """True unless the client asked for extended thinking."""
+    t = raw.get("thinking")
+    return not (isinstance(t, dict) and t.get("type") in ("enabled", "adaptive"))
+
+
+def _split_tools(tools):
+    """(client tools, server tool types). Anthropic server tools carry a
+    versioned `type` (web_search_20260209, web_fetch_*, code_execution_*);
+    client tools have no type or type "custom"."""
+    client, server = [], []
+    for t in tools or []:
+        if not isinstance(t, dict):
+            continue
+        ttype = t.get("type")
+        if ttype and ttype != "custom":
+            server.append(ttype)
+        else:
+            client.append(t)
+    return client, server
 
 
 def _anthropic_to_openai(body):
@@ -82,25 +123,47 @@ def _anthropic_to_openai(body):
         messages.extend(tool_results)
 
     out = {"messages": messages,
-           "model": body.get("model", ""),
+           "model": _resolve_claude_model(body.get("model", "")),
            "max_tokens": body.get("max_tokens", 4096),
            "stream": bool(body.get("stream", False))}
     if body.get("temperature") is not None:
         out["temperature"] = body["temperature"]
     if body.get("top_p") is not None:
         out["top_p"] = body["top_p"]
-    if body.get("tools"):
+    client_tools, server_tools = _split_tools(body.get("tools"))
+    if client_tools:
         out["tools"] = [{"type": "function",
                          "function": {"name": t.get("name", ""),
                                       "description": t.get("description", ""),
                                       "parameters": t.get("input_schema") or {}}}
-                        for t in body["tools"] if isinstance(t, dict)]
+                        for t in client_tools]
+    # Server tools are Anthropic's to run, not ours to relay. web_search maps to
+    # locally's built-in search (offered by default when --search-url is set);
+    # anything else is dropped rather than shown to the model as a client tool
+    # whose call nobody could fulfil.
+    dropped = [t for t in server_tools if not t.startswith("web_search_")]
+    if dropped:
+        print(f"{datetime.now():%H:%M:%S} -- anthropic server tool(s) not "
+              f"supported, dropped: {', '.join(dropped)}", flush=True)
+    if any(t.startswith("web_search_") for t in server_tools):
+        out["web_search"] = True
+    if body.get("calculator") is False:
+        out["calculator"] = False
+    if body.get("web_search") is False:
+        out["web_search"] = False
+    if _thinking_off(body):
+        out["no_think"] = True      # honoured in _prepare_turn (Qwen3 only)
+    else:
+        out["thinking"] = body["thinking"]   # Gemma 4: thinking_requested()
+        # Native Gemma tool turns preserve their thought channel with tools enabled.
     return out
 
 
-def _anthropic_blocks(text, tool_calls):
-    """OpenAI text + tool_calls -> Anthropic content blocks."""
+def _anthropic_blocks(text, tool_calls, reasoning=""):
+    """OpenAI text + tool_calls -> Anthropic content blocks (thinking first)."""
     blocks = []
+    if reasoning:
+        blocks.append({"type": "thinking", "thinking": reasoning, "signature": ""})
     if text:
         blocks.append({"type": "text", "text": text})
     for tc in tool_calls or []:
@@ -234,17 +297,34 @@ def anthropic_messages():
               f"({len(raw.get('tools') or [])} tools)", flush=True)
 
     try:
-        turn = _prepare_turn(_anthropic_to_openai(raw))
+        body = _anthropic_to_openai(raw)
+        # Gemma 4 thinking needs its own chat template (buffered turns only).
+        # Plain buffered Gemma turns need its template too, not just thinking.
+        # Cleanup must not fall through to a flattened VLM tool prompt.
+        turn = _prepare_turn(body, native=not body["stream"] and not body.get("tools"))
     except _TurnError as e:
         return e.response
 
     slot, gen, t0 = turn["slot"], turn["gen"], turn["t0"]
+    builtin = turn["python_tool_active"]
     msg_id = f"msg_{make_id()}"
     created = int(time.time())
     input_tokens = _count_tokens(slot, turn["text_prompt"])
 
     if turn["stream"]:
-        if slot.model_type == "vlm":
+        # builtin first: _builtin_streamer drives a VLM slot too, and a VLM
+        # that was checked first never got its web_search / python round trip.
+        if builtin:
+            frames = _builtin_stream(slot, turn["raw_messages"], gen,
+                                     turn["builtin_specs"], turn, msg_id,
+                                     created, t0)
+        elif slot.model_type == "vlm" and turn["tools_active"]:
+            frames = _sse_tool_stream(
+                slot, turn["raw_messages"], gen, turn["tools"], msg_id,
+                created, t0,
+                generate=lambda: slot.generate_vlm(turn["text_prompt"],
+                                                   turn["images"], gen))
+        elif slot.model_type == "vlm":
             frames = slot.stream_vlm(turn["text_prompt"], turn["images"], gen,
                                      msg_id, created, t0)
         elif turn["tools_active"]:
@@ -259,7 +339,13 @@ def anthropic_messages():
         )
 
     try:
-        if slot.model_type == "vlm":
+        if builtin:
+            text, _runs = _builtin_tool_turn(
+                _builtin_generator(slot, gen, turn), turn["raw_messages"],
+                turn["builtin_specs"], slot, native=turn.get("native_builtin", False))
+        elif turn.get("native_prompt"):
+            text = slot.generate_native(turn["native_prompt"], gen)
+        elif slot.model_type == "vlm":
             text = slot.generate_vlm(turn["text_prompt"], turn["images"], gen)
         else:
             _maybe_capture_prewarm(turn["raw_messages"])
@@ -271,6 +357,10 @@ def anthropic_messages():
         return openai_error(f"Inference failed: {err}", "server_error", 500)
 
     generation_finish = getattr(text, "finish_reason", "stop")
+    reasoning = getattr(text, "reasoning", "") if turn.get("thinking") else ""
+    if turn.get("native_prompt"):
+        captured, text = split_reasoning(str(text))
+        reasoning = captured if turn.get("thinking") else ""
     tool_calls = []
     if turn["tools_active"]:
         text, tool_calls = parse_tool_calls(text, turn["tools"])
@@ -283,6 +373,9 @@ def anthropic_messages():
         stripped = _strip_tool_markup(
             text.replace("<think>", "").replace("</think>", ""))
     text = stripped
+    from core.tools.activity import request_id, clean_citations
+    if builtin and request_id() and any(run.get("tool") == "web_search" for run in _runs):
+        text = clean_citations(text)
 
     elapsed = time.perf_counter() - t0
     out_tokens = _count_tokens(slot, text) or len(text.split())
@@ -292,7 +385,7 @@ def anthropic_messages():
     resp = jsonify({
         "id": msg_id, "type": "message", "role": "assistant",
         "model": slot.model_name,
-        "content": _anthropic_blocks(text, tool_calls),
+        "content": _anthropic_blocks(text, tool_calls, reasoning),
         "stop_reason": "tool_use" if tool_calls else (
             "max_tokens" if generation_finish == "length" else "end_turn"),
         "stop_sequence": None,

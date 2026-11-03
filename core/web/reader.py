@@ -12,7 +12,6 @@ import ipaddress
 import re
 import socket
 import urllib.error
-from urllib.parse import urlparse
 
 from core.errors import _TurnError, openai_error
 

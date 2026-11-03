@@ -11,7 +11,6 @@ reading rather than costing text OCR already read correctly."""
 import io
 import time
 
-from core.errors import _TurnError, openai_error
 from core.slots.select import _util_slot
 import threading
 

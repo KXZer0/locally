@@ -7,8 +7,7 @@ No server, no device init, no model load."""
 import json
 import os
 
-from .geometry import (_kv_attention_layers, _kv_bytes_per_token, _model_max_context,
-                       _text_config)
+from .geometry import _kv_attention_layers, _kv_bytes_per_token, _text_config
 from .identity import (_is_generative_dir, _is_model_dir, is_vlm,
                        resolve_display_name)
 from .integrity import _dir_size_bytes, _verify_weights_integrity

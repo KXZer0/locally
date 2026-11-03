@@ -6,16 +6,13 @@ the pages run out, so WHICH passages survive matters more than how many."""
 
 import concurrent.futures
 import re
-import threading
 import time
 
-from core import config
-from core.web.reader import _html_to_markdown, _http_fetcher
-from core.web.search import _WEB_UA, _searx, _web_grounded_blocks
+from core.web.search import _WEB_UA, _searx
 from core.documents.read import _native_document_markdown
 from core.genai.results import explain_genai_error
 from core.tools.text import strip_thinking
-from core.web.search import WEB_SEARCH_URL
+from core.web import search as web_search_mod
 import json
 import openvino_genai as ovg
 from core.web.fetch_page_cfg import _WEB_ANALYZE_DEFAULT_MAX_TOKENS
@@ -200,7 +197,7 @@ def _web_search_hits(query, count):
     """Ask SearXNG for results. Returns [{url,title,snippet}]."""
     import urllib.parse
     import urllib.request
-    base = WEB_SEARCH_URL.rstrip("/")
+    base = web_search_mod.WEB_SEARCH_URL.rstrip("/")
     url = f"{base}/search?" + urllib.parse.urlencode(
         {"q": query, "format": "json", "safesearch": "0"})
     req = urllib.request.Request(url, headers={"User-Agent": _WEB_UA})
@@ -359,7 +356,7 @@ def _web_search_run(body):
         hits = _web_search_hits(query, _WEB_MAX_RESULTS)
     except Exception as e:
         yield "error", (f"Could not reach the search backend at "
-                        f"{WEB_SEARCH_URL}: {e}", 502)
+                        f"{web_search_mod.WEB_SEARCH_URL}: {e}", 502)
         return
     t_search = time.perf_counter() - t0
     if not hits:
@@ -381,7 +378,9 @@ def _web_search_run(body):
                 text, reason = fut.result()
             except Exception as e:
                 text, reason = None, f"{type(e).__name__}"
+            from core.tools.activity import record
             if text:
+                record("read", "Read " + str(hit.get("title") or hit["url"])[:160], url=hit["url"])
                 pages[hit["url"]] = text
             else:
                 fetch_failures[hit["url"]] = reason
@@ -396,7 +395,11 @@ def _web_search_run(body):
     for hit in hits:
         text = pages.get(hit["url"])
         if text:
-            for c in _util_chunks(text, hit["title"]):
+            page_chunks = _util_chunks(text, hit["title"])
+            if body.get("per_url"):
+                # One long page must not use the whole chunk budget.
+                page_chunks = page_chunks[:_WEB_MAX_CHUNKS // 8]
+            for c in page_chunks:
                 c["url"] = hit["url"]
                 chunks.append(c)
         elif hit["snippet"]:
@@ -438,7 +441,19 @@ def _web_search_run(body):
 
     scores = np.asarray(vectors) @ query_vector[0]
     pool_size = min(len(chunks), max(top_k, _UTIL_RERANK_POOL))
-    pool_idx = [int(i) for i in np.argsort(scores)[::-1][:pool_size]]
+    per_url = int(body.get("per_url") or 0)
+    ranked_idx = [int(i) for i in np.argsort(scores)[::-1]]
+    if per_url:
+        # Breadth for the built-in tool: cap each page's share of the rerank
+        # pool, else one long docs page is the whole pool.
+        counts, spread = {}, []
+        for i in ranked_idx:
+            u = chunks[i].get("url")
+            if counts.get(u, 0) < per_url * 2:
+                counts[u] = counts.get(u, 0) + 1
+                spread.append(i)
+        ranked_idx = spread
+    pool_idx = ranked_idx[:pool_size]
     order, reranked, t_rerank = pool_idx[:top_k], False, 0.0
     cross = {}
     try:
@@ -451,10 +466,22 @@ def _web_search_run(body):
                                 if chunks[i].get("snippet") else 0.0), i)
                   for sc, i in zip(rr, pool_idx)]
         order = [i for _s, i in sorted(ranked, key=lambda p: p[0],
-                                       reverse=True)[:top_k]]
+                                       reverse=True)]
         reranked = True
     except UtilityUnavailable:
-        pass          # ordering is an improvement, not a dependency
+        order = pool_idx
+    # per_url: a caller that wants breadth (the built-in tool) caps how many
+    # passages one page may take, else a long docs page fills every slot.
+    taken = {}
+    if per_url:
+        kept = []
+        for i in order:
+            u = chunks[i].get("url")
+            if taken.get(u, 0) < per_url:
+                taken[u] = taken.get(u, 0) + 1
+                kept.append(i)
+        order = kept
+    order = order[:top_k]
 
     results = [{
         "text": chunks[i]["text"],
@@ -479,6 +506,7 @@ def _web_search_run(body):
 
     payload = {
         "query": query, "results": results, "sources": sources,
+        "snippets": {h["url"]: h["snippet"] for h in hits if h.get("snippet")},
         "reranked": reranked, "engine": engine,
         "pages_read": len(pages), "pages_found": len(hits),
         "chunks_ranked": len(chunks), "chunks_found": found,

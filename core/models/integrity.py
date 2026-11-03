@@ -6,7 +6,6 @@ realistic failure (#17), corruption-in-place is out of scope."""
 
 import os
 import re
-import xml.etree.ElementTree as ET
 
 
 def _file_or_dir_size(path):
