@@ -20,8 +20,6 @@
     ProxySlot probes the upstream at load and refuses to start without it, but
     it does so 20 lines into a startup log you may not be watching.
 
-    Companion doc: docs/ODYSSEUS.md.
-
 .EXAMPLE
     .\scripts\locally-proxy.ps1
 
@@ -37,8 +35,8 @@ param(
     # /v1/chat/completions itself, so a trailing /v1 here gives you a 404 on
     # /v1/v1/models — which reads as "wrong model" rather than "wrong URL".
     #
-    # Note this is the opposite convention from what you give ODYSSEUS, which
-    # does want the /v1 suffix. Different layers.
+    # Note this is the opposite convention from what you give an OpenAI
+    # client of locally, which does want the /v1 suffix. Different layers.
     [string] $ProxyUrl = 'http://localhost:11434',
 
     # Optional. Left empty, ProxySlot takes the first model the upstream
@@ -52,8 +50,8 @@ param(
     # or llama.cpp behind auth. Leave empty unless the upstream asks.
     [string] $ProxyKey = '',
 
-    # locally's OpenAI API. This is the port Odysseus points at:
-    #     http://host.docker.internal:8000/v1
+    # locally's OpenAI API. This is the port clients point at:
+    #     http://127.0.0.1:8000/v1
     [int] $Port = 8000,
 
     # 0 disables locally's own Ollama-compatible shim, and on this machine that
@@ -62,7 +60,7 @@ param(
     # client you point at 11434 gets whichever one won the race.
     #
     # Set this to a free port (e.g. 11435) only if you specifically want
-    # locally's shim as well — see docs/ODYSSEUS.md sec. 4.
+    # locally's shim as well.
     [int] $OllamaPort = 0,
 
     # 0 = never unload. Right for an assistant: it is queried in bursts all day,
@@ -90,7 +88,7 @@ param(
     [string] $WhisperDevice = 'CPU',
 
     # Trim a client's tool list server-side, keeping only these names. Not
-    # needed for Odysseus's assistant tools against a proxy slot — a REMOTE
+    # needed for small assistant tool sets against a proxy slot — a REMOTE
     # slot has no schema budget, that ceiling is an NPU constraint — but this
     # is the escape hatch when a client sends thirty schemas and prefill is the
     # whole wait. Try "Bash,Edit,Read,Write,Glob,Grep".
@@ -207,7 +205,7 @@ if (Test-PortOpen '127.0.0.1' $Port 400) {
     Write-Host ""
     Write-Host "Something already owns 127.0.0.1:$Port." -ForegroundColor Yellow
     Write-Host "  Probably locally is already running — check http://127.0.0.1:$Port/health"
-    Write-Host "  Pass -Port to use a different one (and update Odysseus's endpoint)."
+    Write-Host "  Pass -Port to use a different one (and update your client's endpoint)."
     exit 1
 }
 
@@ -298,10 +296,9 @@ if (Test-PortOpen '127.0.0.1' $Port 400) {
     Write-Host ""
     Write-Host "  The proxy slot warms with one real token before it reports ready;"
     Write-Host "  /v1/models stays empty until then. A proxy slot advertises as"
-    Write-Host "  '<model>@REMOTE' — give Odysseus that exact id."
+    Write-Host "  '<model>@REMOTE' — give your client that exact id."
     Write-Host ""
-    Write-Host "  Point Odysseus at:  http://host.docker.internal:$Port/v1" -ForegroundColor Cyan
-    Write-Host "  (host.docker.internal, NOT localhost — see docs/ODYSSEUS.md sec. 7)"
+    Write-Host "  Point your client at:  http://127.0.0.1:$Port/v1" -ForegroundColor Cyan
 } else {
     Write-Host "Port $Port never bound within 30s. Check $logDir\proxy-server.err" -ForegroundColor Red
     exit 1

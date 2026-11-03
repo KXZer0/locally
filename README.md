@@ -184,7 +184,7 @@ python locally.py --model-dir model --allow-from any --api-key 'choose-a-long-ra
 
 Clients then send `Authorization: Bearer <key>` or `X-Api-Key: <key>`. The server reads `$LOCALLY_API_KEY` when `--api-key` is absent, and the terminal client (`chat.ps1`) reads the same variable so it keeps working. Without `--api-key`, no key is required or checked.
 
-On Windows the firewall is a separate matter, and it governs *reachability* rather than safety: without an inbound allow rule the packets never arrive. See `docs/ODYSSEUS.md` for the scoped rule.
+On Windows the firewall is a separate matter, and it governs *reachability* rather than safety: without an inbound allow rule the packets never arrive.
 
 ### Clients that run in a browser (Obsidian, and anything embedded)
 
@@ -200,41 +200,6 @@ python locally.py --model-dir model --cors-origin 'vscode-webview://*'
 
 `--cors-origin '*'` allows every page in every open tab to drive your model, and locally checks no credentials — prefer naming the origin. `--no-cors` sends nothing at all.
 
-## Use Odysseus
-
-Odysseus runs the assistant interface; Locally supplies its model over HTTP.
-In Odysseus, add an OpenAI-compatible model provider with the URL printed by
-`.\odysseus.ps1` after it detects the container engine. For Docker Desktop it
-is:
-
-```text
-http://host.docker.internal:8000/v1
-```
-
-Use the exact model ID shown by `GET http://127.0.0.1:8000/v1/models`. The
-container must use a host-reachable address, because `localhost` inside the
-container points back to Odysseus itself. On Podman for Windows the launcher
-selects the live WSL gateway automatically; use the URL it reports rather than
-copying a stale numeric address.
-
-Once Odysseus and a Docker-compatible container engine are installed, this
-single command starts Locally and the Odysseus stack when needed, then opens
-Odysseus in your default browser:
-
-```powershell
-.\odysseus.ps1
-```
-
-Install the same action as a Start-menu and Desktop shortcut with:
-
-```powershell
-.\odysseus.ps1 -CreateShortcut -Desktop
-```
-
-The shortcut never stops either service. It adopts services that are already
-running, refreshes a stale Locally endpoint, verifies the container can read
-`/v1/models`, and opens `http://127.0.0.1:7000`.
-
 ## Troubleshooting
 
 | Problem | What to do |
@@ -245,7 +210,6 @@ running, refreshes a stale Locally endpoint, verifies the container can read
 | The terminal says the model is loading | Wait. The client waits while `/health` reports `loading`; first compile takes longest. |
 | No model can be loaded | Run `.\venv\Scripts\python.exe locally.py --list-models $HOME\models`, or rerun the installer. |
 | The hardware key does nothing | Open the Start-menu shortcut once to confirm it works, then configure the key-remapping tool to launch that shortcut. |
-| Odysseus shows no models | Run `.\odysseus.ps1`. It refreshes the endpoint Odysseus was given and then reads `/v1/models` **from inside the container**, which is the only check that proves the link. A `curl` on the host only proves locally can call itself. |
 | Windows says memory is nearly full | See below — a loaded model is mostly mapped file pages, and it is probably not what is using your RAM. |
 
 ### Where the memory goes

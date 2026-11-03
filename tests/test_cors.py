@@ -33,7 +33,7 @@ class OriginMatchTests(unittest.TestCase):
             self.assertEqual(origin_allowed(origin, config.CORS_ORIGINS), origin)
 
     def test_localhost_matches_on_any_port(self):
-        # The Odysseus and OpenCode pages are localhost with a port.
+        # Local web clients (OpenCode, harness UIs) are localhost with a port.
         for origin in ("http://localhost:7000", "http://127.0.0.1:4747"):
             self.assertEqual(origin_allowed(origin, config.CORS_ORIGINS), origin)
 

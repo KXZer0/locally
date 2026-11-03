@@ -283,7 +283,7 @@ class OwnedServer:
         self.log_path = self.log.name
         command = [sys.executable, str(Path(__file__).resolve().parents[1] / "locally.py"),
                    *self.server_args, "--port", str(self.port), "--host", "127.0.0.1",
-                   "--ollama-port", "0", "--no-odysseus-autostart"]
+                   "--ollama-port", "0"]
         self.process = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -917,7 +917,7 @@ def main(argv=None):
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure") and not stream.isatty():
             stream.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="Locally terminal client; Odysseus can use the same API.")
+    parser = argparse.ArgumentParser(description="Locally terminal client for a running locally server.")
     parser.add_argument("command", choices=("chat", "status"))
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--url", help="Server origin, e.g. http://127.0.0.1:8000 (without /v1)")

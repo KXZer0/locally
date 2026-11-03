@@ -2,8 +2,7 @@
 
 Machine B is an NVIDIA box. `locally` is OpenVINO, so it cannot drive a 4070 —
 there it runs `--proxy-url` against Ollama for chat, and OpenVINO **CPU** for the
-utility models. `scripts/locally-proxy.ps1` is the launcher and
-[ODYSSEUS.md](ODYSSEUS.md) §3 covers the setup.
+utility models. `scripts/locally-proxy.ps1` is the launcher.
 
 This file is the honest list of what is **not yet proven** on that machine. It is
 not a to-do list of features; it is the set of things that have never been run
@@ -70,7 +69,7 @@ and both are now **fixed and re-verified** on machine A (2026-08-30):
   the same literal again at `2422`, `2539` and `2568`. The reply was *"No utility
   models loaded on the NPU. … fetch them with `python scripts/npu-probe.py
   --all`"*: advice to provision an accelerator the machine does not have. Any
-  client that did not explicitly send `engine` hit this, Odysseus included.
+  client that did not explicitly send `engine` hit this.
   Now all four sites call `_default_util_engine()` (`core/slots/select.py`),
   which returns the first *loaded* engine in NPU → GPU → CPU order and only
   falls back to the literal when nothing at all is loaded. An explicit `engine`
@@ -116,24 +115,7 @@ To tune it, on each machine separately:
 between machines: it is stamped with the model that produced it, and embeddings
 from two models are not comparable.
 
-## 4. Odysseus is not installed anywhere yet
-
-[ODYSSEUS.md](ODYSSEUS.md) was written from the upstream repository, not from a
-running deployment. Points marked unconfirmed there are still unconfirmed — verify
-them against the version actually pulled, and correct that doc in place.
-
-`locally` now shows an **Odysseus** entry in the sidebar, but only when the address
-answers; it stays hidden otherwise, so an absent Odysseus costs nothing. The
-address is set in Settings → Odysseus (default `http://localhost:7000`).
-Reachability is probed **from the browser**, not from the server, because the
-browser is what follows the link — a phone that cannot reach Odysseus is not shown
-an entry that would dead-end for it.
-
-It is a link and must stay one: Odysseus sends HSTS, scopes cookies to its own
-hostname, and registers a service worker as an installable PWA. Each of the three
-breaks an embed independently. Full reasoning in ODYSSEUS.md.
-
-## 5. Unknown: whether the 4070 box's CPU is Intel or AMD
+## 4. Unknown: whether the 4070 box's CPU is Intel or AMD
 
 This changes how the CPU utility models feel, and nothing else. OpenVINO's CPU
 plugin runs on AMD, so the utilities will work either way — but it is tuned for
@@ -152,8 +134,6 @@ banner, so that machine has a baseline of its own.
 | CPU utility slot loads and serves OCR | yes, machine A | `--util-engines cpu`; `/health`; `/v1/util/read` → `X-Device: CPU` |
 | A utility request without `engine` reaches the loaded engine | fixed, machine A | request with no `engine` field → 200, `X-Device: CPU` |
 | Tools tab can select CPU | fixed, machine A | rendered page: CPU button active, "CPU ready" |
-| Odysseus entry hides/shows on reachability | yes, machine A | stub server on :7000, toggled off and on |
 | Real Ollama behind `--proxy-url` | **no** | Ollama is not installed on machine A |
 | Speaker threshold 0.35 separates two people | **no** | no profile enrolled anywhere |
-| Odysseus's own behaviour | **no** | not installed |
 | Anything at all on machine B | **no** | machine B has not been touched |

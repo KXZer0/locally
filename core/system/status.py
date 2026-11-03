@@ -6,7 +6,7 @@ from datetime import datetime
 
 from flask import jsonify, request
 
-from core import config, odysseus, runtime
+from core import config, runtime
 from core.chat.common import overall_status
 from core.chat.turn import python_tool_status
 from core.hardware.devices import (_gpu_shares_system_ram,
@@ -221,6 +221,3 @@ def _memory_data():
 
 
 atexit.register(_searx.stop)
-# Only ever stops a stack this process started, and `stop` never `down`, so
-# nothing the user has in Odysseus can be lost by locally exiting.
-atexit.register(odysseus.stop)

@@ -53,7 +53,7 @@ class HeadlessTests(unittest.TestCase):
         Listing only "ready" emptied /v1/models after the idle timeout while
         the server went on answering chat requests. A client that discovers
         models by polling this endpoint reads that as "backend offline" --
-        which is how a working NPU looked offline to Odysseus.
+        which is how a working NPU looked offline to a harness.
         """
         data = self._models(self._slot("idle_unloaded"))
         self.assertEqual([m["id"] for m in data], ["fixture-8b@NPU"])

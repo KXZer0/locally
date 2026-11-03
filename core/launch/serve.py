@@ -3,56 +3,10 @@
 import logging
 import os
 import threading
-import time
 
-from core import config, odysseus, runtime
+from core import config, runtime
 from core.startup import _idle_watchdog, _load_in_background
 from core.launch.quick_chat import start_shift_enter_chat
-
-
-def _autostart_odysseus(api_port):
-    """Bring Odysseus up (or adopt it) and hand it this server's address.
-
-    Module-level rather than a closure so it can be tested without standing up
-    two Flask apps and every slot.
-
-    **The api_port argument is the fix, not a tidy-up.** This path used to call
-    `start(timeout=...)` and nothing else, so `_sync_running_endpoint` hit its
-    `api_port is None` early return, answered "adopted", and changed nothing --
-    the endpoint repair existed only for a human typing `odysseus.ps1`. An
-    Odysseus that was already running against a moved WSL gateway therefore
-    stayed pointed at a dead address, which is exactly the state the user
-    reported ("odysseus cant reach my endpoint").
-
-    The probe at the end is the only honest confirmation: a host-side request
-    proves locally can call itself, while this crosses the Compose network from
-    inside the container the user actually runs.
-    """
-    found = odysseus.find_dir(config.ODYSSEUS_DIR)
-    if not found:
-        print("  [odysseus] no checkout found - nothing to start "
-              "(set --odysseus-dir or $ODYSSEUS_DIR)", flush=True)
-        return
-    endpoint = odysseus.api_base_url(api_port)
-    print(f"  [odysseus] starting {found}; its endpoint for this server is "
-          f"{endpoint} (a first run builds images and takes minutes)",
-          flush=True)
-    began = time.time()
-    ok, detail = odysseus.start(timeout=config.ODYSSEUS_START_TIMEOUT,
-                                api_port=api_port)
-    took = time.time() - began
-    if not ok:
-        print(f"  [odysseus] not started ({took:.1f}s): {detail}", flush=True)
-        return
-    print(f"  [odysseus] {detail} - {odysseus.url()} ({took:.1f}s)", flush=True)
-    link = odysseus.probe_api(api_port)
-    if link.get("reachable"):
-        print(f"  [odysseus] container reached {endpoint}: "
-              f"{len(link.get('models') or [])} model(s)", flush=True)
-    else:
-        print(f"  [odysseus] container could NOT reach {endpoint}: "
-              f"{link.get('detail')} - run odysseus.ps1, which repairs the "
-              f"scoped firewall rule", flush=True)
 
 
 def serve(app, ollama_app, args, model_dir, devices, setup_only, all_slots):
@@ -162,17 +116,6 @@ def serve(app, ollama_app, args, model_dir, devices, setup_only, all_slots):
 
     for t in threads:
         t.start()
-
-    # Odysseus autostart — on its own thread, never inline.
-    #
-    # `docker compose up -d` on a cold checkout builds the image from source
-    # (the compose service is `build: .`), which is minutes. Doing that before
-    # app.run() would mean locally refuses chat while waiting on an unrelated
-    # program, so the whole thing — the search, the Docker probe, the build —
-    # happens behind the server that is already answering.
-    if config.ODYSSEUS_AUTOSTART:
-        threading.Thread(target=_autostart_odysseus, args=(args.port,),
-                         daemon=True).start()
 
     # Idle watchdog — unload models after inactivity
     if args.idle_timeout > 0:
