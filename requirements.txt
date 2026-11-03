@@ -15,6 +15,8 @@ soundfile>=0.12.0
 # integration falls back safely when it is absent, but fresh installs need it
 # to select the live WSL/Podman gateway automatically.
 psutil>=5.9.0
+# The built-in calculator tool (core/tools/calculator.py) does exact math with it.
+sympy>=1.12
 
 # Local document -> Markdown for the Util reader. Keep the extras narrow:
 # [all] also pulls cloud/Azure, audio, Outlook and YouTube integrations that a

@@ -1154,6 +1154,9 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   can't load (EAGLE-3 drafts, new-family models); `venv/` keeps the old
   1.27/tf-4.57 stack that some exporters still need. 2026.3 passed the
   regression suite 2026-08-06.
+- **OpenVINO 2026.4.1 is the version in use** (2026-11-03). The dev box runs it,
+  and the test suite passes on it (199 passed, 9 skipped, on a Linux box with
+  no Intel accelerator, so the skips are the hardware-only tests).
 
 ## Development preferences
 
