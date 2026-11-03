@@ -123,7 +123,27 @@ Type a question and press Enter. Alt+Enter inserts a newline. Type `/` to browse
 
 The document and image utilities come up on their own when the models are there: `api.ps1` looks in `%USERPROFILE%\models\util` and enables them if it finds both `ocr-det\inference.onnx` and `ocr-rec\inference.onnx`. They cost nothing at startup, because utility slots wait for the chat model to finish loading and then compile on first use. Point somewhere else with `-UtilModels DIR`, or turn them off with `-UtilModels ''`. Starting `locally.py` directly, the flag is `--util-models-dir DIR`. `GET /health` names each engine and the tasks it can serve.
 
-Audio models stay off unless named, because they compile eagerly and sit in the voice critical path: pass `--whisper-dir` and `--tts-dir`. Voice also needs `sounddevice` on the client: `python -m pip install sounddevice`.
+Audio models stay off unless named, because they compile eagerly and sit in the voice critical path: pass `--asr-dir` (or `--whisper-dir`) and `--tts-dir`. Voice also needs `sounddevice` on the client: `python -m pip install sounddevice`.
+
+### Speech-to-text: Parakeet or Whisper
+
+`--asr-dir DIR` takes either engine and works out which from the folder's contents. The recommended model is NVIDIA's Parakeet TDT 0.6B v3 in FluidInference's OpenVINO export, [`FluidInference/parakeet-tdt-0.6b-v3-ov`](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-ov). It handles 25 European languages and is much faster than Whisper. The folder holds `parakeet_melspectogram`, `parakeet_encoder`, `parakeet_decoder` and `parakeet_joint` (each as `.xml` and `.bin`) plus `parakeet_vocab.json`.
+
+```powershell
+.\api.ps1 --asr-dir $env:USERPROFILE\models\parakeet-tdt-0.6b-v3-ov --asr-device CPU
+```
+
+`--asr-device` takes `CPU`, `GPU` or `NPU`, and the default is CPU. Use NPU only after the check script below passes on your machine. On the NPU the encoder is compiled for a fixed 10 s window (`--asr-npu-window-seconds`), and longer audio is cut into overlapping windows. On CPU and GPU the window is 30 s (`--asr-chunk-seconds`). `/v1/audio/transcriptions` accepts `response_format` set to `json`, `text` or `verbose_json`. `/health` reports the engine under `asr.engine`.
+
+Parakeet has no language setting: it detects the language itself. A `language` field is accepted and echoed back in `verbose_json` as `"language_applied": false`, but it does not change the result. The multilingual v3 sometimes picks the wrong language on short or unclear English clips (English transcribed as another language has been seen). If that happens often, Whisper with `language=en` is the engine that can be told.
+
+Before you rely on a device, check it on your own machine. Stop the server first.
+
+```powershell
+venv\Scripts\python.exe scripts\parakeet-check.py $env:USERPROFILE\models\parakeet-tdt-0.6b-v3-ov speech.wav --reference "what you said" --whisper-dir $env:USERPROFILE\models\whisper-model
+```
+
+For each device it prints the load time, the transcription, the word error rate and the real-time factor. A device that fails says why.
 
 ## Shortcut and Copilot key
 
