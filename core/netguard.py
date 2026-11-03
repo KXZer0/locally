@@ -2,9 +2,8 @@
 
 `--host` defaults to 0.0.0.0 and that is not an oversight -- a container
 reaches the host over a virtual adapter, and a 127.0.0.1 socket is invisible
-from inside Podman or WSL no matter how the firewall is set
-(docs/ODYSSEUS.md). The bind has to stay wide, so the filtering has to happen
-here.
+from inside Podman or WSL no matter how the firewall is set. The bind has to
+stay wide, so the filtering has to happen here.
 
 **It cannot happen in the firewall**, which is where this project used to put
 it. A scoped `New-NetFirewallRule -RemoteAddress 172.17.96.0/20` is correct on
@@ -90,33 +89,6 @@ def virtual_networks():
             # misread interface name can still never open the real LAN.
             if net and net.is_private and not net.is_link_local:
                 found.append(net)
-    return found
-
-
-def virtual_ipv4_adapters():
-    """Private IPv4 addresses that can act as a container-to-host gateway.
-
-    The source guard needs whole networks; Odysseus also needs the host-side
-    address inside one of those networks.  Keep both answers derived from the
-    same adapter-name and private-address rules so the URL we hand to a
-    container is always inside a network the API will admit.
-    """
-    try:
-        import psutil
-    except ImportError:
-        return []
-    found = []
-    for name, addrs in psutil.net_if_addrs().items():
-        if not _looks_virtual(name):
-            continue
-        for addr in addrs:
-            if addr.family != socket.AF_INET:
-                continue
-            net = _network_of(addr.address, addr.netmask)
-            if not net or not net.is_private or net.is_link_local:
-                continue
-            found.append({"name": name, "address": addr.address,
-                          "network": str(net)})
     return found
 
 

@@ -176,8 +176,8 @@ class OllamaListingTests(unittest.TestCase):
     """Port 11434 advertises what port 8000 advertises.
 
     Both fixes /v1/models got -- list an idle-unloaded slot, list what is on
-    disk -- were made on the OpenAI surface alone, and Odysseus's best-trodden
-    path is the Ollama one. A picker built from /api/tags therefore showed a
+    disk -- were made on the OpenAI surface alone, and many harnesses'
+    best-trodden path is the Ollama one. A picker built from /api/tags therefore showed a
     single model on a server holding six loadable ones.
     """
 

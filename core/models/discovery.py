@@ -34,7 +34,7 @@ def _models_data():
     # overall_status() both count it, and the chat path reloads it on demand --
     # so listing only "ready" advertised nothing after the idle timeout while
     # the server went on answering. A client that discovers models by polling
-    # this endpoint (Odysseus does) reads the empty list as "backend offline",
+    # this endpoint reads the empty list as "backend offline",
     # which is what it looks like fifteen quiet minutes after you last used it.
     data = []
     for slot in (runtime.primary, runtime.secondary):

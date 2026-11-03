@@ -112,7 +112,7 @@ def ollama_show():
             # schemas — 4,524 tokens, over half the window — which is the case
             # the budget exists to refuse. An NPU slot that will happily serve
             # a small tool set still shows as completion-only, and clients
-            # that simply send `tools` (Odysseus does) get them honored.
+            # that simply send `tools` get them honored.
             caps = ["completion"] + (["tools"] if _tools_supported(slot) else [])
             return jsonify({
                 "model": model_name,

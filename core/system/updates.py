@@ -25,7 +25,7 @@ from core import config
 # ---------------------------------------------------------------------------
 
 _UPDATE_TTL = 86400          # a day; nobody needs to know sooner
-_UPDATE_TIMEOUT = 6          # sources run together, so four dead ones cost ~6 s
+_UPDATE_TIMEOUT = 6          # sources run together, so dead ones cost ~6 s total
 _updates_cache = {"checked_at": 0.0, "sources": {}, "refreshing": False}
 _updates_lock = threading.Lock()
 
@@ -35,7 +35,6 @@ _UPDATE_SOURCES = {
     # locally does not need a release to exist: compare this checkout's HEAD
     # with public main. That keeps update notices useful between releases.
     "locally":  ("github_commit", "KXZer0/locally", "https://github.com/KXZer0/locally"),
-    "odysseus": ("github_release", "odysseus-dev/odysseus", "https://github.com/odysseus-dev/odysseus"),
     "searxng":  ("github_release", "searxng/searxng", "https://github.com/searxng/searxng"),
     "opencode": ("npm", "opencode-ai", "https://github.com/anomalyco/opencode"),
 }
@@ -83,15 +82,9 @@ def _local_version(name):
             out = subprocess.run(["opencode", "--version"], capture_output=True,
                                  text=True, timeout=10, shell=(os.name == "nt"))
             return (out.stdout or "").strip().split()[0].lstrip("v") or None
-        if name in ("odysseus", "searxng"):
-            env_name = "ODYSSEUS_DIR" if name == "odysseus" else "SEARXNG_ROOT"
-            candidates = [os.environ.get(env_name)]
-            if name == "odysseus":
-                candidates += [os.path.join(os.path.dirname(config.SCRIPT_DIR), "odysseus"),
-                               os.path.join(os.path.expanduser("~"), "odysseus")]
-            else:
-                candidates += [config.SEARXNG_ROOT,
-                               os.path.join(os.path.dirname(config.SCRIPT_DIR), "searxng-src")]
+        if name == "searxng":
+            candidates = [os.environ.get("SEARXNG_ROOT"), config.SEARXNG_ROOT,
+                          os.path.join(os.path.dirname(config.SCRIPT_DIR), "searxng-src")]
             for path in candidates:
                 if not path or not os.path.isdir(os.path.join(path, ".git")):
                     continue

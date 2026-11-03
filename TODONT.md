@@ -1501,7 +1501,7 @@ Two corollaries, both found the same day:
 
 ## Continuing the custom web UI (2026-09-04)
 
-The user chose external harnesses (such as Odysseus) as the main interface.
+The user chose external harnesses as the main interface.
 Locally now provides the headless API and a small optional terminal client.
 The browser frontend and native shell were removed; model files were retained.
 Do not restart UI redesign work from the historical checkpoint plans.

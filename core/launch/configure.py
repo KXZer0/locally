@@ -4,7 +4,7 @@ import os
 
 import flask.cli
 
-from core import config, odysseus
+from core import config
 from core.sandbox.python_exec import sandbox_status
 from core.hardware.devices import _gpu_has_xmx
 from core.models.describe import list_models, scan_models
@@ -90,31 +90,6 @@ def configure(args):
     if web_search_mod.WEB_SEARCH_URL:
         print(f"  Web search via {web_search_mod.WEB_SEARCH_URL} "
               f"(the only outbound network path this server has)", flush=True)
-    config.CONTAINER_ENGINE = args.container_engine
-    config.ODYSSEUS_PORT = int(args.odysseus_port or config.ODYSSEUS_PORT)
-    config.ODYSSEUS_DIR = (os.path.abspath(os.path.expanduser(args.odysseus_dir))
-                           if args.odysseus_dir else None)
-    # Flag, then the saved preference, then "yes when a checkout is here" --
-    # resolved in core/odysseus.py so `locally.py odysseus status` and the
-    # server cannot disagree about what will happen. The one persisted
-    # preference still read: it is machine-local state
-    # (odysseus-autostart.json), not a browser setting, and the thing it
-    # controls happens at startup, so a value that does not survive a restart
-    # could never take effect.
-    fossil = odysseus.fossil_autostart_file()
-    if fossil:
-        # Say it rather than flipping the behaviour in silence: the file is a
-        # real click the user made, in a settings panel that has since been
-        # deleted along with its only writer.
-        path, value = fossil
-        print(f"  Ignoring {os.path.basename(path)} (autostart="
-              f"{str(bool(value)).lower()}): it was written by the retired "
-              f"settings panel and has had no writer since. Set it with "
-              f"`python locally.py odysseus autostart on|off`.", flush=True)
-    config.ODYSSEUS_AUTOSTART, autostart_why = odysseus.autostart_setting(
-        args.odysseus_autostart, config.ODYSSEUS_DIR)
-    if config.ODYSSEUS_AUTOSTART:
-        print(f"  Odysseus autostart: {autostart_why}", flush=True)
     config.PYTHON_TOOL_ENABLED = bool(args.python_tool)
     config.PYTHON_SANDBOX = args.python_sandbox
     config.PYTHON_TOOL_TIMEOUT = max(0.1, min(60.0, float(args.python_timeout)))

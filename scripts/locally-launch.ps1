@@ -9,7 +9,7 @@
     the web UI -- is the CONFIGURATION. Which model lands on which device,
     which voice models load and where, the KV precision and context budget a
     27B needs in order to fit, and the SearXNG port that keeps locally's
-    search independent of Odysseus's are all measured decisions (CLAUDE.md,
+    search independent of any other SearXNG are all measured decisions (CLAUDE.md,
     TODONT.md). A bare `python locally.py` starts a server that runs and is
     configured differently: no ASR, no TTS, no VAD, f16 KV, a 2 GB pool.
 
@@ -82,8 +82,8 @@ param(
     # The KV pool IS the context window, and agent clients are what make it
     # matter: Claude Code alone sends ~35k tokens before you type.
     [string] $ContextTokens = '40000',
-    # 8081, not 8080. Odysseus publishes its own SearXNG on 127.0.0.1:8080, so
-    # on a machine running both, whichever starts first takes the port and the
+    # 8081, not 8080. 8080 is where other stacks commonly publish their own
+    # SearXNG, so on a machine running both, whichever starts first takes the port and the
     # other silently uses its neighbour's search engine.
     [int]    $SearxPort = 8081,
     # int8 KV halves cache bytes per token. Measured on the B390: same prefill

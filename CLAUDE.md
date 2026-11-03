@@ -4,7 +4,7 @@ OpenAI-compatible LLM/VLM server for Intel hardware. NPU-first.
 
 ## Current direction
 
-The user retired the custom web UI in favor of external harnesses such as Odysseus.
+The user retired the custom web UI in favor of external harnesses (API clients).
 Read README.md for the current headless API and optional terminal chat workflow.
 Old UI instructions below are historical; do not restore the browser shell.
 Audio/util models are opt-in and browser setup preferences are no longer read.
@@ -258,7 +258,7 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   Qwen3.5-9B and Ornith were missing exactly as reported.
   Two things make this worth the entry. It is **completely silent**: the server
   starts, answers, and its short list looks like a correct list, which is why
-  three sessions of work on discovery and on Odysseus found nothing wrong with
+  three sessions of work on discovery and on the client found nothing wrong with
   either -- both were right, and both were being handed the wrong directory.
   And it **only reproduces through the documented entry point**: running
   `scripts/locally-launch.ps1 -Port 8000` directly binds correctly and shows
@@ -269,50 +269,19 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   meant to go. The script then reads a forwarded `--port` back out, or its
   preflight would probe a port nobody asked about. **Test the entry point the
   user runs, not the script it calls.**
-- **"Odysseus sees no models" was never a discovery bug** (fixed 2026-09-10).
-  Both surfaces had already been made to advertise what is on disk, and they
-  were doing it correctly: measured with the ordinary launcher, `/v1/models`,
-  `:11434/v1/models` and `/api/tags` each returned all six, and Odysseus's OWN
-  `ModelDiscovery` run inside its own container found all six on both ports.
-  Nothing was asking, because **nothing brought Odysseus up or told it where
-  the API was**. Three causes, and the third is the one that hides:
-  (1) `odysseus-autostart.json` was a **fossil**. `save_autostart()` was its
-  only writer and went with the retired web UI, while `configure.py` kept
-  READING it -- so a `false` clicked once in a settings panel that no longer
-  exists pinned the feature off forever, with no supported way to clear it. A
-  read with no write is the bug; `load_autostart` is now tri-state (None means
-  nobody has said anything), a file without the `set_by` stamp is reported as
-  a fossil and IGNORED OUT LOUD rather than silently overridden, and
-  `locally.py odysseus autostart on|off` is the writer it lacked. The default
-  is now "yes when a checkout is actually here" -- the checkout is the consent,
-  and `start()` adopts a running stack rather than racing it.
-  (2) The autostart path called `start(timeout=...)` with **no `api_port`**, and
-  `_sync_running_endpoint` early-returns on `api_port is None`. So the endpoint
-  repair -- the entire point of which is fixing a moved WSL gateway -- existed
-  only for a human typing `odysseus.ps1`, and an already-running Odysseus
-  pointed at a dead address stayed that way. This is why the symptom survived
-  a session that "fixed" it.
-  (3) **`host.docker.internal` does not point at Windows under Podman.**
-  Measured in a container here: it resolves to `169.254.1.2`, the Podman VM's
-  own gateway, while `default via 172.17.96.1` is the host. Anything configured
-  with that name fails with a connection error indistinguishable from "locally
-  is down". `_container_host()` prefers the live WSL/Podman adapter on
-  Windows+Podman and keeps the alias elsewhere; the address comes from
-  `netguard.virtual_ipv4_adapters()`, so it is always inside a subnet
-  `--allow-from auto` already admits. Never hardcode it -- WSL reassigns it.
-  The endpoint is handed over as **shell environment for the Compose call**,
-  which outranks the checkout's `.env` during interpolation, so the user's
-  Odysseus directory is never written to. Verified through `api.ps1` with
-  nothing configured: autostart on from the checkout, stack up in 19.3 s
-  (3.0 s adopting one already running, endpoint synchronized), and
-  `[odysseus] container reached http://172.17.96.1:8000/v1: 6 model(s)`.
-  **A host-side curl is not evidence for any of this** and must never again be
-  accepted as the acceptance test; `locally.py odysseus probe` runs the request
-  from inside the container, which is the only version that can fail.
+- **The Odysseus integration was removed** (2026-11-03), at the user's request,
+  after they deleted Odysseus itself. It ran in Docker/Podman over WSL, and
+  keeping it meant container-engine probing, WSL-gateway discovery and an
+  autostart thread on every start for a program no longer installed. Gone: the
+  `locally.py odysseus` subcommand, `--odysseus-*` and `--container-engine`
+  flags, `core/odysseus*.py`, `odysseus.ps1`, its firewall/compose/diagnostic
+  scripts and docs. Kept, because they are general: `--allow-from auto`
+  (loopback + virtual-adapter subnets, which any container client and the
+  Podman Python sandbox rely on) and the localhost-any-port CORS default.
+  docs/archive still mentions it as history; do not restore it from there.
 - **The 0.0.0.0 bind is required, so the filter is in the app** (`core/netguard.py`,
   2026-09-09). `--host` defaults to 0.0.0.0 because a container reaches the host
-  over a virtual adapter and cannot see a loopback socket -- ODYSSEUS.md is built
-  on that. What was missing is that the wide bind was also the whole access
+  over a virtual adapter and cannot see a loopback socket. What was missing is that the wide bind was also the whole access
   policy: no inbound auth exists anywhere, and on the dev box, on a Wi-Fi Windows
   classed **Public**, `http://10.153.88.41:8000/` and `:11434/` both answered
   **200** to anyone on the network.
@@ -363,7 +332,7 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   same thing wearing a hat. Ollama shipped `OLLAMA_ORIGINS` for this and
   `--cors-origin` is that flag (additive -- replacing the list to add one origin
   would silently break Obsidian). Defaults cover Obsidian desktop/mobile and
-  localhost on any port, which is Odysseus (7000) and OpenCode (4747).
+  localhost on any port, which covers local web clients such as OpenCode (4747).
   `Access-Control-Request-Headers` is **echoed** rather than matched against a
   fixed list, so an Anthropic client's `x-api-key`/`anthropic-version` works
   without this file learning about it; `X-Device` is exposed, or a client can
@@ -684,7 +653,7 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   tab dead. Result: **11.24 s to chat-ready**, utilities finishing at 16.17 s off
   the critical path. Deferred, never dropped.
   (2) **`/health` cost 1.86 s per call**, on the endpoint the web UI polls —
-  against 1.5 ms for `/v1/models`. The OpenCode and Odysseus liveness probes each
+  against 1.5 ms for `/v1/models`. The OpenCode and companion-app liveness probes each
   did a real HTTP round trip (1508 ms + 360 ms, each its own configured timeout).
   The reason is not what you would guess: on this machine a connection to a CLOSED
   loopback port is **dropped, not refused**, so a "fast fail" that assumes
@@ -752,7 +721,7 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   link to, embed, or health-check what it just started. It **adopts** an
   already-listening OpenCode instead of spawning a duplicate, reports itself in
   `/health.opencode_web`, and only ever stops a server it started.
-  Framing is allowed here and forbidden for Odysseus, and that is measured, not
+  Framing is allowed here, and that is measured, not
   taste: OpenCode sends no `frame-ancestors`, no `X-Frame-Options` and no HSTS.
   The server is bound to **127.0.0.1 and that is not configurable** — it starts
   unauthenticated (`OPENCODE_SERVER_PASSWORD is not set; server is unsecured`) and
@@ -766,28 +735,6 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   next start. `stop()` taskkills the tree *before* reaping the wrapper (taskkill
   walks live parent links) and then verifies the port, because "stopped" has to mean
   stopped.
-- **Odysseus is a sidebar LINK, and only when it answers** (2026-08-30). Address in
-  Settings (`locally-odysseus-url`, default `http://localhost:7000`); the entry stays
-  hidden until a probe succeeds, so it is never a control wired to nothing. The probe
-  runs in the **browser**, not the server, because the browser is what follows the
-  link — a server-side probe would light the entry up for a phone that cannot reach
-  it. Never an iframe: HSTS, own-hostname cookies and a service worker each break an
-  embed independently (docs/ODYSSEUS.md).
-  **locally can also START it** (`core/odysseus.py`): `docker compose up -d` on a
-  checkout found via `$ODYSSEUS_DIR` -> sibling `odysseus/` -> `~/odysseus`, the
-  same order `_local_version()` already used, and only when a compose file is
-  actually there. It **adopts** a stack already serving rather than racing it, and
-  it stops with `docker compose stop`, never `down` -- `down` destroys containers
-  and volumes, and this is the user's assistant with their data in it. Autostart
-  runs on a **background thread**: a first run pulls images for minutes and chat
-  must not wait for it. `docker_available` is reported alongside `docker_installed`
-  because "Docker is unavailable" has two causes with two different fixes, and a UI
-  that cannot tell them apart can only ever give one of them the wrong instruction.
-  The **"start it with locally" toggle persists to `odysseus-autostart.json`**
-  (gitignored, machine-local): the thing it controls happens at startup, so a
-  preference that did not survive a restart could never take effect. An explicit
-  `--odysseus-autostart` / `--no-` still wins, the precedence locally.ini.example
-  already states.
 - **Three more `core/`-split NameErrors, found by an AST sweep** (2026-08-30).
   `locally.py` referenced four names that had moved into `core/` and were never
   imported back: `_UTIL_SEARCH_MAX_CHUNKS` (`/v1/util/index` 500), `_UTIL_RERANK_POOL`
@@ -833,7 +780,7 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   looked like one fault and was two.
 - **Both fixes `/v1/models` got, `/api/tags` did not** (fixed 2026-09-09). List an
   idle-unloaded slot (f706201), list what is on disk (6de0d52) -- both landed on
-  the OpenAI surface alone, and the Ollama surface is Odysseus's best-trodden
+  the OpenAI surface alone, and the Ollama surface is many harnesses' best-trodden
   path. So a picker built from `/api/tags` showed **one** model on a server
   holding six loadable ones, and showed **none** after an idle unload, which a
   polling client reads as "backend offline". Both surfaces now build from
@@ -903,13 +850,12 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
 - **The retired UI's server side is gone** (2026-09-09). An import-graph walk from
   the four entry points (`locally`, `core.cli`, `core.app`, `core.terminal`) found
   eight modules nothing could reach: `core/opencode_web.py`, and
-  `core/system/{access,browser,coding,odysseus_api,setup,setup_actions,setup_info}.py`
+  `core/system/{access,browser,coding,setup,setup_actions,setup_info}.py` plus a companion-app API module
   -- the first-run setup wizard, the Code tab's OpenCode embedding, the browser
-  handoff, and the Odysseus control-panel endpoints. **The bullets below still
+  handoff, and the companion-app control-panel endpoints. **The bullets below still
   describe them as live; they are history now.** `/health` no longer carries
   `opencode_web`, and framing OpenCode is not a thing this program does.
-  `core/odysseus.py` is untouched and still reachable -- autostart and
-  `odysseus.ps1` work as documented; only the HTTP buttons went. Coding mode went
+  Coding mode went
   with them: `config.CODING_MODE` was still read on the audio and utility paths,
   but its only writer was the deleted UI endpoint and there is no flag, so the
   refusal could never fire and its message told you to turn it off in a Settings
@@ -1113,7 +1059,7 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   `/api/show` still advertises `tools` only for `_tools_supported` slots — an advert
   is answered before any tool set exists, so claiming it would invite Copilot to
   pick an NPU model and then send it 30 schemas. Clients that just send `tools`
-  (Odysseus does) get them honored. Over-budget sets are refused with the token
+  get them honored. Over-budget sets are refused with the token
   count and a fix, not a bare "GPU-only feature". CPU is viable for
   agents on strong desktops (e.g. Core Ultra 9, many cores) where prefill can beat a weak
   iGPU. Tool specs from the request `tools` array are rendered into a system prompt
