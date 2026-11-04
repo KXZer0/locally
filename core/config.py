@@ -107,6 +107,35 @@ OFFLOAD_RATIO = "auto"
 GPU_RESERVE_BYTES = 3 * 2 ** 30
 
 
+# --- speculative decoding (core/genai/speculative.py) -----------------------
+
+# Draft model directories (--draft-model, repeatable). Resolved per model in
+# load(): the first one whose tokenizer matches the loaded model is used, so a
+# swap to a model of another family loads without a draft instead of failing.
+DRAFT_MODELS = []
+DRAFT_DEVICE = None          # --draft-device; None = the main model's device
+NUM_ASSISTANT_TOKENS = 5     # --num-assistant-tokens (genai's own default)
+ASSISTANT_CONFIDENCE = 0.0   # --assistant-confidence; >0 replaces the fixed count
+DRAFT_SAMPLING = False       # --draft-sampling: let sampled turns use the draft
+PROMPT_LOOKUP = False        # --prompt-lookup (off: see the module docstring)
+MAX_NGRAM_SIZE = 3           # --max-ngram-size
+
+
+# --- speech to text (Parakeet) ---------------------------------------------
+
+# Longest audio one Parakeet encoder pass sees on CPU/GPU (--asr-chunk-seconds).
+# FastConformer attention is quadratic in length, so a long upload is cut into
+# overlapping windows and stitched; a voice turn is far shorter than this and
+# never is. 30 s keeps the encoder's working set small on a shared-RAM iGPU.
+ASR_CHUNK_SECONDS = 30.0
+# The NPU compiles static shapes only, so on the NPU the encoder is reshaped to
+# exactly this window and shorter audio is zero-padded with the true length
+# passed alongside. 10 s is the window FluidInference's static v2 export uses
+# (160,000 samples -> 1,001 mel frames), i.e. the shape their NPU numbers were
+# measured on. --asr-npu-window-seconds.
+ASR_NPU_WINDOW_SECONDS = 10.0
+
+
 # --- prewarm ----------------------------------------------------------------
 
 # Path (--prewarm) to a saved prompt, prefilled at startup and auto-captured
@@ -120,6 +149,7 @@ PREWARM_MIN_CHARS = 4000   # only capture agent-sized system prompts, not chat
 
 AGENT_TOOLS = None   # --agent-tools: set of names to keep, or None (all)
 ANTHROPIC_MODEL_MAP = {}   # --anthropic-model-map: {substring of claude-* name: local model}
+CONSTRAIN_TOOLS = True     # --no-constrain-tools: no structural tags on tool turns
 
 # Measured on Qwen3-8B-int4-cw's own tokenizer, 2026-08-29, against the 8192
 # cap (scripts/measure-tool-budget.py reproduces it):
@@ -148,26 +178,3 @@ NPU_TOOL_BUDGET = 1200
 PYTHON_TOOL_TIMEOUT = 5.0             # hard wall-clock limit per child process
 PYTHON_TOOL_OUTPUT_BYTES = 64 * 1024  # stdout/stderr cap, per stream
 PYTHON_TOOL_MAX_CODE_BYTES = 32 * 1024
-
-
-# --- Odysseus ---------------------------------------------------------------
-# Odysseus is the assistant layer (docs/ODYSSEUS.md); locally is the engine it
-# talks to. Both run on the same box, so locally can bring it up — but only on
-# request. Autostart is OFF by default because `docker compose up -d` starts
-# four containers holding the user's calendar, mail and notes; an inference
-# server does not get to do that because it happened to be launched.
-
-ODYSSEUS_AUTOSTART = False
-ODYSSEUS_PORT = 7000     # Odysseus's own APP_PORT default
-ODYSSEUS_DIR = None      # --odysseus-dir; None means search (env, sibling, ~)
-
-# A first run builds images from source (the compose service is `build: .`,
-# there is no tag to pull), which is minutes, not seconds. The autostart runs
-# on a background thread precisely so this number cannot delay serving chat.
-ODYSSEUS_START_TIMEOUT = 180
-
-# --container-engine: pin 'docker' or 'podman'. None means take whichever is
-# on PATH, Docker first. Odysseus's compose file declares
-# extra_hosts: host.docker.internal:host-gateway explicitly, so the one
-# Docker-shaped dependency in this architecture is honoured by Podman too.
-CONTAINER_ENGINE = None

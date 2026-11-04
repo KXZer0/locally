@@ -5,7 +5,7 @@ import os
 import time
 from pathlib import Path
 
-from core import config, odysseus, runtime
+from core import config, runtime
 from core.chat.ollama import VSCODE_OLLAMA_VERSION
 from core.launch.configure import configure
 from core.launch.slots import build_slots
@@ -25,6 +25,7 @@ Usage:
     python locally.py --gpu-model-dir gpu-model              # dual: NPU chat + GPU vision
     python locally.py --model-dir ~/models/qwen3-14b-int4-ov --device GPU  # big LLM on GPU
     python locally.py --whisper-dir whisper-model             # add speech-to-text
+    python locally.py --asr-dir parakeet-unified-en-0.6b-ov/streaming/fp16  # ...or Parakeet
     python locally.py --scan                                 # what models do I have?
 """
 
@@ -102,8 +103,30 @@ def parse_args(argv=None):
                         "itself serve) then fail with 'Failed to fetch'.")
     p.add_argument("--max-dim", type=int, default=768,
                    help="Max image dimension before resize (default: 768)")
+    p.add_argument("--asr-dir", default=None,
+                   help="Speech-to-text model directory, engine read from the "
+                        "folder: parakeet-unified-en-0.6b (newest, English, "
+                        "streams during the turn; the streaming/fp16 folder of "
+                        "FluidInference/parakeet-unified-en-0.6b-ov), a Nemotron "
+                        "streaming export, Parakeet TDT v3 (multilingual, "
+                        "FluidInference/parakeet-tdt-0.6b-v3-ov) or Whisper. "
+                        "Enables /v1/audio/transcriptions and voice.")
+    p.add_argument("--asr-device", default=None,
+                   help="Device for speech-to-text: CPU, GPU or NPU (default: "
+                        "--whisper-device, i.e. CPU). NPU is Parakeet/Nemotron-only, "
+                        "static-shape, and not yet verified by this project.")
+    p.add_argument("--asr-chunk-seconds", type=float, default=30.0,
+                   help="Longest audio one Parakeet TDT encoder pass sees on CPU/GPU; "
+                        "longer uploads are split into overlapping windows "
+                        "(default 30).")
+    p.add_argument("--asr-npu-window-seconds", type=float, default=10.0,
+                   help="Static encoder window for Parakeet TDT on the NPU "
+                        "(default 10, the shape FluidInference's NPU figures "
+                        "were measured on).")
     p.add_argument("--whisper-dir", default=None,
-                   help="Whisper model directory for speech-to-text (enables /v1/audio/transcriptions)")
+                   help="Whisper model directory for speech-to-text (enables "
+                        "/v1/audio/transcriptions). Same as --asr-dir, which "
+                        "also accepts a Parakeet export.")
     p.add_argument("--model-cache-gb", type=float, default=12.0,
                    help="Upper bound on the compile cache (default 12 GB). "
                         "Least-recently-used entries are evicted at startup; "
@@ -160,7 +183,7 @@ def parse_args(argv=None):
                    help="Don't load utility models even if they are found.")
     p.add_argument("--check-updates", action="store_true",
                    help="Check GitHub/npm once a day for newer locally, "
-                        "Odysseus, SearXNG and OpenCode versions. Off by "
+                        "SearXNG and OpenCode versions. Off by "
                         "default; never delays startup or auto-updates.")
     p.add_argument("--util-engines", default="auto",
                    help="Which engines load the utility models: 'npu', 'gpu', "
@@ -226,33 +249,6 @@ def parse_args(argv=None):
     p.add_argument("--searxng-idle", type=int, default=600, metavar="SECS",
                    help="Stop an auto-started SearXNG after this many idle "
                         "seconds (0 keeps it up).")
-    p.add_argument("--odysseus-autostart", dest="odysseus_autostart",
-                   action="store_true", default=None,
-                   help="Bring an Odysseus checkout up at startup with "
-                        "`docker compose up -d` (see docs/ODYSSEUS.md). Runs on "
-                        "a background thread — a first run builds images and "
-                        "takes minutes, and chat must not wait for it. Does "
-                        "nothing when no checkout is found.")
-    p.add_argument("--no-odysseus-autostart", dest="odysseus_autostart",
-                   action="store_false",
-                   help="Never start Odysseus, even if a checkout is found "
-                        "(the default).")
-    p.add_argument("--container-engine", choices=("docker", "podman"),
-                   default=None,
-                   help="Which container engine runs the Odysseus stack. "
-                        "Default: whichever is on PATH, Docker first. Podman "
-                        "works because Odysseus's compose file declares "
-                        "host.docker.internal via host-gateway explicitly, "
-                        "which Podman honours.")
-    p.add_argument("--odysseus-port", type=int, default=config.ODYSSEUS_PORT,
-                   metavar="N",
-                   help=f"Port Odysseus serves on (default "
-                        f"{config.ODYSSEUS_PORT}; its own APP_PORT default). "
-                        f"This is what locally probes to tell running from not.")
-    p.add_argument("--odysseus-dir", default=None, metavar="DIR",
-                   help="Odysseus checkout to manage. Without it: $ODYSSEUS_DIR, "
-                        "then a sibling `odysseus` directory, then ~/odysseus — "
-                        "the same order the update check already uses.")
     p.add_argument("--search-url", default=None, metavar="URL",
                    help="SearXNG base URL for web search, e.g. "
                         "http://localhost:8080. Unset (the default) means the "
@@ -307,6 +303,12 @@ def parse_args(argv=None):
                         "(30 tools = 99k of Claude Code's 142k chars), and "
                         "prefilling them is most of the wait on an iGPU. Try "
                         "\"Bash,Edit,Read,Write,Glob,Grep\".")
+    p.add_argument("--no-constrain-tools", action="store_true",
+                   help="Do not constrain tool calls while they are written. By "
+                        "default, once a tool turn's model writes <tool_call>, "
+                        "genai's sampler only lets it name a declared tool "
+                        "with arguments matching that tool's schema; prose "
+                        "before the call is never constrained.")
     p.add_argument("--scan", nargs="*", default=None, metavar="DIR",
                    help="Report what each model directory actually contains "
                         "(name, precision, architecture, integrity) and exit. "
@@ -317,6 +319,8 @@ def parse_args(argv=None):
                         "path<TAB>name<TAB>llm|vlm and exit. The scriptable "
                         "form of --scan: launchers and tooling read this "
                         "instead of keeping their own list of model names.")
+    from core.genai.speculative_cli import add_arguments as add_speculative_args
+    add_speculative_args(p)
     return p.parse_args(argv)
 
 

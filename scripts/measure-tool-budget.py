@@ -3,7 +3,7 @@
 The NPU exclusion in _tools_supported is justified on two grounds: a hard
 prompt cap, and small models not planning well. The first is arithmetic and
 nobody had done it. This does it, on the real tokenizer, for tool sets of the
-size an assistant like Odysseus actually sends.
+size a personal-assistant client actually sends.
 """
 import json
 import sys

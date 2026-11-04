@@ -15,6 +15,8 @@ soundfile>=0.12.0
 # integration falls back safely when it is absent, but fresh installs need it
 # to select the live WSL/Podman gateway automatically.
 psutil>=5.9.0
+# The built-in calculator tool (core/tools/calculator.py) does exact math with it.
+sympy>=1.12
 
 # Local document -> Markdown for the Util reader. Keep the extras narrow:
 # [all] also pulls cloud/Azure, audio, Outlook and YouTube integrations that a
@@ -61,17 +63,3 @@ hf_xet
 # above. Install with:
 #   venv\Scripts\python.exe -m pip install sounddevice
 # sounddevice
-
-# Optional: only for `locally`'s Odysseus autostart (docs/ODYSSEUS.md).
-#
-# `podman compose` and `docker compose` are both THIN WRAPPERS -- podman shells
-# out to an external provider and fails with "looking up compose provider
-# failed" when neither docker-compose nor podman-compose is on PATH. Measured
-# 2026-08-30 on a clean Podman 6.0.2 install: the stack could not start at all
-# without this, and the error names a missing binary rather than the missing
-# package, which sends people to the wrong place.
-#
-# Installed into this venv, core/odysseus.py puts the interpreter's own
-# directory on PATH for the compose subprocess, so no global install is needed.
-# Skip it entirely if you have Docker Compose v2, or do not run Odysseus.
-# podman-compose>=1.6.0

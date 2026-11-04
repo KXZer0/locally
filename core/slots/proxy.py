@@ -59,6 +59,18 @@ def _gen_to_openai(gen, model, messages, stream):
         val = getattr(gen, attr, None)
         if val:
             body[attr] = float(val)
+    # A constraint the proxied server is not told about is a constraint that
+    # silently does not hold; forward it in the shape every OpenAI server reads.
+    structured = getattr(gen, "structured_output_config", None)
+    schema = getattr(structured, "json_schema", None) if structured else None
+    if structured is not None and not schema and getattr(structured, "grammar", None):
+        body["response_format"] = {"type": "json_object"}   # the only grammar we set
+    elif schema:
+        try:
+            body["response_format"] = {"type": "json_schema", "json_schema": {
+                "name": "response", "schema": json.loads(schema)}}
+        except (TypeError, ValueError):
+            pass
     return body
 
 

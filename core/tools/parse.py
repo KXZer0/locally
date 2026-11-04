@@ -139,13 +139,36 @@ def _tool_param_types(tools):
         if not name:
             continue
         props = (fn.get("parameters") or {}).get("properties") or {}
-        types[name] = {k: (v or {}).get("type", "string") for k, v in props.items()}
+        # None when the property names no type (an enum, a $ref, an anyOf):
+        # _coerce_value then reads the value as JSON if it is JSON.
+        types[name] = {k: (v or {}).get("type") if isinstance(v, dict) else "string"
+                       for k, v in props.items()}
     return types
 
 
+_PY_JSON_TYPES = {bool: ("boolean",), int: ("integer", "number"), float: ("number",),
+                  str: ("string",), list: ("array",), dict: ("object",),
+                  type(None): ("null",)}
+
+
 def _coerce_value(raw, json_type):
-    """Best-effort coerce an XML <parameter> string to its schema type."""
+    """Best-effort coerce an XML <parameter> string to its schema type.
+
+    A single type converts as it always did. A type LIST (["string", "null"])
+    or no type at all takes the value as JSON when it parses to an allowed
+    type, else as the raw string: that is how the tool-call constraint's
+    QwenXML grammar writes them (an enum member as "f", null as null).
+    """
     raw = raw.strip()
+    if json_type is None or isinstance(json_type, list):
+        try:
+            value = json.loads(raw)
+        except (ValueError, TypeError):
+            return raw
+        allowed = json_type or None
+        if allowed is None or any(t in allowed for t in _PY_JSON_TYPES.get(type(value), ())):
+            return value
+        return raw
     try:
         if json_type in ("number", "integer", "object", "array"):
             return json.loads(raw)
@@ -285,6 +308,9 @@ def _json_calls(blob):
     return calls
 
 
+_LEADING_THINK_RE = re.compile(r"\s*<think>.*?</think>", re.DOTALL)
+
+
 def parse_tool_calls(text, tools):
     """Extract tool calls from generated text.
 
@@ -397,7 +423,12 @@ def parse_tool_calls(text, tools):
     # — the failure mode when the model isn't told the proper format. We only
     # treat it as tool calls if all names match, so normal JSON answers pass
     # through untouched.
-    stripped = text.strip()
+    # A leading closed <think> block is reasoning, not the answer: the answer
+    # after it is what has to be JSON, and the block stays as content (the
+    # OpenAI path keeps it; the streaming gate decides the same way).
+    lead = _LEADING_THINK_RE.match(text)
+    lead = lead.group(0) if lead else ""
+    stripped = text[len(lead):].strip()
     if known and stripped[:1] in ("{", "["):
         named = []
         for obj in _json_calls(stripped):
@@ -414,6 +445,6 @@ def parse_tool_calls(text, tools):
         if named and all(n in known for n, _ in named):
             for n, a in named:
                 add(n, a)
-            return "", tool_calls
+            return lead.strip(), tool_calls
 
     return text, tool_calls

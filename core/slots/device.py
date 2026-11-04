@@ -16,6 +16,7 @@ from core import config
 from core.genai.results import (explain_genai_error, extract_finish_reason,
                                 extract_perf, extract_text, extract_token_metrics,
                                 GeneratedText)
+from core.genai import speculative
 from core.genai.tokens import _count_tokens
 from core.metrics import record_turn
 from core.models.gguf import (chat_template as gguf_chat_template,
@@ -54,6 +55,8 @@ class DeviceSlot(MemoryPlanning):
         self.context_limit_by = None     # which constraint is binding it
         self.offload_ratio = 0           # % of expert weights streamed
         self.offload_note = ""
+        self.speculative = {}            # draft / prompt-lookup plan, per model
+        self.last_speculative = None     # last turn's acceptance, for /health
 
     def load(self, model_dir):
         """Load model, auto-detecting VLM vs LLM."""
@@ -91,8 +94,15 @@ class DeviceSlot(MemoryPlanning):
         # models one slot may hold over its life, so a single global GB figure
         # means a different context window after every swap.
         self.kv_pool_gb, self.kv_pool_note = self._resolve_kv_pool_gb(vlm)
+        # Per model too: a draft must share THIS model's tokenizer, so the
+        # draft list is re-matched on every load and a swap to another family
+        # loads without one rather than failing. Before offload, which has to
+        # count the draft's weights.
+        self.speculative = speculative.plan(self, vlm)
+        self.last_speculative = None
         # Offload depends on the pool size, so it is resolved after it.
         self.offload_ratio, self.offload_note = self._resolve_offload_ratio()
+        self._report_speculative()
         self._preflight_memory(vlm)
         # Deliberately NOT inside _preflight_memory: that returns early when the
         # device reports no memory budget, which is the normal case on the NPU
@@ -151,37 +161,91 @@ class DeviceSlot(MemoryPlanning):
                 raise RuntimeError("No VLMPipeline in this openvino_genai build.")
             self.pipe = VLMPipe(str(model_dir), device=self.device_id, **offload)
         else:
-            # NPU has a default prompt limit of 1024 tokens — raise it
-            if self.device_name == "NPU":
-                self.pipe = ovg.LLMPipeline(
-                    str(model_dir), device=self.device_id,
-                    MAX_PROMPT_LEN=config.NPU_MAX_PROMPT_LEN, **offload,
-                )
-            elif self._prompt_cache_on():
-                # GPU/CPU: enable prefix (KV) caching via the continuous-batching
-                # backend so a repeated prompt prefix — e.g. an agent's fixed
-                # system prompt + tool schemas, identical every turn — is
-                # prefilled once instead of every turn. Auto-invalidated by any
-                # prefix change (no staleness). Opt out with --no-prompt-cache.
-                try:
-                    sc = ovg.SchedulerConfig()
-                    sc.enable_prefix_caching = True
-                    sc.cache_size = self.kv_pool_gb
-                    self.pipe = ovg.LLMPipeline(
-                        str(model_dir), device=self.device_id, scheduler_config=sc,
-                        **offload,
-                    )
-                    print(f"  [{self.device_name}] prefix caching on "
-                          f"({self.kv_pool_gb} GB KV pool)", flush=True)
-                except Exception as e:
-                    print(f"  [{self.device_name}] prefix caching unavailable "
-                          f"({e}); using plain pipeline", flush=True)
-                    self.pipe = ovg.LLMPipeline(str(model_dir), device=self.device_id,
-                                                **offload)
-            else:
-                self.pipe = ovg.LLMPipeline(str(model_dir), device=self.device_id,
-                                            **offload)
+            self.pipe = self._build_llm(model_dir, offload)
         self._ensure_chat_template(model_dir)
+
+    def _build_llm(self, model_dir, offload):
+        """The LLM pipeline, with this load's speculation if genai can build it.
+
+        A draft or prompt lookup that genai refuses must not take the slot
+        down -- the model itself is fine -- so the failure is reported and the
+        model loads exactly as it would have without the flag.
+        """
+        extra = speculative.pipeline_kwargs(self.speculative, offload)
+        if not extra:
+            return self._build_llm_pipeline(model_dir, offload, {})
+        try:
+            pipe = self._build_llm_pipeline(model_dir, offload, extra)
+        except Exception as e:
+            print(f"  [{self.device_name}] speculative decoding unavailable "
+                  f"({explain_genai_error(e)}); loading without it", flush=True)
+            self.speculative = dict(self.speculative, mode=None,
+                                    skipped=f"genai could not build it: {e}")
+            return self._build_llm_pipeline(model_dir, offload, {})
+        state = self.speculative
+        print(f"  [{self.device_name}] speculative decoding on: " +
+              (f"draft {state['draft']} ({state['kind']}) on {state['draft_device']}"
+               if state["mode"] == "draft" else
+               f"prompt lookup (n-gram <= {config.MAX_NGRAM_SIZE})"), flush=True)
+        return pipe
+
+    def _build_llm_pipeline(self, model_dir, offload, extra):
+        # NPU has a default prompt limit of 1024 tokens — raise it
+        if self.device_name == "NPU":
+            return ovg.LLMPipeline(
+                str(model_dir), device=self.device_id,
+                MAX_PROMPT_LEN=config.NPU_MAX_PROMPT_LEN, **offload, **extra,
+            )
+        elif self._prompt_cache_on():
+            # GPU/CPU: enable prefix (KV) caching via the continuous-batching
+            # backend so a repeated prompt prefix — e.g. an agent's fixed
+            # system prompt + tool schemas, identical every turn — is
+            # prefilled once instead of every turn. Auto-invalidated by any
+            # prefix change (no staleness). Opt out with --no-prompt-cache.
+            try:
+                sc = ovg.SchedulerConfig()
+                sc.enable_prefix_caching = True
+                sc.cache_size = self.kv_pool_gb
+                pipe = ovg.LLMPipeline(
+                    str(model_dir), device=self.device_id, scheduler_config=sc,
+                    **offload, **extra,
+                )
+                print(f"  [{self.device_name}] prefix caching on "
+                      f"({self.kv_pool_gb} GB KV pool)", flush=True)
+                return pipe
+            except Exception as e:
+                if extra:
+                    # genai rewrites a draft model in place, so the same
+                    # draft_model() object cannot be handed to a second
+                    # attempt; _build_llm retries without speculation.
+                    raise
+                print(f"  [{self.device_name}] prefix caching unavailable "
+                      f"({e}); using plain pipeline", flush=True)
+                return ovg.LLMPipeline(str(model_dir), device=self.device_id,
+                                       **offload)
+        else:
+            return ovg.LLMPipeline(str(model_dir), device=self.device_id,
+                                   **offload, **extra)
+
+    def _report_speculative(self):
+        state = self.speculative
+        if state.get("skipped"):
+            print(f"  [{self.device_name}] speculative decoding off: "
+                  f"{state['skipped']}", flush=True)
+        if state.get("mode") and self.offload_ratio:
+            state["notes"].append(
+                f"MoE offload is at {self.offload_ratio}%: verifying several tokens "
+                f"per step touches more experts, each streamed from disk, so "
+                f"speculation may well be slower here")
+        for note in state.get("notes") or []:
+            print(f"  [{self.device_name}] speculative: {note}", flush=True)
+
+    def _speculate(self, gen):
+        """Fit gen to this pipeline: prompt lookup rejects a request without
+        its two fields, a plain pipeline rejects max_ngram_size != 0."""
+        note = speculative.apply(gen, self.speculative)
+        if note:
+            print(f"{datetime.now():%H:%M:%S} -- [{self.device_name}] {note}", flush=True)
 
     def _ensure_chat_template(self, model_dir):
         """Give a GGUF slot a chat template, because its tokenizer has none.
@@ -255,6 +319,10 @@ class DeviceSlot(MemoryPlanning):
         completion_tokens = native.get("completion_tokens")
         if completion_tokens is None:
             completion_tokens = _count_tokens(self, completion_text)
+        spec = (speculative.stats(result)
+                if result is not None and self.speculative.get("mode") else None)
+        if spec:
+            self.last_speculative = spec
         item = record_turn(
             device=self.device_name,
             model=self.model_name,
@@ -265,6 +333,7 @@ class DeviceSlot(MemoryPlanning):
             finish_reason=finish_reason,
             native_decode_tps=native.get("decode_tps"),
             token_count_source="native" if "completion_tokens" in native else "tokenizer",
+            speculative=spec,
         )
         def rate(key):
             value = item[key]
@@ -274,7 +343,8 @@ class DeviceSlot(MemoryPlanning):
               f"{completion_tokens if completion_tokens is not None else 'unknown'} tokens, "
               f"{qualifier}decode {rate('decode_tokens_per_second')} tok/s, "
               f"end-to-end {rate('end_to_end_tokens_per_second')} tok/s, "
-              f"TTFT {rate('ttft_ms')}ms ({finish_reason})", flush=True)
+              f"TTFT {rate('ttft_ms')}ms ({finish_reason})"
+              f"{speculative.log_suffix(spec)}", flush=True)
         return item
 
 
@@ -292,6 +362,7 @@ class DeviceSlot(MemoryPlanning):
             else:
                 history = ovg.ChatHistory()
                 history.append({"role": "user", "content": "Hi"})
+                self._speculate(gen)
                 self.pipe.generate(history, gen)
             elapsed = time.perf_counter() - t0
             print(f" done ({elapsed:.1f}s)", flush=True)
@@ -331,6 +402,7 @@ class DeviceSlot(MemoryPlanning):
     def generate_vlm(self, text_prompt, images, gen):
         """VLM generate — images optional."""
         self.last_ttft_ms = None
+        self._speculate(gen)
         with self.lock:
             started = time.perf_counter()
             if images:
@@ -369,7 +441,7 @@ class DeviceSlot(MemoryPlanning):
             self._native_chat, self._native_key = GemmaChat.for_model(key), key
         return self._native_chat
 
-    def generate_native(self, prompt, gen, cancel_event=None):
+    def generate_native(self, prompt, gen, cancel_event=None, on_text=None):
         """VLM generate from a FINISHED prompt string (no template applied),
         returning the text with its special tokens intact.
 
@@ -377,6 +449,10 @@ class DeviceSlot(MemoryPlanning):
         which makes a string argument ambiguous and glues the thought channel
         onto the answer. A StreamerBase sees raw token ids, so they are decoded
         here with skip_special_tokens=False.
+
+        `on_text`, when given, receives that same decoding incrementally (a
+        TextStreamer with skip_special_tokens=False, fed the same ids), which
+        is how core/chat/tool_stream.py streams a native turn live.
         """
         from core.tools.gemma import THOUGHT_PREFIX
         if cancel_event is not None and cancel_event.is_set():
@@ -389,10 +465,19 @@ class DeviceSlot(MemoryPlanning):
         tokenizer = self.pipe.get_tokenizer()
         prefix = THOUGHT_PREFIX if prompt.endswith(THOUGHT_PREFIX) else ""
         checkpoint = [0]
+        live = None
+        if on_text is not None:
+            if prefix:
+                on_text(prefix)
+            live = ovg.TextStreamer(
+                tokenizer, lambda s: on_text(s) or ovg.StreamingStatus.RUNNING,
+                {"skip_special_tokens": False})
 
         class _Ids(ovg.StreamerBase):
             def write(self, token):
                 ids.extend([token] if isinstance(token, int) else token)
+                if live is not None:
+                    live.write(token)
                 if len(ids) - checkpoint[0] >= 16:
                     checkpoint[0] = len(ids)
                     raw = prefix + tokenizer.decode(ids, skip_special_tokens=False)
@@ -405,11 +490,13 @@ class DeviceSlot(MemoryPlanning):
                         else ovg.StreamingStatus.RUNNING)
 
             def end(self):
-                pass
+                if live is not None:
+                    live.end()
 
         streamer = _Ids()
         streamer._cancel = self._cancel
         gen.apply_chat_template = False
+        speculative.apply(gen, getattr(self, "speculative", None))  # VLM: clears knobs
         with self.lock:
             # A disconnected request may have spent time waiting behind another
             # generation. Never clear its cancellation and run it afterwards.
@@ -453,6 +540,7 @@ class DeviceSlot(MemoryPlanning):
         history = ovg.ChatHistory()
         for msg in raw_messages:
             history.append({"role": msg["role"], "content": msg["content"]})
+        self._speculate(gen)
         with self.lock:
             started = time.perf_counter()
             result = self.pipe.generate(history, gen)
@@ -474,6 +562,7 @@ class DeviceSlot(MemoryPlanning):
 
     def stream_vlm(self, text_prompt, images, gen, completion_id, created, t0):
         """VLM generate — SSE streaming. openvino-genai 2026.1+."""
+        self._speculate(gen)
         token_queue = Queue()
         token_count = 0
         pieces = []
@@ -526,9 +615,21 @@ class DeviceSlot(MemoryPlanning):
 
             while True:
                 try:
-                    token = token_queue.get(timeout=180)
+                    token = token_queue.get(timeout=config.HEARTBEAT_SECS)
                 except Empty:
-                    break
+                    # Same keep-alive as stream_llm: a long VLM prefill (a tool
+                    # turn's whole agent prompt) used to end the stream at 180 s
+                    # with nothing sent at all.
+                    if not t.is_alive():
+                        break
+                    ka = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": self.model_name,
+                        "choices": [{"index": 0, "delta": {"content": ""},
+                                     "finish_reason": None}],
+                    }
+                    yield f"data: {json.dumps(ka)}\n\n"
+                    continue
                 if token is None:
                     break
                 if token_count == 0:
@@ -583,6 +684,7 @@ class DeviceSlot(MemoryPlanning):
         for msg in raw_messages:
             history.append({"role": msg["role"], "content": msg["content"]})
 
+        self._speculate(gen)
         token_queue = Queue()
         token_count = 0
         pieces = []
@@ -737,4 +839,7 @@ class DeviceSlot(MemoryPlanning):
             # to tell from the outside. 0 means fully resident.
             "offload_ratio": self.offload_ratio,
             "offload_note": self.offload_note.strip() or None,
+            # Draft / prompt lookup, why it is off if asked for, and the last
+            # turn's acceptance -- the only way to tell whether it is helping.
+            "speculative": speculative.info(self.speculative, self.last_speculative),
         }

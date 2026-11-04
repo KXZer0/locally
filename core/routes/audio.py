@@ -68,6 +68,13 @@ def register_socket(app):
             return
 
         session = VoiceStreamSession()
+        try:
+            _serve_stream(ws, session)
+        finally:
+            session.close()     # a half-fed streaming turn must not leak its worker
+        return ""
+
+    def _serve_stream(ws, session):
         while True:
             msg = ws.receive()
             if msg is None:
@@ -96,7 +103,6 @@ def register_socket(app):
                 # Leaving the answer behind clears any half-built interruption.
                 if session.voice_state != "speaking":
                     session.speech_ms = 0.0
-        return ""
 
     return True
 
@@ -112,7 +118,7 @@ def attach_socket(app):
 def audio_warm():
     """Bring the audio models resident before the first turn needs them.
 
-    Idle-unload is doing its job when it evicts Whisper and the TTS model, but
+    Idle-unload is doing its job when it evicts the ASR and TTS models, but
     the cost of the reload (measured ~5.9 s ASR, ~8.7 s TTS) then lands inside
     the user's first spoken turn, where it reads as "voice mode is slow". The
     web UI calls this when the Voice tab is opened, which is the earliest
@@ -122,8 +128,10 @@ def audio_warm():
     warm-up failing must not stop someone from trying to talk.
     """
     out = {}
-    for key, slot in (("whisper", runtime.whisper_slot), ("tts", runtime.tts_slot),
-                      ("vad", runtime._vad_slot)):
+    # "whisper" is the ASR slot's historical key; "asr" names it honestly
+    # now that it may hold Parakeet. Both are reported for the same slot.
+    for key, slot in (("asr", runtime.whisper_slot), ("whisper", runtime.whisper_slot),
+                      ("tts", runtime.tts_slot), ("vad", runtime._vad_slot)):
         if not slot or not _slot_serviceable(slot):
             out[key] = "unavailable"
             continue
@@ -220,15 +228,28 @@ def audio_verify():
     })
 
 
+_RESPONSE_FORMATS = ("json", "text", "verbose_json")
+
+
 @bp.route("/v1/audio/transcriptions", methods=["POST"])
 def audio_transcriptions():
-    """OpenAI-compatible speech-to-text. Accepts multipart form with audio file."""
-    if not runtime.whisper_slot or not _slot_serviceable(runtime.whisper_slot):
+    """OpenAI-compatible speech-to-text. Accepts multipart form with audio file.
+
+    Served by whichever ASR engine --asr-dir loaded (Whisper or Parakeet);
+    runtime.whisper_slot is the ASR slot whatever it holds. `language` is
+    passed through: Whisper forces it, the multilingual Nemotron model takes
+    it as a language prompt, and Parakeet TDT / parakeet-unified have no
+    language input at all, so there it is accepted and reported back in
+    verbose_json as a hint rather than silently pretended to apply.
+    """
+    slot = runtime.whisper_slot
+    if not slot or not _slot_serviceable(slot):
         return openai_error(
-            "No speech-to-text model loaded. Use --whisper-dir.", "server_error", 503,
+            "No speech-to-text model loaded. Use --asr-dir (Parakeet or "
+            "Whisper) or --whisper-dir.", "server_error", 503,
         )
     try:
-        runtime.whisper_slot.ensure_loaded()   # reload if idle-unloaded or unloaded on request
+        slot.ensure_loaded()   # reload if idle-unloaded or unloaded on request
     except Exception as e:
         return openai_error(f"Failed to load speech-to-text model: {e}",
                             "server_error", 500)
@@ -237,35 +258,62 @@ def audio_transcriptions():
         return openai_error("'file' is required (multipart form upload)")
 
     audio_file = request.files["file"]
-    language = request.form.get("language")
-    response_format = request.form.get("response_format", "json")
+    language = (request.form.get("language") or "").strip() or None
+    response_format = (request.form.get("response_format") or "json").lower()
+    if response_format not in _RESPONSE_FORMATS:
+        return openai_error(
+            f"response_format '{response_format}' not supported "
+            f"(use {', '.join(_RESPONSE_FORMATS)}).")
 
     try:
         audio_samples = _load_audio(audio_file)
     except Exception as e:
         return openai_error(f"Failed to read audio: {e}")
 
+    engine = getattr(slot, "engine", "whisper")
+    label = engine.capitalize()
     duration = len(audio_samples) / 16000
     lang_tag = f", lang={language}" if language else ""
-    print(f"\n{datetime.now():%H:%M:%S} <- [{runtime.whisper_slot.device_name}] "
-          f"Whisper {duration:.1f}s audio{lang_tag}", flush=True)
+    print(f"\n{datetime.now():%H:%M:%S} <- [{slot.device_name}] "
+          f"{label} {duration:.1f}s audio{lang_tag}", flush=True)
 
     t0 = time.perf_counter()
     try:
-        text = runtime.whisper_slot.transcribe(audio_samples, language=language)
+        text = slot.transcribe(audio_samples, language=language)
     except Exception as e:
-        print(f"{datetime.now():%H:%M:%S} !! [{runtime.whisper_slot.device_name}] "
-              f"Whisper error: {e}", flush=True)
+        print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] "
+              f"{label} error: {e}", flush=True)
         return openai_error(f"Transcription failed: {e}", "server_error", 500)
 
     elapsed = time.perf_counter() - t0
-    print(f"{datetime.now():%H:%M:%S} -> [{runtime.whisper_slot.device_name}] "
-          f"Whisper {len(text)} chars in {elapsed:.1f}s", flush=True)
+    rtf = duration / elapsed if elapsed > 0 else 0.0
+    print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
+          f"{label} {len(text)} chars in {elapsed:.2f}s ({rtf:.1f}x realtime)",
+          flush=True)
 
+    headers = {"X-Device": slot.device_name}
     if response_format == "text":
-        return Response(text, mimetype="text/plain")
-
-    return jsonify({"text": text})
+        return Response(text, mimetype="text/plain", headers=headers)
+    if response_format == "verbose_json":
+        resp = jsonify({
+            "task": "transcribe",
+            "text": text,
+            "duration": round(duration, 3),
+            # Whisper applied it; Parakeet only heard it. Saying which is the
+            # difference between "it ignored me" and "it cannot be told".
+            "language": language,
+            "language_applied": bool(language) and bool(
+                getattr(slot, "applies_language", engine == "whisper")),
+            "detected_language": getattr(slot, "last_detected_language", None),
+            "engine": engine,
+            "model": getattr(slot, "model_name", ""),
+            "processing_s": round(elapsed, 3),
+        })
+        resp.headers.update(headers)
+        return resp
+    resp = jsonify({"text": text})
+    resp.headers.update(headers)
+    return resp
 
 
 @bp.route("/v1/audio/speech", methods=["POST"])

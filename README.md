@@ -123,7 +123,33 @@ Type a question and press Enter. Alt+Enter inserts a newline. Type `/` to browse
 
 The document and image utilities come up on their own when the models are there: `api.ps1` looks in `%USERPROFILE%\models\util` and enables them if it finds both `ocr-det\inference.onnx` and `ocr-rec\inference.onnx`. They cost nothing at startup, because utility slots wait for the chat model to finish loading and then compile on first use. Point somewhere else with `-UtilModels DIR`, or turn them off with `-UtilModels ''`. Starting `locally.py` directly, the flag is `--util-models-dir DIR`. `GET /health` names each engine and the tasks it can serve.
 
-Audio models stay off unless named, because they compile eagerly and sit in the voice critical path: pass `--whisper-dir` and `--tts-dir`. Voice also needs `sounddevice` on the client: `python -m pip install sounddevice`.
+Audio models stay off unless named, because they compile eagerly and sit in the voice critical path: pass `--asr-dir` (or `--whisper-dir`) and `--tts-dir`. Voice also needs `sounddevice` on the client: `python -m pip install sounddevice`.
+
+### Speech-to-text: Parakeet or Whisper
+
+`--asr-dir DIR` takes any of the supported engines and works out which from the folder's contents. Which model to use:
+
+- **English (recommended): Parakeet Unified EN 0.6B**, NVIDIA's newest Parakeet (April 2026), in FluidInference's OpenVINO export [`FluidInference/parakeet-unified-en-0.6b-ov`](https://huggingface.co/FluidInference/parakeet-unified-en-0.6b-ov). It averages 5.91% WER on the Open ASR Leaderboard English sets, against about 6.3% for TDT v3, and writes punctuation and capitals. It streams: in voice mode the turn is transcribed while you speak, so the transcript is ready a moment after you stop. Point `--asr-dir` at the repo's `streaming\fp16` folder, not the offline `fp16` build next to it.
+- **Multilingual: Parakeet TDT 0.6B v3**, [`FluidInference/parakeet-tdt-0.6b-v3-ov`](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-ov). It covers 25 European languages. It does not stream, so a voice turn is transcribed after the pause.
+- The **Nemotron streaming** exports in [`FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-ov`](https://huggingface.co/FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-ov) load too. That repo holds the June 2026 multilingual model (40 locales, CJK included, and it takes `language`) and the English `en/` build. Both are less accurate in English than Parakeet Unified, so they are only worth it for a language v3 lacks.
+
+This project prefers the newest model. When NVIDIA ships a newer Parakeet, that one should replace the English default here.
+
+```powershell
+.\api.ps1 --asr-dir $env:USERPROFILE\models\parakeet-unified-en-0.6b-ov\streaming\fp16 --asr-device CPU
+```
+
+`--asr-device` takes `CPU`, `GPU` or `NPU`, and the default is CPU. Use NPU only after the check script below passes on your machine. The streaming models already use fixed-size chunks, which is the shape the NPU needs. Parakeet TDT on the NPU is compiled for a fixed 10 s window (`--asr-npu-window-seconds`), and longer audio is cut into overlapping windows. On CPU and GPU its window is 30 s (`--asr-chunk-seconds`). `/v1/audio/transcriptions` accepts `response_format` set to `json`, `text` or `verbose_json`. `/health` reports the engine under `asr.engine`, and for a streaming model its chunk size under `asr.unit_s`.
+
+Parakeet (TDT and Unified) has no language setting. TDT v3 detects the language itself, and Unified is English-only. A `language` field is accepted and echoed back in `verbose_json` as `"language_applied": false`, but it does not change the result. The multilingual v3 sometimes picks the wrong language on short or unclear English clips (English transcribed as another language has been seen). English speakers should use Unified. The multilingual Nemotron model does use `language` and reports `"language_applied": true`.
+
+Before you rely on a device, check it on your own machine. Stop the server first.
+
+```powershell
+venv\Scripts\python.exe scripts\parakeet-check.py $env:USERPROFILE\models\parakeet-unified-en-0.6b-ov\streaming\fp16 speech.wav --reference "what you said" --compare $env:USERPROFILE\models\parakeet-tdt-0.6b-v3-ov --whisper-dir $env:USERPROFILE\models\whisper-model
+```
+
+For each device it prints the load time, the transcription, the word error rate and the real-time factor. A device that fails says why. For a streaming model it also feeds the clip in microphone-sized frames and reports how soon after the last frame the transcript was ready.
 
 ## Shortcut and Copilot key
 
@@ -162,6 +188,39 @@ Ollama compatibility is available on port 11434 unless disabled with `--ollama-p
 
 Images, documents and audio still work headlessly. Send images as OpenAI `image_url` content blocks (data URLs included) to a vision model — or to a text model, which reads them with the OCR utilities instead. Send documents to `POST /v1/util/read`: images and scanned PDFs go through OCR, while PDF/DOCX/PPTX/XLSX/XLS/HTML/EPUB/CSV/text are converted in memory and return `engine: null`. Speech is `POST /v1/audio/transcriptions` and `POST /v1/audio/speech`.
 
+### JSON output that always parses
+
+Ask for JSON and it is enforced while decoding, not requested in the prompt: tokens that cannot continue a valid document are masked out, so a small model cannot return a stray preamble or a missing brace. OpenAI `response_format` takes `{"type": "json_object"}` or `{"type": "json_schema", "json_schema": {"schema": {...}}}`; Ollama `format` takes `"json"` or a schema object; Anthropic `output_format` takes `{"type": "json_schema", "schema": {...}}`.
+
+```json
+{"messages": [{"role": "user", "content": "Name a colour and whether it is warm."}],
+ "response_format": {"type": "json_schema", "json_schema": {"name": "colour", "schema": {
+   "type": "object", "required": ["name", "warm"],
+   "properties": {"name": {"type": "string"}, "warm": {"type": "boolean"}}}}}}
+```
+
+OpenAI and Anthropic replies carry `X-Structured-Output`: `constrained` (the answer parses), `truncated` (`max_tokens` ended it mid-document — raise the budget), `skipped-tools` (tools were active, so the format was not applied: a constrained answer cannot also be a tool call), or `violated` (the device ignored the constraint; later requests to that model and device are refused). An invalid schema is a `400` naming what is wrong. A device that cannot constrain output gets a `400` too, never an unconstrained retry — load the model on GPU or CPU instead. Streams carry `constrained` only, since the header leaves before the answer exists.
+
+### Faster decoding with a draft model (optional, unmeasured on real models)
+
+`--draft-model DIR` gives a text (LLM) slot a small model from the same family that proposes a few tokens for the main model to check, for example Qwen3-0.6B for Qwen3-8B. With greedy decoding the answer is exactly the one the main model would have given alone. Only the speed changes, and it can go either way. You can pass the flag more than once. Each model load uses the first draft whose tokenizer matches, and loads without a draft when none does. A draft from another family is refused with the reason.
+
+`--prompt-lookup` needs no extra model. It proposes tokens copied from the prompt, which helps code edits, RAG and tool output. Both run on genai's continuous-batching backend, also on GPU. That backend prefilled about 10x slower on the B390 (prefix caching stays off on GPU anyway), and nothing here has measured either feature on real weights yet. Both are off by default. Measure before you keep one on. Stop the server first.
+
+```powershell
+venv\Scripts\python.exe scripts\speculative-check.py $env:USERPROFILE\models\Qwen3-8B-int4-cw-ov --draft $env:USERPROFILE\models\Qwen3-0.6B-int8-ov --prompt-lookup --device GPU
+```
+
+Other flags are `--draft-device`, `--num-assistant-tokens N` (default 5), `--assistant-confidence X` and `--max-ngram-size N`. A request may send its own `num_assistant_tokens`, `assistant_confidence_threshold` or `max_ngram_size` (top level for OpenAI, in `options` for Ollama). A slot without speculation ignores them.
+
+A sampled turn (temperature > 0) on a draft slot runs greedy, because genai 2026.4.1 crashed under draft + sampling. The check script tests your pair; pass `--draft-sampling` if it passes. VLM slots, which include gemma-4 and Qwen3.5 here, get no speculation, and neither does prompt lookup on the NPU. A draft on the NPU is attempted but unverified. `/health` shows each slot's `speculative` state, and every log line and `/v1/metrics` entry carries the draft acceptance and tokens per step (1.00 means it is not helping).
+
+### Tool calls
+
+Send `tools` in the OpenAI, Anthropic or Ollama shape and the reply streams like any other: text goes out as it is generated, and a tool call arrives whole as a structured `tool_calls` delta (`tool_use` block, Ollama `tool_calls` message) once the model finishes writing it. A reply that begins with `{` on a tool turn is held to the end, because it may be a bare-JSON call.
+
+Once the model starts a call (`<tool_call>`), decoding is constrained: it can only name a tool you declared, with arguments matching that tool's `parameters` schema. Text before the call is never constrained. `tool_choice: "required"` (Anthropic `{"type": "any"}`) forces a call, a named function forces that one, and `"none"` turns the constraint off for the turn. A schema the constraint compiler rejects degrades to a looser constraint rather than an error. `--no-constrain-tools` disables it. Gemma's native tool dialect is not constrained.
+
 For a client in a Docker container on this Windows computer, start the API with `--host 0.0.0.0` and use `http://host.docker.internal:8000/v1` inside the container.
 
 ### Who can reach the server
@@ -184,7 +243,7 @@ python locally.py --model-dir model --allow-from any --api-key 'choose-a-long-ra
 
 Clients then send `Authorization: Bearer <key>` or `X-Api-Key: <key>`. The server reads `$LOCALLY_API_KEY` when `--api-key` is absent, and the terminal client (`chat.ps1`) reads the same variable so it keeps working. Without `--api-key`, no key is required or checked.
 
-On Windows the firewall is a separate matter, and it governs *reachability* rather than safety: without an inbound allow rule the packets never arrive. See `docs/ODYSSEUS.md` for the scoped rule.
+On Windows the firewall is a separate matter, and it governs *reachability* rather than safety: without an inbound allow rule the packets never arrive.
 
 ### Clients that run in a browser (Obsidian, and anything embedded)
 
@@ -200,41 +259,6 @@ python locally.py --model-dir model --cors-origin 'vscode-webview://*'
 
 `--cors-origin '*'` allows every page in every open tab to drive your model, and locally checks no credentials — prefer naming the origin. `--no-cors` sends nothing at all.
 
-## Use Odysseus
-
-Odysseus runs the assistant interface; Locally supplies its model over HTTP.
-In Odysseus, add an OpenAI-compatible model provider with the URL printed by
-`.\odysseus.ps1` after it detects the container engine. For Docker Desktop it
-is:
-
-```text
-http://host.docker.internal:8000/v1
-```
-
-Use the exact model ID shown by `GET http://127.0.0.1:8000/v1/models`. The
-container must use a host-reachable address, because `localhost` inside the
-container points back to Odysseus itself. On Podman for Windows the launcher
-selects the live WSL gateway automatically; use the URL it reports rather than
-copying a stale numeric address.
-
-Once Odysseus and a Docker-compatible container engine are installed, this
-single command starts Locally and the Odysseus stack when needed, then opens
-Odysseus in your default browser:
-
-```powershell
-.\odysseus.ps1
-```
-
-Install the same action as a Start-menu and Desktop shortcut with:
-
-```powershell
-.\odysseus.ps1 -CreateShortcut -Desktop
-```
-
-The shortcut never stops either service. It adopts services that are already
-running, refreshes a stale Locally endpoint, verifies the container can read
-`/v1/models`, and opens `http://127.0.0.1:7000`.
-
 ## Troubleshooting
 
 | Problem | What to do |
@@ -245,7 +269,6 @@ running, refreshes a stale Locally endpoint, verifies the container can read
 | The terminal says the model is loading | Wait. The client waits while `/health` reports `loading`; first compile takes longest. |
 | No model can be loaded | Run `.\venv\Scripts\python.exe locally.py --list-models $HOME\models`, or rerun the installer. |
 | The hardware key does nothing | Open the Start-menu shortcut once to confirm it works, then configure the key-remapping tool to launch that shortcut. |
-| Odysseus shows no models | Run `.\odysseus.ps1`. It refreshes the endpoint Odysseus was given and then reads `/v1/models` **from inside the container**, which is the only check that proves the link. A `curl` on the host only proves locally can call itself. |
 | Windows says memory is nearly full | See below — a loaded model is mostly mapped file pages, and it is probably not what is using your RAM. |
 
 ### Where the memory goes
@@ -265,6 +288,8 @@ Unloading gives it back. `POST /v1/models/unload {}`, or `--idle-timeout`, retur
 | `POST /v1/messages` | Anthropic Messages compatibility |
 | `POST /v1/util/read` | Read a document or image to Markdown |
 | `POST /v1/util/index`, `/v1/util/search` | Index and search local files |
+| `POST /v1/embeddings` | OpenAI embeddings from the search embedder (all-MiniLM-L6-v2, 384 dims, NPU first); `model` is ignored, `input` is a string or up to 256 strings, inputs over 256 tokens are truncated (`X-Truncated-Inputs`) unless `"truncate": false`. Also on the Ollama port, with `/api/embed` |
+| `POST /v1/rerank` | Cohere/Jina-style reranking with bge-reranker-base: `{ "query", "documents": [str or {"text"}], "top_n"?, "return_documents"? }` returns `results` of `index` + `relevance_score` (sigmoid of the logit), best first |
 | `POST /v1/util/upscale`, `/background`, `/detect` | Image utilities |
 | `POST /v1/audio/transcriptions`, `/v1/audio/speech` | Speech to text, text to speech |
 | `GET /v1/memory` | Available memory and offload state |

@@ -10,7 +10,7 @@ from core.routes import audio
 from core.routes.chat import bp as chat_bp, ollama_bp as ollama_chat_bp
 from core.routes.models import bp as models_bp, ollama_bp as ollama_models_bp
 from core.routes.system import bp as system_bp
-from core.routes.util import bp as util_bp
+from core.routes.util import bp as util_bp, ollama_bp as ollama_util_bp
 from core.system.status import _log_request
 
 
@@ -45,6 +45,7 @@ def create_ollama_app():
     attach_cors(app)
     app.register_blueprint(ollama_chat_bp)
     app.register_blueprint(ollama_models_bp)
+    app.register_blueprint(ollama_util_bp)
 
     @app.before_request
     def debug_ollama():

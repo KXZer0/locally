@@ -5,7 +5,6 @@ import hashlib
 import itertools
 import json
 import os
-import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -13,8 +12,10 @@ from pathlib import Path
 import openvino_genai as ovg
 
 from core import config, runtime
+from core.chat.structured import header_value
 from core.genai.results import explain_genai_error
 from core.media.images import load_image, pil_to_tensor
+from core.slots.planning import prompt_cache_on
 from core.tools.gemma import split_reasoning
 from core.tools.parse import parse_tool_calls
 
@@ -154,111 +155,6 @@ def _tool_message(text, tools):
     return message, tool_calls
 
 
-def _sse_replay(completion_id, created, model, message, finish_reason):
-    """Emit a buffered chat result as an OpenAI streaming SSE sequence.
-
-    Used for tool-enabled turns, where we must buffer the full generation
-    before we can hand back a structured tool_calls delta.
-    """
-    def chunk(delta, finish=None):
-        return "data: " + json.dumps({
-            "id": completion_id, "object": "chat.completion.chunk",
-            "created": created, "model": model,
-            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-        }) + "\n\n"
-
-    yield chunk({"role": "assistant"})
-    if message.get("reasoning_content"):
-        yield chunk({"reasoning_content": message["reasoning_content"]})
-    if message.get("content"):
-        yield chunk({"content": message["content"]})
-    for i, tc in enumerate(message.get("tool_calls") or []):
-        yield chunk({"tool_calls": [{
-            "index": i, "id": tc["id"], "type": "function",
-            "function": tc["function"],
-        }]})
-    yield chunk({}, finish_reason)
-    yield "data: [DONE]\n\n"
-
-
-def _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0,
-                     generate=None):
-    """Buffered tool turn, streamed with keep-alive frames.
-
-    A tool turn must be fully generated before we can emit a structured
-    tool_calls delta — but prefilling a big agent prompt (e.g. an OpenClaw
-    system prompt) on a small device can take minutes, longer than a client's
-    idle watchdog. So run generation in a background thread and emit SSE pings
-    until it finishes, then replay the parsed result. Without this the client
-    sees nothing during prefill and aborts (and OpenVINO can't cancel a blocked
-    prefill, so the abandoned generation keeps churning).
-    """
-    result = {}
-
-    def _run():
-        try:
-            result["text"] = (generate() if generate is not None
-                              else slot.generate_llm(raw_messages, gen))
-        except Exception as e:  # noqa: BLE001 — surfaced to the client below
-            result["error"] = e
-
-    th = threading.Thread(target=_run, daemon=True)
-    th.start()
-
-    # Immediate role frame so the client sees activity at once, then a ping
-    # every config.HEARTBEAT_SECS while generation runs (no tokens exist yet).
-    yield ("data: " + json.dumps({
-        "id": completion_id, "object": "chat.completion.chunk",
-        "created": created, "model": slot.model_name,
-        "choices": [{"index": 0, "delta": {"role": "assistant"},
-                     "finish_reason": None}],
-    }) + "\n\n")
-    while th.is_alive():
-        th.join(timeout=config.HEARTBEAT_SECS)
-        if th.is_alive():
-            # Empty-content keep-alive (resets content- and byte-based client
-            # watchdogs alike; empty string is a no-op for message assembly).
-            yield ("data: " + json.dumps({
-                "id": completion_id, "object": "chat.completion.chunk",
-                "created": created, "model": slot.model_name,
-                "choices": [{"index": 0, "delta": {"content": ""},
-                             "finish_reason": None}],
-            }) + "\n\n")
-
-    elapsed = time.perf_counter() - t0
-    if result.get("error") is not None:
-        err = explain_genai_error(result["error"])
-        print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] "
-              f"LLM error: {err}", flush=True)
-        yield ("data: " + json.dumps({
-            "id": completion_id, "object": "chat.completion.chunk",
-            "created": created, "model": slot.model_name,
-            "choices": [{"index": 0, "delta": {"content": f"\n[error: {err}]"},
-                         "finish_reason": "error"}],
-        }) + "\n\n")
-        yield "data: [DONE]\n\n"
-        return
-
-    text = result.get("text", "")
-    generation_finish = getattr(text, "finish_reason", "stop")
-    print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
-          f"Buffered tool response completed in {elapsed:.1f}s", flush=True)
-
-    message, tool_calls = _tool_message(text, tools)
-    if tool_calls:
-        print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
-              f"{len(tool_calls)} tool call(s): "
-              f"{', '.join(tc['function']['name'] for tc in tool_calls)}", flush=True)
-        finish_reason = "tool_calls"
-    else:
-        finish_reason = generation_finish
-
-    # Reuse the replay emitter (it re-sends a role frame — harmless, clients
-    # just set role twice) for the content/tool_calls/finish/[DONE] tail.
-    for frame in _sse_replay(completion_id, created, slot.model_name, message, finish_reason):
-        yield frame
-
-
 def _maybe_capture_prewarm(raw_messages):
     """Save a big (agent) prompt to config.PREWARM_FILE so the next startup can warm
     the prefix cache. Debounced on the system prompt — written once per distinct
@@ -296,7 +192,7 @@ def _prewarm_slot(slot):
     """Prefill the saved prompt at startup so the first real (cold) turn is a
     cache hit. Only meaningful on a GPU/CPU LLM slot with prefix caching on.
     """
-    if not (config.PREWARM_FILE and config.PROMPT_CACHE and slot.model_type == "llm"
+    if not (config.PREWARM_FILE and prompt_cache_on(slot.device_name) and slot.model_type == "llm"
             and slot.device_name in ("GPU", "CPU")):
         return
     if not os.path.isfile(config.PREWARM_FILE):
@@ -336,6 +232,8 @@ def _turn_headers(turn, slot):
     headers = {"X-Device": slot.device_name, "X-Model": slot.model_name}
     if turn.get("vision_path"):
         headers["X-Vision-Path"] = turn["vision_path"]
+    if header_value(turn):
+        headers["X-Structured-Output"] = header_value(turn)
     return headers
 
 

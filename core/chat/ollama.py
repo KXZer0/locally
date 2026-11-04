@@ -11,9 +11,11 @@ import openvino_genai as ovg
 from flask import Response, jsonify, request
 
 from core import config, runtime
+from core.chat import structured
 from core.chat.common import (apply_penalties, _maybe_capture_prewarm,
                               overall_status, parse_messages)
 from core.chat.openai import chat_completions
+from core.chat.tool_stream import gated_stream, log_calls, ollama_frames
 from core.errors import _TurnError, openai_error
 from core.genai.results import extract_perf, explain_genai_error, extract_finish_reason
 from core.media.images import load_image, pil_to_tensor
@@ -21,6 +23,7 @@ from core.slots.capability import (_tool_capable, _tools_refused_note,
                                    _tools_supported)
 from core.models.discovery import _models_data, canonical_model_name
 from core.slots.route import _route_request
+from core.tools import constrain
 from core.tools.parse import parse_tool_calls
 from core.tools.render import prepare_messages_for_tools
 from core.system.status import _log_request
@@ -79,7 +82,8 @@ def ollama_tags():
     models, seen = [], set()
     for entry in _models_data()["data"]:
         name = canonical_model_name(entry["id"])
-        if not name or name in seen or entry["id"].startswith("whisper@"):
+        if (not name or name in seen
+                or entry["id"].partition("@")[0] in ("whisper", "parakeet", "nemotron")):
             continue
         seen.add(name)
         models.append(_tag_entry(entry["id"].partition("@")[0]))
@@ -112,7 +116,7 @@ def ollama_show():
             # schemas — 4,524 tokens, over half the window — which is the case
             # the budget exists to refuse. An NPU slot that will happily serve
             # a small tool set still shows as completion-only, and clients
-            # that simply send `tools` (Odysseus does) get them honored.
+            # that simply send `tools` get them honored.
             caps = ["completion"] + (["tools"] if _tools_supported(slot) else [])
             return jsonify({
                 "model": model_name,
@@ -141,6 +145,10 @@ def ollama_chat():
     max_tokens = body.get("options", {}).get("num_predict", 2048)
     temperature = body.get("options", {}).get("temperature", 0.0)
     tools = body.get("tools") or []
+    try:
+        spec = structured.from_ollama(body.get("format"))
+    except structured.StructuredRequestError as e:
+        return jsonify({"error": str(e)}), 400
 
     # Translate Ollama messages to internal format
     has_images = False
@@ -181,6 +189,14 @@ def ollama_chat():
     elif tools:
         print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] [Ollama] "
               f"{_tools_refused_note(slot, tools)}", flush=True)
+    if spec is not None and tools_active:
+        # Same rule as the OpenAI path: a constrained answer cannot be a call.
+        print(f"{datetime.now():%H:%M:%S} -- [{slot.device_name}] [Ollama] "
+              "format ignored: tools are active on this turn", flush=True)
+        spec = None
+    if spec is not None and structured.refusal(slot):
+        return structured.refusal_response(slot, ollama=True)
+    turn = {"slot": slot, "structured": spec}
 
     # Parse through same pipeline as OpenAI
     try:
@@ -218,6 +234,12 @@ def ollama_chat():
                     repetition=_opts.get("repeat_penalty"),
                     frequency=_opts.get("frequency_penalty"),
                     presence=_opts.get("presence_penalty"))
+    structured.apply(gen, spec)
+    from core.genai.speculative import request_overrides
+    request_overrides(gen, _opts)
+    # Ollama has no tool_choice: "auto", the call constrained once it starts.
+    tc = constrain.build(slot, tools) if tools_active and slot.model_type == "llm" else None
+    constrain.apply(gen, tc)
 
     print(f"\n{datetime.now():%H:%M:%S} <- [{slot.device_name}] [Ollama] "
           f"{'image, ' if has_images else ''}{len(text_prompt)} chars"
@@ -230,7 +252,10 @@ def ollama_chat():
         try:
             text = slot.generate_vlm(text_prompt, images, gen)
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            return (structured.error_response(turn, e, ollama=True) or
+                    (jsonify({"error": str(e)}), 500))
+        if spec is not None:
+            structured.verdict(slot, spec, text)
 
         elapsed = time.perf_counter() - t0
         print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "
@@ -243,17 +268,30 @@ def ollama_chat():
             "total_duration": int(elapsed * 1e9),
         })
 
-    # LLM path. Tool turns are buffered (see chat_completions for why).
+    # LLM path.
     if stream and not tools_active:
         return Response(
             _ollama_stream_chat(slot, raw_messages, gen, t0),
             mimetype="application/x-ndjson",
         )
+    if stream:
+        # A tool turn streams its text live too; the call arrives as one
+        # message carrying tool_calls, before the done line (as Ollama sends
+        # it). Same gated frames as the OpenAI path, re-dressed as ndjson.
+        def restart():
+            return slot.stream_llm(raw_messages, gen, "ollama", 0, t0)
+        frames = gated_stream(restart(), tools, "ollama", 0, slot.model_name,
+                              log=log_calls(slot), **constrain.stream_options(tc, gen, restart))
+        return Response(ollama_frames(frames, slot.model_name, t0),
+                        mimetype="application/x-ndjson")
 
     try:
-        text = slot.generate_llm(raw_messages, gen)
+        text = constrain.run(tc, gen, lambda: slot.generate_llm(raw_messages, gen))
     except Exception as e:
-        return jsonify({"error": explain_genai_error(e)}), 500
+        return (structured.error_response(turn, e, ollama=True) or
+                (jsonify({"error": explain_genai_error(e)}), 500))
+    if spec is not None:
+        structured.verdict(slot, spec, text)
 
     elapsed = time.perf_counter() - t0
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] [Ollama] "
@@ -262,7 +300,9 @@ def ollama_chat():
     generation_finish = getattr(text, "finish_reason", "stop")
     message = {"role": "assistant", "content": text}
     if tools_active:
+        raw_text = text
         text, tool_calls = parse_tool_calls(text, tools)
+        constrain.judge(tc, raw_text, tool_calls, generation_finish)
         message["content"] = text
         if tool_calls:
             # Ollama shape: arguments are an object, not a JSON string.
@@ -284,9 +324,6 @@ def ollama_chat():
         "done_reason": generation_finish,
         "total_duration": int(elapsed * 1e9),
     }
-    if stream:
-        # tools + stream: emit the buffered result as a single ndjson line.
-        return Response(json.dumps(final) + "\n", mimetype="application/x-ndjson")
     return jsonify(final)
 
 

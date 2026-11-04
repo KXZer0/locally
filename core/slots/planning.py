@@ -23,6 +23,17 @@ from core.models.geometry import (_effective_kv_bytes_per_token,
 from core.models.integrity import _dir_size_bytes
 
 
+def prompt_cache_on(device_name):
+    """The prefix-cache setting for one device: an explicit flag wins, unset
+    means CPU yes, GPU no (see config.PROMPT_CACHE). Every reader must go
+    through this -- testing `config.PROMPT_CACHE` for truth reads the unset
+    default as "off", which silently ignored --context-tokens, --cache-size-gb
+    and prewarm on the one device the default turns caching on for."""
+    if config.PROMPT_CACHE is not None:
+        return config.PROMPT_CACHE
+    return device_name == "CPU"
+
+
 class MemoryPlanning:
     """Sizing decisions for a DeviceSlot. Mixed in, never instantiated."""
 
@@ -34,9 +45,7 @@ class MemoryPlanning:
         10x regression plus a hang on the other, so "default on" was never a
         answerable question globally.
         """
-        if config.PROMPT_CACHE is not None:
-            return config.PROMPT_CACHE
-        return self.device_name == "CPU"
+        return prompt_cache_on(self.device_name)
 
     def _resolve_kv_pool_gb(self, vlm):
         """How many GB of KV pool this slot gets, and why.
@@ -53,7 +62,7 @@ class MemoryPlanning:
         Returns (gb, note). gb of 0 means no pool: VLM and NPU slots use the
         plain pipeline, which has no continuous-batching cache to size.
         """
-        if not config.PROMPT_CACHE or vlm or self.device_name not in ("GPU", "CPU"):
+        if not self._prompt_cache_on() or vlm or self.device_name not in ("GPU", "CPU"):
             return 0, ""
         per_tok = _effective_kv_bytes_per_token(self.model_dir)
         gib = 2 ** 30
@@ -125,7 +134,9 @@ class MemoryPlanning:
         if not budget or not weights:
             return 0, ""
         gib = 2 ** 30
-        need = weights * 1.05 + self.kv_pool_gb * gib + gib   # +1 GB runtime
+        # A draft model is resident too, and none of it is offloadable.
+        draft = (getattr(self, "speculative", None) or {}).get("draft_bytes", 0)
+        need = weights * 1.05 + draft + self.kv_pool_gb * gib + gib   # +1 GB runtime
         if need <= budget:
             return 0, ""
         overflow = need - budget

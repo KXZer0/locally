@@ -7,13 +7,16 @@ from datetime import datetime
 from flask import Response, jsonify, request
 
 from core import config, runtime
-from core.chat.common import (_maybe_capture_prewarm, _sse_tool_stream,
+from core.chat import structured
+from core.chat.tool_stream import gated_stream, log_calls
+from core.chat.common import (_maybe_capture_prewarm,
                               _turn_headers, make_id, parse_messages)
 from core.chat.turn import _builtin_tool_turn, _prepare_turn
 from core.errors import _TurnError, openai_error
 from core.genai.results import explain_genai_error
 from core.genai.tokens import _count_tokens
 from core.slots.route import _match_loaded
+from core.tools import constrain
 from core.tools.builtin import _builtin_generator, _builtin_stream
 from core.tools.gemma import split_reasoning
 from core.tools.parse import parse_tool_calls
@@ -130,6 +133,9 @@ def _anthropic_to_openai(body):
         out["temperature"] = body["temperature"]
     if body.get("top_p") is not None:
         out["top_p"] = body["top_p"]
+    response_format = structured.anthropic_to_response_format(body)
+    if response_format:
+        out["response_format"] = response_format
     client_tools, server_tools = _split_tools(body.get("tools"))
     if client_tools:
         out["tools"] = [{"type": "function",
@@ -147,6 +153,8 @@ def _anthropic_to_openai(body):
               f"supported, dropped: {', '.join(dropped)}", flush=True)
     if any(t.startswith("web_search_") for t in server_tools):
         out["web_search"] = True
+    if body.get("tool_choice") is not None:
+        out["tool_choice"] = body["tool_choice"]   # core/tools/constrain.py reads both shapes
     if body.get("calculator") is False:
         out["calculator"] = False
     if body.get("web_search") is False:
@@ -187,8 +195,9 @@ def _anthropic_stream(openai_frames, model, msg_id, input_tokens):
     Anthropic's protocol is block-structured where OpenAI's is a flat delta
     list: text arrives inside an explicit content block that has to be opened
     and closed, and a tool call is its own block whose arguments stream as
-    partial JSON. We buffer tool calls anyway (see _sse_tool_stream), so each
-    tool block is emitted whole.
+    partial JSON. Text streams live; a tool call arrives whole at the end
+    (core/chat/tool_stream.py holds its markup back), so the text block is
+    closed and each tool block is emitted whole after it.
     """
     yield _sse("message_start", {
         "type": "message_start",
@@ -238,6 +247,16 @@ def _anthropic_stream(openai_frames, model, msg_id, input_tokens):
 
             for tc in delta.get("tool_calls") or []:
                 if text_open:
+                    # The think filter holds the last few characters; once the
+                    # text block closes they have nowhere to go, so the final
+                    # words before a tool call ("I'll check.") were dropped.
+                    held = think.flush()
+                    if held:
+                        emitted += len(held)
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta", "index": index,
+                            "delta": {"type": "text_delta", "text": held},
+                        })
                     yield _sse("content_block_stop",
                                {"type": "content_block_stop", "index": index})
                     text_open = False
@@ -310,6 +329,7 @@ def anthropic_messages():
     msg_id = f"msg_{make_id()}"
     created = int(time.time())
     input_tokens = _count_tokens(slot, turn["text_prompt"])
+    tc = turn.get("tool_constraint")
 
     if turn["stream"]:
         # builtin first: _builtin_streamer drives a VLM slot too, and a VLM
@@ -319,17 +339,21 @@ def anthropic_messages():
                                      turn["builtin_specs"], turn, msg_id,
                                      created, t0)
         elif slot.model_type == "vlm" and turn["tools_active"]:
-            frames = _sse_tool_stream(
-                slot, turn["raw_messages"], gen, turn["tools"], msg_id,
-                created, t0,
-                generate=lambda: slot.generate_vlm(turn["text_prompt"],
-                                                   turn["images"], gen))
+            def restart():
+                return slot.stream_vlm(turn["text_prompt"], turn["images"], gen,
+                                       msg_id, created, t0)
+            frames = gated_stream(restart(), turn["tools"], msg_id, created,
+                                  slot.model_name, log=log_calls(slot),
+                                  **constrain.stream_options(tc, gen, restart))
         elif slot.model_type == "vlm":
             frames = slot.stream_vlm(turn["text_prompt"], turn["images"], gen,
                                      msg_id, created, t0)
         elif turn["tools_active"]:
-            frames = _sse_tool_stream(slot, turn["raw_messages"], gen,
-                                      turn["tools"], msg_id, created, t0)
+            def restart():
+                return slot.stream_llm(turn["raw_messages"], gen, msg_id, created, t0)
+            frames = gated_stream(restart(), turn["tools"], msg_id, created,
+                                  slot.model_name, log=log_calls(slot),
+                                  **constrain.stream_options(tc, gen, restart))
         else:
             frames = slot.stream_llm(turn["raw_messages"], gen, msg_id, created, t0)
         return Response(
@@ -346,15 +370,17 @@ def anthropic_messages():
         elif turn.get("native_prompt"):
             text = slot.generate_native(turn["native_prompt"], gen)
         elif slot.model_type == "vlm":
-            text = slot.generate_vlm(turn["text_prompt"], turn["images"], gen)
+            text = constrain.run(tc, gen, lambda: slot.generate_vlm(
+                turn["text_prompt"], turn["images"], gen))
         else:
             _maybe_capture_prewarm(turn["raw_messages"])
-            text = slot.generate_llm(turn["raw_messages"], gen)
+            text = constrain.run(tc, gen, lambda: slot.generate_llm(turn["raw_messages"], gen))
     except Exception as e:
         err = explain_genai_error(e)
         print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] "
               f"error: {err}", flush=True)
-        return openai_error(f"Inference failed: {err}", "server_error", 500)
+        return (structured.error_response(turn, e) or
+                openai_error(f"Inference failed: {err}", "server_error", 500))
 
     generation_finish = getattr(text, "finish_reason", "stop")
     reasoning = getattr(text, "reasoning", "") if turn.get("thinking") else ""
@@ -363,7 +389,9 @@ def anthropic_messages():
         reasoning = captured if turn.get("thinking") else ""
     tool_calls = []
     if turn["tools_active"]:
+        raw_text = text
         text, tool_calls = parse_tool_calls(text, turn["tools"])
+        constrain.judge(tc, raw_text, tool_calls, generation_finish)
     stripped = strip_thinking(text)
     if not stripped and not tool_calls:
         # Same rule as the streaming path: never hand back an empty message

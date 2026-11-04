@@ -4,7 +4,7 @@ import os
 
 import flask.cli
 
-from core import config, odysseus
+from core import config
 from core.sandbox.python_exec import sandbox_status
 from core.hardware.devices import _gpu_has_xmx
 from core.models.describe import list_models, scan_models
@@ -29,12 +29,15 @@ def configure(args):
     config.CHECK_UPDATES = bool(args.check_updates)
     config.AGENT_TOOLS = ({t.strip() for t in args.agent_tools.split(",") if t.strip()}
                    if args.agent_tools else None)
+    config.CONSTRAIN_TOOLS = not getattr(args, "no_constrain_tools", False)
     config.ANTHROPIC_MODEL_MAP = {
         k.strip().lower(): v.strip()
         for k, _, v in (part.partition("=") for part in
                         (args.anthropic_model_map or "").split(","))
         if k.strip() and v.strip()}
     config.MAX_IMAGE_DIM = args.max_dim
+    config.ASR_CHUNK_SECONDS = max(5.0, float(args.asr_chunk_seconds))
+    config.ASR_NPU_WINDOW_SECONDS = max(2.0, float(args.asr_npu_window_seconds))
     config.DEBUG_REQUESTS = args.debug
     config.VSCODE_COMPAT = args.vscode_compat
     config.ALLOW_FROM = args.allow_from
@@ -52,6 +55,8 @@ def configure(args):
     config.PROMPT_CACHE = (False if args.no_prompt_cache
                     else (True if args.prompt_cache else None))
     config.KV_PRECISION = args.kv_precision
+    from core.genai.speculative_cli import configure as configure_speculative
+    configure_speculative(args)
     config.GPU_RESERVE_BYTES = int(max(0.0, args.gpu_reserve_gb) * 2 ** 30)
     if args.npu_prompt_len:
         if args.npu_prompt_len > 8192:
@@ -90,31 +95,6 @@ def configure(args):
     if web_search_mod.WEB_SEARCH_URL:
         print(f"  Web search via {web_search_mod.WEB_SEARCH_URL} "
               f"(the only outbound network path this server has)", flush=True)
-    config.CONTAINER_ENGINE = args.container_engine
-    config.ODYSSEUS_PORT = int(args.odysseus_port or config.ODYSSEUS_PORT)
-    config.ODYSSEUS_DIR = (os.path.abspath(os.path.expanduser(args.odysseus_dir))
-                           if args.odysseus_dir else None)
-    # Flag, then the saved preference, then "yes when a checkout is here" --
-    # resolved in core/odysseus.py so `locally.py odysseus status` and the
-    # server cannot disagree about what will happen. The one persisted
-    # preference still read: it is machine-local state
-    # (odysseus-autostart.json), not a browser setting, and the thing it
-    # controls happens at startup, so a value that does not survive a restart
-    # could never take effect.
-    fossil = odysseus.fossil_autostart_file()
-    if fossil:
-        # Say it rather than flipping the behaviour in silence: the file is a
-        # real click the user made, in a settings panel that has since been
-        # deleted along with its only writer.
-        path, value = fossil
-        print(f"  Ignoring {os.path.basename(path)} (autostart="
-              f"{str(bool(value)).lower()}): it was written by the retired "
-              f"settings panel and has had no writer since. Set it with "
-              f"`python locally.py odysseus autostart on|off`.", flush=True)
-    config.ODYSSEUS_AUTOSTART, autostart_why = odysseus.autostart_setting(
-        args.odysseus_autostart, config.ODYSSEUS_DIR)
-    if config.ODYSSEUS_AUTOSTART:
-        print(f"  Odysseus autostart: {autostart_why}", flush=True)
     config.PYTHON_TOOL_ENABLED = bool(args.python_tool)
     config.PYTHON_SANDBOX = args.python_sandbox
     config.PYTHON_TOOL_TIMEOUT = max(0.1, min(60.0, float(args.python_timeout)))
@@ -157,7 +137,9 @@ def configure(args):
               "GPU memory.", flush=True)
     if args.prewarm:
         config.PREWARM_FILE = os.path.expanduser(args.prewarm)
-    elif args.idle_timeout == 0 and not args.no_prewarm and config.PROMPT_CACHE:
+    elif args.idle_timeout == 0 and not args.no_prewarm and config.PROMPT_CACHE is not False:
+        # Unset (per-device) counts: the slot decides; _prewarm_slot skips one
+        # whose device has caching off.
         # Agent/server mode (--idle-timeout 0 keeps models loaded forever) is
         # exactly where prewarm pays off — and the idle unload that would
         # throw the warmed cache away can't happen, so turn it on. Port-scoped

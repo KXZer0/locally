@@ -72,6 +72,14 @@ TIERS = {
     "generate": {"npu": None, "gpu": "image-gen/model_index.json", "cpu": None},
 }
 
+# What the text models are called on the wire (/v1/embeddings, /v1/rerank).
+# The directories are named for their task ("embed/"), so the name lives here,
+# beside the paths it describes: change a TIERS entry, change this with it.
+TEXT_MODEL_NAMES = {"search": "all-MiniLM-L6-v2", "rerank": "bge-reranker-base"}
+# The sequence length both text models are reshaped to (see _model). Anything
+# longer is truncated, as sentence-transformers does for MiniLM's own 256.
+TEXT_MAX_TOKENS = 256
+
 
 # PP-DocLayoutV3's classes, in the order its inference.yml declares them. The
 # index into this list is the class id the model emits, so the order is load
@@ -553,6 +561,17 @@ class UtilityEngine:
                 value = np.zeros((1, 256), dtype=np.int64)
             feed[name] = np.asarray(value).astype(np.int64)
         return feed
+
+    def token_counts(self, task, texts):
+        """Untruncated token count of each text, special tokens included.
+
+        The caller compares it against TEXT_MAX_TOKENS: it is what tells an
+        API client that the model read only the first part of an input, and
+        what a usage block should report.
+        """
+        self._require(task)
+        tokenizer = self._tokenizer_for(task)
+        return [len(tokenizer(text, verbose=False)["input_ids"]) for text in texts]
 
     def embed(self, texts):
         self._require("search")

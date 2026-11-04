@@ -6,12 +6,14 @@ from datetime import datetime
 
 from flask import Response, jsonify, request
 
-from core.chat.common import (_debug_raw, _maybe_capture_prewarm, _sse_tool_stream,
-                              _tool_message,
+from core.chat import structured
+from core.chat.common import (_debug_raw, _maybe_capture_prewarm, _tool_message,
                               _turn_headers, make_id)
+from core.chat.tool_stream import gated_stream, log_calls, stream_native
 from core.chat.turn import _builtin_tool_turn, _prepare_turn
 from core.errors import _TurnError, openai_error
-from core.genai.results import explain_genai_error, usage_block
+from core.genai.results import GeneratedText, explain_genai_error, usage_block
+from core.tools import constrain
 from core.tools.builtin import _builtin_generator, _builtin_stream
 from core.tools.parse import parse_tool_calls
 
@@ -29,6 +31,7 @@ def chat_completions():
     completion_id = make_id()
     created = int(time.time())
     t0 = turn["t0"]
+    tc = turn.get("tool_constraint")
 
     if python_tool_active and stream:
         # Streams live and still runs tools -- see _builtin_stream.
@@ -68,7 +71,8 @@ def chat_completions():
 
     if stream and not tools_active and not images:
         return Response(
-            slot.stream_llm(raw_messages, gen, completion_id, created, t0),
+            structured.watch_stream(
+                slot.stream_llm(raw_messages, gen, completion_id, created, t0), turn),
             mimetype="text/event-stream",
             headers=_turn_headers(turn, slot),
         )
@@ -76,26 +80,31 @@ def chat_completions():
     # --- VLM path ---
     if slot.model_type == "vlm":
         if stream and tools_active:
-            # A tool turn has to be whole before tool_calls can be emitted.
+            # Live text; only a tool call's own markup is held (tool_stream.py).
+            def vlm_frames():
+                return slot.stream_vlm(text_prompt, images, gen, completion_id, created, t0)
             return Response(
-                _sse_tool_stream(slot, raw_messages, gen, tools, completion_id,
-                                 created, t0,
-                                 generate=lambda: slot.generate_vlm(text_prompt, images, gen)),
+                gated_stream(vlm_frames(), tools, completion_id, created, slot.model_name,
+                             log=log_calls(slot),
+                             **constrain.stream_options(tc, gen, vlm_frames)),
                 mimetype="text/event-stream",
                 headers=_turn_headers(turn, slot),
             )
         if stream:
             return Response(
-                slot.stream_vlm(text_prompt, images, gen, completion_id, created, t0),
+                structured.watch_stream(
+                    slot.stream_vlm(text_prompt, images, gen, completion_id, created, t0),
+                    turn),
                 mimetype="text/event-stream",
                 headers=_turn_headers(turn, slot),
             )
 
         try:
-            text = slot.generate_vlm(text_prompt, images, gen)
+            text = constrain.run(tc, gen, lambda: slot.generate_vlm(text_prompt, images, gen))
         except Exception as e:
             print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] VLM error: {e}", flush=True)
-            return openai_error(f"Inference failed: {e}", "server_error", 500)
+            return (structured.error_response(turn, e) or
+                    openai_error(f"Inference failed: {e}", "server_error", 500))
 
         elapsed = time.perf_counter() - t0
         print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
@@ -106,7 +115,9 @@ def chat_completions():
         message = {"role": "assistant", "content": text}
         if tools_active:
             _debug_raw("vlm", text)
+            raw_text = text
             text, vlm_calls = parse_tool_calls(text, tools)
+            constrain.judge(tc, raw_text, vlm_calls, finish)
             if vlm_calls:
                 message = {"role": "assistant", "content": text or None,
                            "tool_calls": vlm_calls}
@@ -120,6 +131,7 @@ def chat_completions():
             "usage": usage,
         })
         resp.headers.extend(_turn_headers(turn, slot))
+        _judge(resp, turn, text)
         return resp
 
     # Capture a big agent prompt so the next startup can pre-warm it (no-op
@@ -127,24 +139,30 @@ def chat_completions():
     _maybe_capture_prewarm(raw_messages)
 
     # --- LLM path ---
-    # Tool turns must be buffered (we need the whole generation before emitting a
-    # structured tool_calls delta). When streaming, buffer in a background thread
-    # and emit SSE keep-alive frames so a long prefill on a big agent prompt
-    # doesn't trip the client's idle watchdog (see _sse_tool_stream).
+    # Tool turns stream their text live; the gate holds back only what could
+    # still be a tool call, and the parsed calls follow as structured
+    # tool_calls deltas (core/chat/tool_stream.py). stream_llm's own heartbeat
+    # keeps a long prefill on a big agent prompt from tripping a client's
+    # idle watchdog.
     if stream and tools_active:
+        def llm_frames():
+            return slot.stream_llm(raw_messages, gen, completion_id, created, t0)
         return Response(
-            _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0),
+            gated_stream(llm_frames(), tools, completion_id, created, slot.model_name,
+                         log=log_calls(slot),
+                         **constrain.stream_options(tc, gen, llm_frames)),
             mimetype="text/event-stream",
             headers=_turn_headers(turn, slot),
         )
 
     # Non-streaming (with or without tools): one blocking generate + JSON reply.
     try:
-        text = slot.generate_llm(raw_messages, gen)
+        text = constrain.run(tc, gen, lambda: slot.generate_llm(raw_messages, gen))
     except Exception as e:
         err = explain_genai_error(e)
         print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] LLM error: {err}", flush=True)
-        return openai_error(f"Inference failed: {err}", "server_error", 500)
+        return (structured.error_response(turn, e) or
+                openai_error(f"Inference failed: {err}", "server_error", 500))
 
     elapsed = time.perf_counter() - t0
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
@@ -157,7 +175,9 @@ def chat_completions():
     tool_calls = []
     if tools_active:
         _debug_raw("llm", text)
+        raw_text = text
         text, tool_calls = parse_tool_calls(text, tools)
+        constrain.judge(tc, raw_text, tool_calls, generation_finish)
         if tool_calls:
             print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
                   f"{len(tool_calls)} tool call(s): "
@@ -178,13 +198,14 @@ def chat_completions():
         "usage": usage,
     })
     resp.headers.extend(_turn_headers(turn, slot))
+    _judge(resp, turn, GeneratedText(text, generation_finish))
     return resp
 
 
 def _native_response(turn, completion_id, created, t0):
     """A Gemma 4 turn answered from its own chat template (core/tools/gemma.py):
     tool calls in the model's dialect, the thought channel as reasoning_content.
-    Buffered, because a structured tool_calls delta needs the whole generation."""
+    Streams live through the same gate as every other tool turn."""
     slot, gen, tools = turn["slot"], turn["gen"], turn["tools"]
     prompt = turn["native_prompt"]
 
@@ -196,8 +217,10 @@ def _native_response(turn, completion_id, created, t0):
     if turn["stream"]:
         def frames():
             try:
-                yield from _sse_tool_stream(slot, None, gen, tools, completion_id, created, t0,
-                                           generate=generate)
+                yield from gated_stream(
+                    stream_native(slot, prompt, gen, completion_id, created, t0, cancelled),
+                    tools, completion_id, created, slot.model_name, native=True,
+                    log=log_calls(slot))
             finally:
                 # Closing the HTTP stream cancels THIS request, not another
                 # request currently using the shared model.
@@ -210,7 +233,8 @@ def _native_response(turn, completion_id, created, t0):
     except Exception as e:
         err = explain_genai_error(e)
         print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] LLM error: {err}", flush=True)
-        return openai_error(f"Inference failed: {err}", "server_error", 500)
+        return (structured.error_response(turn, e) or
+                openai_error(f"Inference failed: {err}", "server_error", 500))
     print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
           f"Response completed in {time.perf_counter() - t0:.1f}s", flush=True)
     finish, usage = getattr(text, "finish_reason", "stop"), usage_block(text)
@@ -227,7 +251,15 @@ def _native_response(turn, completion_id, created, t0):
         "usage": usage,
     })
     resp.headers.extend(_turn_headers(turn, slot))
+    _judge(resp, turn, GeneratedText(message.get("content") or "", finish))
     return resp
+
+
+def _judge(resp, turn, text):
+    """Replace the 'constrained' header with what the answer turned out to be."""
+    if turn.get("structured") is not None:
+        resp.headers["X-Structured-Output"] = structured.verdict(
+            turn["slot"], turn["structured"], text)
 
 
 # ---------------------------------------------------------------------------

@@ -9,14 +9,12 @@ after it."""
 from collections import deque
 from datetime import datetime
 import numpy as np
-import threading
-import time
 from core import runtime
 from core.slots.vad import VadSlot
-from core.slots.select import _slot_serviceable
+from core.voice.asr_runs import TranscriptionRuns
 
 
-class VoiceStreamSession:
+class VoiceStreamSession(TranscriptionRuns):
     """Endpointing for one open microphone.
 
     Holds the turn's audio as it arrives, which is the point: when the user
@@ -29,6 +27,12 @@ class VoiceStreamSession:
     second, so the guess usually would not have landed in time. What it does
     buy is that same ~500 ms off the front of a run that has to happen anyway,
     with no upload after it. The client sends nothing and waits for `transcript`.
+
+    A streaming ASR engine (parakeet-unified, Nemotron) goes further: the
+    turn's frames are fed to it as they arrive, so at speech_end only the
+    last unit is left to decode and speculation has nothing to win -- it is
+    skipped. Any other engine, or a streaming one that is not resident, takes
+    the batch path above unchanged (core/voice/asr_runs.py).
     """
 
     PREROLL_MS = 500        # kept before a turn opens, so the first word survives
@@ -61,6 +65,7 @@ class VoiceStreamSession:
         self.asr_seq = 0             # every run is tagged; only one can win
         self.asr_want = None
         self.spec_seq = None
+        self.stream = None           # live StreamingTranscriber for this turn
 
     @property
     def frame_ms(self):
@@ -123,6 +128,8 @@ class VoiceStreamSession:
 
         if self.speaking:
             self.utterance.append(frame)
+            if self.stream is not None:
+                self.stream.feed(frame)
         else:
             self.preroll.append(frame)
 
@@ -169,6 +176,10 @@ class VoiceStreamSession:
                 self.spoken_ms = self.MIN_SPEECH_MS / 2
                 self.utt_id += 1
                 self.spec = None
+                self._drop_stream()
+                self.stream = self._open_stream()
+                if self.stream is not None:
+                    self.stream.feed(self.samples())
                 events.append({"type": "speech_start"})
             return events
 
@@ -177,7 +188,8 @@ class VoiceStreamSession:
             self.spoken_ms += dt
         else:
             self.silence_ms += dt
-            if (self.silence_ms >= self.SPECULATE_MS and not self.spec_busy
+            if (self.stream is None
+                    and self.silence_ms >= self.SPECULATE_MS and not self.spec_busy
                     and self.spec_at != self.spoken_ms
                     and self.spoken_ms >= self.SPECULATE_MIN_MS):
                 self.spec_busy = True
@@ -191,6 +203,7 @@ class VoiceStreamSession:
             verdict, score = ("abstain", None)
             if self.spoken_ms >= self.MIN_SPEECH_MS:
                 verdict, score = self._verify(samples, "turn")
+            stream, self.stream = self.stream, None
             if self.spoken_ms < self.MIN_SPEECH_MS:
                 done["tooShort"] = True
             elif verdict == "reject":
@@ -202,6 +215,11 @@ class VoiceStreamSession:
                 done["notEnrolled"] = True
                 if score is not None:
                     done["score"] = round(score, 3)
+            elif stream is not None:
+                # Fed as it was spoken; only the tail is left to decode.
+                self.awaiting = self.utt_id
+                self._finish_stream(stream, samples, self.utt_id)
+                stream = None
             elif (self.spec and self.spec["id"] == self.utt_id
                   and self.spec_at == self.spoken_ms):
                 # The guess covered every word this turn contains — trailing
@@ -221,49 +239,11 @@ class VoiceStreamSession:
                 self.awaiting = self.utt_id
                 self.asr_want = self._transcribe(samples, self.utt_id,
                                                  speculative=False)
+            if stream is not None:       # dropped turn: stop its worker
+                stream.cancel()
             self.speaking = False
             self.utterance = []
             self.silence_ms = self.spoken_ms = self.speech_ms = 0.0
             self.spec = self.spec_at = None
             events.append(done)
         return events
-
-    def _transcribe(self, samples, utt_id, speculative):
-        """Run Whisper on a background thread; returns the run's sequence id.
-
-        Every run is tagged, and only the run the turn is waiting for can
-        become the final answer — otherwise a speculative run started before
-        the user carried on could overwrite the real one. Whisper takes the
-        device lock this slot shares with chat, so a wasted run is not free for
-        anything else on that device; hence one speculation at a time.
-        """
-        self.asr_seq += 1
-        seq = self.asr_seq
-        if not runtime.whisper_slot or not _slot_serviceable(runtime.whisper_slot):
-            self.spec_busy = False
-            return seq
-        language = self.language
-        spoken_at = self.spoken_ms
-
-        def run():
-            t0 = time.perf_counter()
-            text = None
-            try:
-                runtime.whisper_slot.ensure_loaded()
-                text = runtime.whisper_slot.transcribe(samples, language=language or None)
-            except Exception as e:
-                print(f"{datetime.now():%H:%M:%S} !! [voice] transcription "
-                      f"failed: {e}", flush=True)
-            result = {"id": utt_id, "text": (text or "").strip(),
-                      "ms": (time.perf_counter() - t0) * 1000}
-            if speculative:
-                self.spec_busy = False
-                if utt_id == self.utt_id and self.speaking:
-                    self.spec = result
-                    self.spec_at = spoken_at
-                    return
-            if seq == self.asr_want and utt_id == self.awaiting:
-                self.final = result
-
-        threading.Thread(target=run, daemon=True).start()
-        return seq

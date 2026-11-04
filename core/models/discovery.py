@@ -12,6 +12,7 @@ from core.models.identity import _is_generative_dir, is_vlm, model_display_name
 from core.models.integrity import _dir_size_bytes
 from core.models.irinfo import read_ir_rt_info
 from core.slots.select import _slot_serviceable
+from core.slots.planning import prompt_cache_on
 
 
 def canonical_model_name(raw):
@@ -34,7 +35,7 @@ def _models_data():
     # overall_status() both count it, and the chat path reloads it on demand --
     # so listing only "ready" advertised nothing after the idle timeout while
     # the server went on answering. A client that discovers models by polling
-    # this endpoint (Odysseus does) reads the empty list as "backend offline",
+    # this endpoint reads the empty list as "backend offline",
     # which is what it looks like fifteen quiet minutes after you last used it.
     data = []
     for slot in (runtime.primary, runtime.secondary):
@@ -47,7 +48,8 @@ def _models_data():
             })
     if runtime.whisper_slot and runtime.whisper_slot.status == "ready":
         data.append({
-            "id": f"whisper@{runtime.whisper_slot.device_name}",
+            "id": f"{getattr(runtime.whisper_slot, 'engine', 'whisper')}"
+                  f"@{runtime.whisper_slot.device_name}",
             "object": "model",
             "created": 0,
             "owned_by": f"local-{runtime.whisper_slot.device_name.lower()}",
@@ -154,7 +156,7 @@ def _device_can_host(device_name, device_id, model_dir, vlm):
         return True, ("no budget reported (allocates from system RAM)"
                       if device_name == "NPU" else "fit unknown")
     kv = (config.PROMPT_CACHE_GB * 2 ** 30
-          if config.PROMPT_CACHE and not vlm and device_name in ("GPU", "CPU") else 0)
+          if prompt_cache_on(device_name) and not vlm and device_name in ("GPU", "CPU") else 0)
     need = (weights + kv) * 1.1
     if need > mem:
         # MoE disk offload keeps only part of the experts resident, so a model

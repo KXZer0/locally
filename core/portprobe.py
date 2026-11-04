@@ -1,8 +1,8 @@
 """A liveness probe that never blocks the caller.
 
 `/health` is polled by the web UI, so anything it calls is on a hot path. Two
-"is it running?" probes were added to it (OpenCode's web server, Odysseus) and
-each does a real TCP/HTTP round trip. Measured on the 358H, 2026-08-30, with
+"is it running?" probes were added to it (OpenCode's web server and a
+companion app) and each does a real TCP/HTTP round trip. Measured on the 358H, 2026-08-30, with
 neither service running: `/health` cost **1.86 s per call**, every call, against
 1.5 ms for `/v1/models` and 5 ms for `/v1/memory`. The whole UI polls that.
 

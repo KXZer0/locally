@@ -9,7 +9,7 @@
     the web UI -- is the CONFIGURATION. Which model lands on which device,
     which voice models load and where, the KV precision and context budget a
     27B needs in order to fit, and the SearXNG port that keeps locally's
-    search independent of Odysseus's are all measured decisions (CLAUDE.md,
+    search independent of any other SearXNG are all measured decisions (CLAUDE.md,
     TODONT.md). A bare `python locally.py` starts a server that runs and is
     configured differently: no ASR, no TTS, no VAD, f16 KV, a 2 GB pool.
 
@@ -56,6 +56,11 @@ param(
     # Optional models stay off unless named. API startup should not compile
     # audio engines merely because conventional folders happen to exist.
     [string] $Whisper   = '',
+    # Speech-to-text by folder: parakeet-unified-en-0.6b (English, streams;
+    # its streaming\fp16 folder), Parakeet TDT v3 (multilingual) or Whisper;
+    # the server reads which. Takes
+    # precedence over -Whisper, since one ASR model is served at a time.
+    [string] $Asr       = '',
     [string] $Tts       = '',
     [string] $Speaker   = '',
     # Silero voice-activity model -- one 1.3 MB file, and it is what lets the
@@ -82,8 +87,8 @@ param(
     # The KV pool IS the context window, and agent clients are what make it
     # matter: Claude Code alone sends ~35k tokens before you type.
     [string] $ContextTokens = '40000',
-    # 8081, not 8080. Odysseus publishes its own SearXNG on 127.0.0.1:8080, so
-    # on a machine running both, whichever starts first takes the port and the
+    # 8081, not 8080. 8080 is where other stacks commonly publish their own
+    # SearXNG, so on a machine running both, whichever starts first takes the port and the
     # other silently uses its neighbour's search engine.
     [int]    $SearxPort = 8081,
     # int8 KV halves cache bytes per token. Measured on the B390: same prefill
@@ -92,6 +97,11 @@ param(
     # ASR sits in the voice critical path and is ~3x faster on the GPU.
     [ValidateSet('GPU', 'CPU', 'NPU')]
     [string] $WhisperDevice = 'GPU',
+    # Parakeet device. CPU by default: the chat model usually holds the GPU,
+    # and the NPU path is static-shape and not yet verified here -- run
+    # scripts/parakeet-check.py on this machine before choosing NPU.
+    [ValidateSet('GPU', 'CPU', 'NPU')]
+    [string] $AsrDevice = 'CPU',
     # Kokoro text-to-speech device. CPU keeps the GPU free; GPU is faster for voice apps (Pumpkin Trivia).
     [ValidateSet('GPU', 'CPU')]
     [string] $TtsDevice = 'CPU',
@@ -273,7 +283,11 @@ if ($OffloadRatio -and $OffloadRatio -ne 'auto') {
 # ASR on the GPU: measured 0.3 s against ~1.05 s on CPU for the same clip, and
 # it sits directly in the voice turn's critical path. 245 MB next to a
 # multi-GB chat model is noise.
-if ($Whisper -and (Test-Path $Whisper)) { $serverArgs += @('--whisper-dir', $Whisper, '--whisper-device', $WhisperDevice) }
+if ($Asr -and (Test-Path $Asr)) {
+    $serverArgs += @('--asr-dir', $Asr, '--asr-device', $AsrDevice)
+} elseif ($Whisper -and (Test-Path $Whisper)) {
+    $serverArgs += @('--whisper-dir', $Whisper, '--whisper-device', $WhisperDevice)
+}
 if ($Tts -and (Test-Path $Tts))         { $serverArgs += @('--tts-dir', $Tts, '--tts-device', $TtsDevice) }
 # VAD on the CPU deliberately: ~1M parameters, running on every 32 ms frame
 # for as long as the mic is open. That belongs nowhere near the NPU, which is

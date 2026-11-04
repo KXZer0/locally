@@ -6,7 +6,7 @@ from datetime import datetime
 
 from flask import jsonify, request
 
-from core import config, odysseus, runtime
+from core import config, runtime
 from core.chat.common import overall_status
 from core.chat.turn import python_tool_status
 from core.hardware.devices import (_gpu_shares_system_ram,
@@ -81,7 +81,11 @@ def _health_data():
               },
               "service": "locally", "mode": "headless"}
     if runtime.whisper_slot and runtime.whisper_slot.status != "not_configured":
-        result["whisper"] = runtime.whisper_slot.info
+        # `asr` is the ASR slot under its honest name, with `engine` saying
+        # whisper or parakeet. `whisper` stays, same object, because clients
+        # (the terminal's /voice among them, before this change) gate on it.
+        result["asr"] = runtime.whisper_slot.info
+        result["whisper"] = result["asr"]
     if runtime.tts_slot and runtime.tts_slot.status != "not_configured":
         result["tts"] = runtime.tts_slot.info
     # The Voice tab enables auto turn-taking from this. Reported only when the
@@ -221,6 +225,3 @@ def _memory_data():
 
 
 atexit.register(_searx.stop)
-# Only ever stops a stack this process started, and `stop` never `down`, so
-# nothing the user has in Odysseus can be lost by locally exiting.
-atexit.register(odysseus.stop)
