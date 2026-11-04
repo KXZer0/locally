@@ -260,6 +260,9 @@ def _prepare_turn(body, native=False):
                     frequency=body.get("frequency_penalty"),
                     presence=body.get("presence_penalty"))
     structured_output.apply(gen, structured)
+    # Lossless knobs a client may tune; the slot clears them if it has no draft.
+    from core.genai.speculative import request_overrides
+    request_overrides(gen, body)
 
     # A thought channel cannot open under a JSON grammar; asking for one would
     # put the reasoning inside the document.

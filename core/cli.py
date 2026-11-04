@@ -313,6 +313,8 @@ def parse_args(argv=None):
                         "path<TAB>name<TAB>llm|vlm and exit. The scriptable "
                         "form of --scan: launchers and tooling read this "
                         "instead of keeping their own list of model names.")
+    from core.genai.speculative_cli import add_arguments as add_speculative_args
+    add_speculative_args(p)
     return p.parse_args(argv)
 
 

@@ -107,6 +107,20 @@ OFFLOAD_RATIO = "auto"
 GPU_RESERVE_BYTES = 3 * 2 ** 30
 
 
+# --- speculative decoding (core/genai/speculative.py) -----------------------
+
+# Draft model directories (--draft-model, repeatable). Resolved per model in
+# load(): the first one whose tokenizer matches the loaded model is used, so a
+# swap to a model of another family loads without a draft instead of failing.
+DRAFT_MODELS = []
+DRAFT_DEVICE = None          # --draft-device; None = the main model's device
+NUM_ASSISTANT_TOKENS = 5     # --num-assistant-tokens (genai's own default)
+ASSISTANT_CONFIDENCE = 0.0   # --assistant-confidence; >0 replaces the fixed count
+DRAFT_SAMPLING = False       # --draft-sampling: let sampled turns use the draft
+PROMPT_LOOKUP = False        # --prompt-lookup (off: see the module docstring)
+MAX_NGRAM_SIZE = 3           # --max-ngram-size
+
+
 # --- speech to text (Parakeet) ---------------------------------------------
 
 # Longest audio one Parakeet encoder pass sees on CPU/GPU (--asr-chunk-seconds).

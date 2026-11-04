@@ -358,6 +358,47 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   constrained turn. Schema errors from xgrammar all come from `json_schema_converter.cc`
   and are 400s; `_check_schema` catches typo'd types and remote `$ref`s first.
   Constraining tool calls themselves is the follow-up (structural tags), not done.
+- **Speculative decoding: `--draft-model` / `--prompt-lookup`, off by default and
+  unmeasured on real weights** (2026-11-04, `core/genai/speculative.py`,
+  `draft_check.py`). genai 2026.4.1 builds BOTH on the continuous-batching backend
+  even with no `scheduler_config` (errors come from `continuous_batching/pipeline.cpp`),
+  so on GPU speculation means the CB backend whose prefill measured ~10x slow on the
+  B390. Prefix caching stays per-device (off on GPU), so the hang is not re-enabled.
+  Whether CB without prefix caching still prefills slowly is NOT known, and
+  `scripts/speculative-check.py` prints prefill tok/s for exactly that reason.
+  **Verified, on random-weight IRs with a real tokenizer, CPU only:** through
+  `DeviceSlot` (and served end to end by `locally.py --draft-model`, which reported
+  acceptance in `/health` and `/v1/metrics`), greedy output is byte-identical with and
+  without a draft (a smaller draft at 0% acceptance, a perturbed one at 73%), and with
+  and without prompt lookup. That holds on the plain, CB and prefix-cached backends,
+  streamed and not, and with per-request `num_assistant_tokens`. Five things were
+  found by running it. (1) Draft + `do_sample` crashed on the first rejected draft
+  (`content_length <= prompt_ids.size() + m_generated_ids.size()`), and that pipeline
+  then silently drafted 0 tokens for life. It also leaked into a later pipeline in the
+  same process, which then read as healthy. So sampled turns on a draft slot run
+  greedy unless `--draft-sampling`, and the check script probes sampling in a fresh
+  process. Prompt lookup sampled fine. (2) Prompt lookup refuses any request without
+  `num_assistant_tokens` AND `max_ngram_size`, and a plain pipeline refuses
+  `max_ngram_size != 0`. That is why every `generate` path runs `_speculate(gen)`,
+  warmup and prewarm included. (3) A `draft_model()` object is rewritten in place:
+  reusing it fails with "No ScaledDotProductAttention". So it is built fresh per load,
+  and a failed CB attempt is not retried with the same object. (4) genai did NOT
+  refuse a draft with a mismatched vocab_size, so `check_tokenizers` compares
+  tokenizer.json vocab, merges and added tokens (or the IR vocab, or probe
+  encodings), plus the special ids. It refuses the DRAFT, not the load, so a swap to
+  another family still loads. (5) Draft and prompt lookup are mutually exclusive.
+  Acceptance comes from `extended_perf_metrics.get_draft_acceptance_rate()`;
+  tokens/step (generated ÷ `raw_metrics.token_infer_durations`) covers prompt lookup,
+  which reports no acceptance. Both go in the log line, `/v1/metrics` and
+  `/health.<slot>.speculative`.
+  **Not verified:** any speedup; anything on GPU or NPU (none here). The NPU draft goes
+  through genai's stateful path (`device == "NPU" || draft device == "NPU"`), is
+  attempted, and falls back to no draft if it cannot be built. Prompt lookup on NPU is
+  skipped (no CB there). Also unverified: EAGLE-3 heads (genai: greedy-only, fixed
+  count) and Gemma4-MTP (genai: stateful LLMPipeline, CPU/GPU, greedy). VLM slots are
+  skipped: genai's only VLM path is DFlash with a purpose-built draft. That is why
+  gemma-4-26b-a4b and Qwen3.5-9B get nothing here. NEXT-STEPS once recorded EAGLE-3 at
+  +6% GPU / +14% CPU on Qwen3-8B. That was an earlier stack, never wired into the server.
 - Observability: per-request log lines include TTFT (streaming: wall-clock to first token;
   non-streaming: `perf_metrics` via `extract_perf`) — a prefix-cache hit is sub-second vs a
   cold multi-second/minute prefill, so hits/misses are visible without instrumentation.

@@ -63,6 +63,8 @@ def ollama_generate():
                     frequency=_opts.get("frequency_penalty"),
                     presence=_opts.get("presence_penalty"))
     structured.apply(gen, spec)
+    from core.genai.speculative import request_overrides
+    request_overrides(gen, _opts)
 
     t0 = time.perf_counter()
 
