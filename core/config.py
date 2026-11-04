@@ -135,6 +135,7 @@ PREWARM_MIN_CHARS = 4000   # only capture agent-sized system prompts, not chat
 
 AGENT_TOOLS = None   # --agent-tools: set of names to keep, or None (all)
 ANTHROPIC_MODEL_MAP = {}   # --anthropic-model-map: {substring of claude-* name: local model}
+CONSTRAIN_TOOLS = True     # --no-constrain-tools: no structural tags on tool turns
 
 # Measured on Qwen3-8B-int4-cw's own tokenizer, 2026-08-29, against the 8192
 # cap (scripts/measure-tool-budget.py reproduces it):

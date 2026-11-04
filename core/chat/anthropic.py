@@ -16,6 +16,7 @@ from core.errors import _TurnError, openai_error
 from core.genai.results import explain_genai_error
 from core.genai.tokens import _count_tokens
 from core.slots.route import _match_loaded
+from core.tools import constrain
 from core.tools.builtin import _builtin_generator, _builtin_stream
 from core.tools.gemma import split_reasoning
 from core.tools.parse import parse_tool_calls
@@ -152,6 +153,8 @@ def _anthropic_to_openai(body):
               f"supported, dropped: {', '.join(dropped)}", flush=True)
     if any(t.startswith("web_search_") for t in server_tools):
         out["web_search"] = True
+    if body.get("tool_choice") is not None:
+        out["tool_choice"] = body["tool_choice"]   # core/tools/constrain.py reads both shapes
     if body.get("calculator") is False:
         out["calculator"] = False
     if body.get("web_search") is False:
@@ -326,6 +329,7 @@ def anthropic_messages():
     msg_id = f"msg_{make_id()}"
     created = int(time.time())
     input_tokens = _count_tokens(slot, turn["text_prompt"])
+    tc = turn.get("tool_constraint")
 
     if turn["stream"]:
         # builtin first: _builtin_streamer drives a VLM slot too, and a VLM
@@ -335,17 +339,21 @@ def anthropic_messages():
                                      turn["builtin_specs"], turn, msg_id,
                                      created, t0)
         elif slot.model_type == "vlm" and turn["tools_active"]:
-            frames = gated_stream(
-                slot.stream_vlm(turn["text_prompt"], turn["images"], gen,
-                                msg_id, created, t0),
-                turn["tools"], msg_id, created, slot.model_name, log=log_calls(slot))
+            def restart():
+                return slot.stream_vlm(turn["text_prompt"], turn["images"], gen,
+                                       msg_id, created, t0)
+            frames = gated_stream(restart(), turn["tools"], msg_id, created,
+                                  slot.model_name, log=log_calls(slot),
+                                  **constrain.stream_options(tc, gen, restart))
         elif slot.model_type == "vlm":
             frames = slot.stream_vlm(turn["text_prompt"], turn["images"], gen,
                                      msg_id, created, t0)
         elif turn["tools_active"]:
-            frames = gated_stream(
-                slot.stream_llm(turn["raw_messages"], gen, msg_id, created, t0),
-                turn["tools"], msg_id, created, slot.model_name, log=log_calls(slot))
+            def restart():
+                return slot.stream_llm(turn["raw_messages"], gen, msg_id, created, t0)
+            frames = gated_stream(restart(), turn["tools"], msg_id, created,
+                                  slot.model_name, log=log_calls(slot),
+                                  **constrain.stream_options(tc, gen, restart))
         else:
             frames = slot.stream_llm(turn["raw_messages"], gen, msg_id, created, t0)
         return Response(
@@ -362,10 +370,11 @@ def anthropic_messages():
         elif turn.get("native_prompt"):
             text = slot.generate_native(turn["native_prompt"], gen)
         elif slot.model_type == "vlm":
-            text = slot.generate_vlm(turn["text_prompt"], turn["images"], gen)
+            text = constrain.run(tc, gen, lambda: slot.generate_vlm(
+                turn["text_prompt"], turn["images"], gen))
         else:
             _maybe_capture_prewarm(turn["raw_messages"])
-            text = slot.generate_llm(turn["raw_messages"], gen)
+            text = constrain.run(tc, gen, lambda: slot.generate_llm(turn["raw_messages"], gen))
     except Exception as e:
         err = explain_genai_error(e)
         print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] "
@@ -380,7 +389,9 @@ def anthropic_messages():
         reasoning = captured if turn.get("thinking") else ""
     tool_calls = []
     if turn["tools_active"]:
+        raw_text = text
         text, tool_calls = parse_tool_calls(text, turn["tools"])
+        constrain.judge(tc, raw_text, tool_calls, generation_finish)
     stripped = strip_thinking(text)
     if not stripped and not tool_calls:
         # Same rule as the streaming path: never hand back an empty message

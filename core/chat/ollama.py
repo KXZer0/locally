@@ -23,6 +23,7 @@ from core.slots.capability import (_tool_capable, _tools_refused_note,
                                    _tools_supported)
 from core.models.discovery import _models_data, canonical_model_name
 from core.slots.route import _route_request
+from core.tools import constrain
 from core.tools.parse import parse_tool_calls
 from core.tools.render import prepare_messages_for_tools
 from core.system.status import _log_request
@@ -234,6 +235,9 @@ def ollama_chat():
                     frequency=_opts.get("frequency_penalty"),
                     presence=_opts.get("presence_penalty"))
     structured.apply(gen, spec)
+    # Ollama has no tool_choice: "auto", the call constrained once it starts.
+    tc = constrain.build(slot, tools) if tools_active and slot.model_type == "llm" else None
+    constrain.apply(gen, tc)
 
     print(f"\n{datetime.now():%H:%M:%S} <- [{slot.device_name}] [Ollama] "
           f"{'image, ' if has_images else ''}{len(text_prompt)} chars"
@@ -272,13 +276,15 @@ def ollama_chat():
         # A tool turn streams its text live too; the call arrives as one
         # message carrying tool_calls, before the done line (as Ollama sends
         # it). Same gated frames as the OpenAI path, re-dressed as ndjson.
-        frames = gated_stream(slot.stream_llm(raw_messages, gen, "ollama", 0, t0),
-                              tools, "ollama", 0, slot.model_name, log=log_calls(slot))
+        def restart():
+            return slot.stream_llm(raw_messages, gen, "ollama", 0, t0)
+        frames = gated_stream(restart(), tools, "ollama", 0, slot.model_name,
+                              log=log_calls(slot), **constrain.stream_options(tc, gen, restart))
         return Response(ollama_frames(frames, slot.model_name, t0),
                         mimetype="application/x-ndjson")
 
     try:
-        text = slot.generate_llm(raw_messages, gen)
+        text = constrain.run(tc, gen, lambda: slot.generate_llm(raw_messages, gen))
     except Exception as e:
         return (structured.error_response(turn, e, ollama=True) or
                 (jsonify({"error": explain_genai_error(e)}), 500))
@@ -292,7 +298,9 @@ def ollama_chat():
     generation_finish = getattr(text, "finish_reason", "stop")
     message = {"role": "assistant", "content": text}
     if tools_active:
+        raw_text = text
         text, tool_calls = parse_tool_calls(text, tools)
+        constrain.judge(tc, raw_text, tool_calls, generation_finish)
         message["content"] = text
         if tool_calls:
             # Ollama shape: arguments are an object, not a JSON string.

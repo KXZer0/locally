@@ -300,6 +300,12 @@ def parse_args(argv=None):
                         "(30 tools = 99k of Claude Code's 142k chars), and "
                         "prefilling them is most of the wait on an iGPU. Try "
                         "\"Bash,Edit,Read,Write,Glob,Grep\".")
+    p.add_argument("--no-constrain-tools", action="store_true",
+                   help="Do not constrain tool calls while they are written. By "
+                        "default, once a tool turn's model writes <tool_call>, "
+                        "genai's sampler only lets it name a declared tool "
+                        "with arguments matching that tool's schema; prose "
+                        "before the call is never constrained.")
     p.add_argument("--scan", nargs="*", default=None, metavar="DIR",
                    help="Report what each model directory actually contains "
                         "(name, precision, architecture, integrity) and exit. "

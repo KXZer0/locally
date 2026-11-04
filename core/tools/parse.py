@@ -139,13 +139,36 @@ def _tool_param_types(tools):
         if not name:
             continue
         props = (fn.get("parameters") or {}).get("properties") or {}
-        types[name] = {k: (v or {}).get("type", "string") for k, v in props.items()}
+        # None when the property names no type (an enum, a $ref, an anyOf):
+        # _coerce_value then reads the value as JSON if it is JSON.
+        types[name] = {k: (v or {}).get("type") if isinstance(v, dict) else "string"
+                       for k, v in props.items()}
     return types
 
 
+_PY_JSON_TYPES = {bool: ("boolean",), int: ("integer", "number"), float: ("number",),
+                  str: ("string",), list: ("array",), dict: ("object",),
+                  type(None): ("null",)}
+
+
 def _coerce_value(raw, json_type):
-    """Best-effort coerce an XML <parameter> string to its schema type."""
+    """Best-effort coerce an XML <parameter> string to its schema type.
+
+    A single type converts as it always did. A type LIST (["string", "null"])
+    or no type at all takes the value as JSON when it parses to an allowed
+    type, else as the raw string: that is how the tool-call constraint's
+    QwenXML grammar writes them (an enum member as "f", null as null).
+    """
     raw = raw.strip()
+    if json_type is None or isinstance(json_type, list):
+        try:
+            value = json.loads(raw)
+        except (ValueError, TypeError):
+            return raw
+        allowed = json_type or None
+        if allowed is None or any(t in allowed for t in _PY_JSON_TYPES.get(type(value), ())):
+            return value
+        return raw
     try:
         if json_type in ("number", "integer", "object", "array"):
             return json.loads(raw)

@@ -357,7 +357,7 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   (`X-Structured-Output: skipped-tools`); the built-in tools are not offered on a
   constrained turn. Schema errors from xgrammar all come from `json_schema_converter.cc`
   and are 400s; `_check_schema` catches typo'd types and remote `$ref`s first.
-  Constraining tool calls themselves is the follow-up (structural tags), not done.
+  Tool calls themselves are constrained separately (structural tags, next bullet but one).
 - **Tool turns stream live; only a call's own markup is held** (2026-11-04,
   `core/tools/stream_gate.py` + `core/chat/tool_stream.py`). Every streaming request with
   `tools` used to generate the whole turn before sending a byte, so the many tool turns
@@ -383,6 +383,40 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   45 tokens at 50 ms): text-only tool turn, first content byte **2.751 s -> 0.551 s**, end
   unchanged (2.75 s). Found on the way: the Anthropic adapter dropped the last ~8 characters
   before a tool call (its think filter's hold-back had no block left to go to).
+- **A client's tool calls are constrained once they start** (2026-11-04,
+  `core/tools/constrain.py`, `--no-constrain-tools` to disable). genai 2026.4's structural
+  tags: `TriggeredTags(triggers=["<tool_call>"])` leaves sampling free until the model
+  writes the trigger, then only a DECLARED tool with arguments matching its `parameters`
+  can follow. Two tag shapes per tool share the trigger, both of which `parse_tool_calls`
+  reads: the XML the prompt asks for (`QwenXMLParametersFormat`) and Hermes JSON
+  (`JSONSchema`, what Qwen3 is trained on). `tool_choice` maps to it: `none` -> no tags,
+  `required`/Anthropic `any` -> `at_least_one` (a call is forced), a named function -> only
+  its tags, forced. Measured through the server on CPU with the random-weight tiny IR
+  (`unit` enum + `days` integer + `metric` boolean), 20 sampled turns, `tool_choice:
+  required`: **14/20 tool calls, 14/14 schema-valid, 6 truncated** at max_tokens 400
+  (xgrammar's unbounded whitespace again); streamed, 7/10 valid and 3 truncated. Same
+  requests with `--no-constrain-tools`: **0/20** produce a call at all. `auto` with the
+  constraint gave the same 5 stop / 15 length split as without -- prose is untouched.
+  Things that must stay true. (1) **Never a 400**: the client did not ask for this, so a
+  compile failure steps down `schema` -> `simplified` (gemma.simplify_tools) -> `name`
+  (tool name forced, arguments `AnyText`) -> off, each step logged, the level remembered
+  per (device, model, tool set) so an agent re-sending the same schemas pays once; an
+  error about the pipeline rather than the schemas turns it off per (device, model).
+  Measured: a `"type": "nonsense"` property falls through two levels on the first turn and
+  costs nothing on the second. Streams retry too (`gated_stream(retry=)`, before any text
+  went out). (2) xgrammar findings, all measured: QwenXML cannot express a tool with zero
+  properties (its EBNF comes out empty and fails to parse), so those get `Regex("\n?")`;
+  QwenXML also needs a top-level `type`, so one is added; `ConstString("")`/`Regex("")` are
+  rejected; remote `$ref` only warns; `allOf`, `oneOf`, recursion compile. QwenXML writes
+  an enum member as `"f"` and null as `null`, so `_coerce_value` now reads untyped and
+  type-list parameters as JSON when they parse to an allowed type. (3) **Gemma's native
+  dialect is not constrained**: its arguments are not JSON (`<|"|>` fences, bare keys),
+  and its opener is a special token xgrammar may never see as text -- unverifiable without
+  a Gemma here. Proxy slots are skipped (their server owns its sampler). (4) **NPU is
+  unverified**: an error falls back as above, and `judge` turns the constraint off for a
+  slot whose finished turn wrote `<tool_call>` yet produced no declared call (accepted and
+  ignored). Compile cost on the tiny 385-token vocab: 30 tools (60 tags) 178 ms first,
+  28 ms after; on a real 150k vocab it is NOT measured and could be much more.
 - Observability: per-request log lines include TTFT (streaming: wall-clock to first token;
   non-streaming: `perf_metrics` via `extract_perf`) — a prefix-cache hit is sub-second vs a
   cold multi-second/minute prefill, so hits/misses are visible without instrumentation.

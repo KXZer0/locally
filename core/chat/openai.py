@@ -13,6 +13,7 @@ from core.chat.tool_stream import gated_stream, log_calls, stream_native
 from core.chat.turn import _builtin_tool_turn, _prepare_turn
 from core.errors import _TurnError, openai_error
 from core.genai.results import GeneratedText, explain_genai_error, usage_block
+from core.tools import constrain
 from core.tools.builtin import _builtin_generator, _builtin_stream
 from core.tools.parse import parse_tool_calls
 
@@ -30,6 +31,7 @@ def chat_completions():
     completion_id = make_id()
     created = int(time.time())
     t0 = turn["t0"]
+    tc = turn.get("tool_constraint")
 
     if python_tool_active and stream:
         # Streams live and still runs tools -- see _builtin_stream.
@@ -79,11 +81,12 @@ def chat_completions():
     if slot.model_type == "vlm":
         if stream and tools_active:
             # Live text; only a tool call's own markup is held (tool_stream.py).
+            def vlm_frames():
+                return slot.stream_vlm(text_prompt, images, gen, completion_id, created, t0)
             return Response(
-                gated_stream(slot.stream_vlm(text_prompt, images, gen, completion_id,
-                                             created, t0),
-                             tools, completion_id, created, slot.model_name,
-                             log=log_calls(slot)),
+                gated_stream(vlm_frames(), tools, completion_id, created, slot.model_name,
+                             log=log_calls(slot),
+                             **constrain.stream_options(tc, gen, vlm_frames)),
                 mimetype="text/event-stream",
                 headers=_turn_headers(turn, slot),
             )
@@ -97,7 +100,7 @@ def chat_completions():
             )
 
         try:
-            text = slot.generate_vlm(text_prompt, images, gen)
+            text = constrain.run(tc, gen, lambda: slot.generate_vlm(text_prompt, images, gen))
         except Exception as e:
             print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] VLM error: {e}", flush=True)
             return (structured.error_response(turn, e) or
@@ -112,7 +115,9 @@ def chat_completions():
         message = {"role": "assistant", "content": text}
         if tools_active:
             _debug_raw("vlm", text)
+            raw_text = text
             text, vlm_calls = parse_tool_calls(text, tools)
+            constrain.judge(tc, raw_text, vlm_calls, finish)
             if vlm_calls:
                 message = {"role": "assistant", "content": text or None,
                            "tool_calls": vlm_calls}
@@ -140,17 +145,19 @@ def chat_completions():
     # keeps a long prefill on a big agent prompt from tripping a client's
     # idle watchdog.
     if stream and tools_active:
+        def llm_frames():
+            return slot.stream_llm(raw_messages, gen, completion_id, created, t0)
         return Response(
-            gated_stream(slot.stream_llm(raw_messages, gen, completion_id, created, t0),
-                         tools, completion_id, created, slot.model_name,
-                         log=log_calls(slot)),
+            gated_stream(llm_frames(), tools, completion_id, created, slot.model_name,
+                         log=log_calls(slot),
+                         **constrain.stream_options(tc, gen, llm_frames)),
             mimetype="text/event-stream",
             headers=_turn_headers(turn, slot),
         )
 
     # Non-streaming (with or without tools): one blocking generate + JSON reply.
     try:
-        text = slot.generate_llm(raw_messages, gen)
+        text = constrain.run(tc, gen, lambda: slot.generate_llm(raw_messages, gen))
     except Exception as e:
         err = explain_genai_error(e)
         print(f"{datetime.now():%H:%M:%S} !! [{slot.device_name}] LLM error: {err}", flush=True)
@@ -168,7 +175,9 @@ def chat_completions():
     tool_calls = []
     if tools_active:
         _debug_raw("llm", text)
+        raw_text = text
         text, tool_calls = parse_tool_calls(text, tools)
+        constrain.judge(tc, raw_text, tool_calls, generation_finish)
         if tool_calls:
             print(f"{datetime.now():%H:%M:%S} -> [{slot.device_name}] "
                   f"{len(tool_calls)} tool call(s): "

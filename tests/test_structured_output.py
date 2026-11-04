@@ -203,7 +203,9 @@ class EndpointTests(unittest.TestCase):
                        tools_ok=True)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.headers["X-Structured-Output"], "skipped-tools")
-        self.assertIsNone(slot.configs[0])
+        # The format is gone; what is left is the tool-call constraint alone.
+        cfg = slot.configs[0]
+        self.assertTrue(cfg is None or (cfg.grammar is None and cfg.json_schema is None))
 
     def test_ollama_format(self):
         slot = FakeSlot([GeneratedText('{"ok": false}', "stop"),
