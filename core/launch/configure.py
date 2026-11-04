@@ -137,7 +137,9 @@ def configure(args):
               "GPU memory.", flush=True)
     if args.prewarm:
         config.PREWARM_FILE = os.path.expanduser(args.prewarm)
-    elif args.idle_timeout == 0 and not args.no_prewarm and config.PROMPT_CACHE:
+    elif args.idle_timeout == 0 and not args.no_prewarm and config.PROMPT_CACHE is not False:
+        # Unset (per-device) counts: the slot decides; _prewarm_slot skips one
+        # whose device has caching off.
         # Agent/server mode (--idle-timeout 0 keeps models loaded forever) is
         # exactly where prewarm pays off — and the idle unload that would
         # throw the warmed cache away can't happen, so turn it on. Port-scoped

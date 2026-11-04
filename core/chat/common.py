@@ -15,6 +15,7 @@ from core import config, runtime
 from core.chat.structured import header_value
 from core.genai.results import explain_genai_error
 from core.media.images import load_image, pil_to_tensor
+from core.slots.planning import prompt_cache_on
 from core.tools.gemma import split_reasoning
 from core.tools.parse import parse_tool_calls
 
@@ -191,7 +192,7 @@ def _prewarm_slot(slot):
     """Prefill the saved prompt at startup so the first real (cold) turn is a
     cache hit. Only meaningful on a GPU/CPU LLM slot with prefix caching on.
     """
-    if not (config.PREWARM_FILE and config.PROMPT_CACHE and slot.model_type == "llm"
+    if not (config.PREWARM_FILE and prompt_cache_on(slot.device_name) and slot.model_type == "llm"
             and slot.device_name in ("GPU", "CPU")):
         return
     if not os.path.isfile(config.PREWARM_FILE):
