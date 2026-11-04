@@ -29,6 +29,7 @@ def configure(args):
     config.CHECK_UPDATES = bool(args.check_updates)
     config.AGENT_TOOLS = ({t.strip() for t in args.agent_tools.split(",") if t.strip()}
                    if args.agent_tools else None)
+    config.CONSTRAIN_TOOLS = not getattr(args, "no_constrain_tools", False)
     config.ANTHROPIC_MODEL_MAP = {
         k.strip().lower(): v.strip()
         for k, _, v in (part.partition("=") for part in

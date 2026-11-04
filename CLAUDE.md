@@ -357,7 +357,66 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   (`X-Structured-Output: skipped-tools`); the built-in tools are not offered on a
   constrained turn. Schema errors from xgrammar all come from `json_schema_converter.cc`
   and are 400s; `_check_schema` catches typo'd types and remote `$ref`s first.
-  Constraining tool calls themselves is the follow-up (structural tags), not done.
+  Tool calls themselves are constrained separately (structural tags, next bullet but one).
+- **Tool turns stream live; only a call's own markup is held** (2026-11-04,
+  `core/tools/stream_gate.py` + `core/chat/tool_stream.py`). Every streaming request with
+  `tools` used to generate the whole turn before sending a byte, so the many tool turns
+  that call nothing arrived in one lump at the end. `ToolStreamGate` forwards text as it
+  arrives and holds back (1) the tail while it is a prefix of any opener `parse_tool_calls`
+  acts on, (2) everything after a whole opener, and (3) a reply whose answer starts with
+  `{`/`[` -- the bare-JSON fallback only fires on a WHOLE answer that is JSON naming
+  declared tools, so it cannot be decided early; that costs streaming for JSON answers on
+  tool turns only. "Starts" is after a leading `<think>` block, which streams, and
+  `parse_tool_calls` now reads bare JSON after a leading think block too (it used to miss
+  it). ```` ```json ```` fences are not held: the fallback never reads one. At the end the
+  turn is parsed by the same `parse_tool_calls`, and only what the parser keeps beyond what
+  was already sent goes out. It is a filter over the pipelines' own streams, not a second
+  generation path, so heartbeat, cancel-on-disconnect, `finish_reason` and metrics are the
+  ones `stream_llm`/`stream_vlm` already had; the Anthropic adapter and the Ollama
+  `/api/chat` tool stream (`ollama_frames`, which used to send one buffered ndjson line)
+  consume the same frames. Gemma's native turns stream too (`generate_native(on_text=)`
+  drives a `TextStreamer` with `skip_special_tokens=False` from the same ids -- verified
+  identical to the whole decode); the thought channel goes out as `reasoning_content`
+  deltas and end-of-turn tokens are dropped. `stream_vlm` gained the prefill heartbeat it
+  lacked (it ended a stream at 180 s of silence). Built-in tool loops keep their own
+  `_builtin_stream`, which already streamed. Measured with a fake streamer (0.5 s prefill,
+  45 tokens at 50 ms): text-only tool turn, first content byte **2.751 s -> 0.551 s**, end
+  unchanged (2.75 s). Found on the way: the Anthropic adapter dropped the last ~8 characters
+  before a tool call (its think filter's hold-back had no block left to go to).
+- **A client's tool calls are constrained once they start** (2026-11-04,
+  `core/tools/constrain.py`, `--no-constrain-tools` to disable). genai 2026.4's structural
+  tags: `TriggeredTags(triggers=["<tool_call>"])` leaves sampling free until the model
+  writes the trigger, then only a DECLARED tool with arguments matching its `parameters`
+  can follow. Two tag shapes per tool share the trigger, both of which `parse_tool_calls`
+  reads: the XML the prompt asks for (`QwenXMLParametersFormat`) and Hermes JSON
+  (`JSONSchema`, what Qwen3 is trained on). `tool_choice` maps to it: `none` -> no tags,
+  `required`/Anthropic `any` -> `at_least_one` (a call is forced), a named function -> only
+  its tags, forced. Measured through the server on CPU with the random-weight tiny IR
+  (`unit` enum + `days` integer + `metric` boolean), 20 sampled turns, `tool_choice:
+  required`: **14/20 tool calls, 14/14 schema-valid, 6 truncated** at max_tokens 400
+  (xgrammar's unbounded whitespace again); streamed, 7/10 valid and 3 truncated. Same
+  requests with `--no-constrain-tools`: **0/20** produce a call at all. `auto` with the
+  constraint gave the same 5 stop / 15 length split as without -- prose is untouched.
+  Things that must stay true. (1) **Never a 400**: the client did not ask for this, so a
+  compile failure steps down `schema` -> `simplified` (gemma.simplify_tools) -> `name`
+  (tool name forced, arguments `AnyText`) -> off, each step logged, the level remembered
+  per (device, model, tool set) so an agent re-sending the same schemas pays once; an
+  error about the pipeline rather than the schemas turns it off per (device, model).
+  Measured: a `"type": "nonsense"` property falls through two levels on the first turn and
+  costs nothing on the second. Streams retry too (`gated_stream(retry=)`, before any text
+  went out). (2) xgrammar findings, all measured: QwenXML cannot express a tool with zero
+  properties (its EBNF comes out empty and fails to parse), so those get `Regex("\n?")`;
+  QwenXML also needs a top-level `type`, so one is added; `ConstString("")`/`Regex("")` are
+  rejected; remote `$ref` only warns; `allOf`, `oneOf`, recursion compile. QwenXML writes
+  an enum member as `"f"` and null as `null`, so `_coerce_value` now reads untyped and
+  type-list parameters as JSON when they parse to an allowed type. (3) **Gemma's native
+  dialect is not constrained**: its arguments are not JSON (`<|"|>` fences, bare keys),
+  and its opener is a special token xgrammar may never see as text -- unverifiable without
+  a Gemma here. Proxy slots are skipped (their server owns its sampler). (4) **NPU is
+  unverified**: an error falls back as above, and `judge` turns the constraint off for a
+  slot whose finished turn wrote `<tool_call>` yet produced no declared call (accepted and
+  ignored). Compile cost on the tiny 385-token vocab: 30 tools (60 tags) 178 ms first,
+  28 ms after; on a real 150k vocab it is NOT measured and could be much more.
 - **Speculative decoding: `--draft-model` / `--prompt-lookup`, off by default and
   unmeasured on real weights** (2026-11-04, `core/genai/speculative.py`,
   `draft_check.py`). genai 2026.4.1 builds BOTH on the continuous-batching backend
@@ -1305,14 +1364,13 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
 - Qwen3 thinking models can exhaust token budget on `<think>` before producing an answer
 - Cancel (`/v1/cancel`) relies on OpenVINO invoking the streamer callback. If the native code blocks without yielding, cancel won't take effect — generation completes naturally.
 - Chat history unbounded in web UI — user clears with Ctrl+N when long sessions approach MAX_PROMPT_LEN
-- Tool-enabled turns are buffered, not token-streamed: we must see the whole tool-call block
-  before emitting a structured `tool_calls` delta, so the full generation is collected before
-  the result is sent (no incremental tokens that turn). To stop a slow prefill on a big agent
-  prompt from tripping client idle watchdogs (Copilot/OpenClaw abort with no output after
-  ~120s), the streaming tool path runs generation in a background thread and emits SSE
-  keep-alive pings every `HEARTBEAT_SECS` (`_sse_tool_stream`); the plain stream path
-  (`stream_llm`) pings the same way during a long prefill. True token streaming on tool turns
-  (stream until a tool-call prefix appears) is still TODO.
+- Tool-enabled turns stream their TEXT live but deliver a tool call whole: a structured
+  `tool_calls` delta needs the complete call, so once an opener appears the rest of the turn
+  is held and parsed at the end (`core/chat/tool_stream.py`, see the bullet above). Client
+  idle watchdogs (Copilot/OpenClaw abort with no output after ~120s) are kept fed by the
+  pipeline stream's own prefill heartbeat, plus an empty-content keep-alive every
+  `HEARTBEAT_SECS` while a long call is being written and nothing can be shown. Streaming
+  the call's ARGUMENTS incrementally (OpenAI-style partial JSON) is not done.
 - Big agent prompts (OpenClaw ships ~21k-token system prompts) prefill slowly on weak iGPUs
   (~6 min TTFT on the desktop 285K Xe-LPG). Mitigations: smaller coder model, CPU on strong
   desktops, trimming the client's tool set, and the keep-alive above so turns complete instead

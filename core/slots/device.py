@@ -441,7 +441,7 @@ class DeviceSlot(MemoryPlanning):
             self._native_chat, self._native_key = GemmaChat.for_model(key), key
         return self._native_chat
 
-    def generate_native(self, prompt, gen, cancel_event=None):
+    def generate_native(self, prompt, gen, cancel_event=None, on_text=None):
         """VLM generate from a FINISHED prompt string (no template applied),
         returning the text with its special tokens intact.
 
@@ -449,6 +449,10 @@ class DeviceSlot(MemoryPlanning):
         which makes a string argument ambiguous and glues the thought channel
         onto the answer. A StreamerBase sees raw token ids, so they are decoded
         here with skip_special_tokens=False.
+
+        `on_text`, when given, receives that same decoding incrementally (a
+        TextStreamer with skip_special_tokens=False, fed the same ids), which
+        is how core/chat/tool_stream.py streams a native turn live.
         """
         from core.tools.gemma import THOUGHT_PREFIX
         if cancel_event is not None and cancel_event.is_set():
@@ -461,10 +465,19 @@ class DeviceSlot(MemoryPlanning):
         tokenizer = self.pipe.get_tokenizer()
         prefix = THOUGHT_PREFIX if prompt.endswith(THOUGHT_PREFIX) else ""
         checkpoint = [0]
+        live = None
+        if on_text is not None:
+            if prefix:
+                on_text(prefix)
+            live = ovg.TextStreamer(
+                tokenizer, lambda s: on_text(s) or ovg.StreamingStatus.RUNNING,
+                {"skip_special_tokens": False})
 
         class _Ids(ovg.StreamerBase):
             def write(self, token):
                 ids.extend([token] if isinstance(token, int) else token)
+                if live is not None:
+                    live.write(token)
                 if len(ids) - checkpoint[0] >= 16:
                     checkpoint[0] = len(ids)
                     raw = prefix + tokenizer.decode(ids, skip_special_tokens=False)
@@ -477,7 +490,8 @@ class DeviceSlot(MemoryPlanning):
                         else ovg.StreamingStatus.RUNNING)
 
             def end(self):
-                pass
+                if live is not None:
+                    live.end()
 
         streamer = _Ids()
         streamer._cancel = self._cancel
@@ -601,9 +615,21 @@ class DeviceSlot(MemoryPlanning):
 
             while True:
                 try:
-                    token = token_queue.get(timeout=180)
+                    token = token_queue.get(timeout=config.HEARTBEAT_SECS)
                 except Empty:
-                    break
+                    # Same keep-alive as stream_llm: a long VLM prefill (a tool
+                    # turn's whole agent prompt) used to end the stream at 180 s
+                    # with nothing sent at all.
+                    if not t.is_alive():
+                        break
+                    ka = {
+                        "id": completion_id, "object": "chat.completion.chunk",
+                        "created": created, "model": self.model_name,
+                        "choices": [{"index": 0, "delta": {"content": ""},
+                                     "finish_reason": None}],
+                    }
+                    yield f"data: {json.dumps(ka)}\n\n"
+                    continue
                 if token is None:
                     break
                 if token_count == 0:

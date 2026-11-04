@@ -17,6 +17,7 @@ from core.genai.tokens import _count_tokens
 from core.sandbox.python_exec import sandbox_status
 from core.slots.capability import _tool_capable, _tools_refused_note
 from core.slots.route import _route_request
+from core.tools import constrain
 from core.tools.builtin import (BUILTIN_TOOLS, _builtin_runs,
                                 _builtin_tools_supported, _fit_tool_output,
                                 builtin_tools_for)
@@ -289,6 +290,15 @@ def _prepare_turn(body, native=False):
                       f"{len(native_prompt)} chars, thinking={'on' if thinking else 'off'}",
                       flush=True)
 
+    # Once the model writes <tool_call>, only a declared tool with schema-valid
+    # arguments can follow (core/tools/constrain.py). Not on Gemma's native
+    # dialect, whose arguments no JSON schema describes.
+    tool_constraint = None
+    if tools_active:
+        tool_constraint = constrain.build(slot, tools, body.get("tool_choice"),
+                                          native=native_prompt is not None)
+        constrain.apply(gen, tool_constraint)
+
     stream = bool(body.get("stream", False))
     n_images = len(images)
     tag = f"{n_images} image{'s' if n_images != 1 else ''}, " if n_images else ""
@@ -303,6 +313,7 @@ def _prepare_turn(body, native=False):
             "builtin_specs": builtin_specs,
             "structured": structured, "structured_skipped": structured_skipped,
             "native_prompt": native_prompt, "thinking": thinking,
+            "tool_constraint": tool_constraint,
             "max_dim": config.MAX_IMAGE_DIM,
             "max_tokens": max_tokens, "t0": time.perf_counter(),
             # "npu-ocr" when images were read as text rather than seen. Callers

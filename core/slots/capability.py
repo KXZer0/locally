@@ -17,7 +17,7 @@ def _tools_supported(slot):
     NPU requests can still use a small tool set through _tool_capable's
     per-request token budget. This conservative advertisement avoids inviting
     clients to send an unlimited catalogue into the NPU's hard prompt cap.
-    Tool turns are buffered with SSE keep-alive (see _sse_tool_stream), so
+    Tool turns stream with SSE keep-alive (see core/chat/tool_stream.py), so
     a slow prefill does not trip the client's watchdog.
 
     REMOTE is included because every reason to exclude the NPU is about

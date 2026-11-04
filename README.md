@@ -215,6 +215,12 @@ Other flags are `--draft-device`, `--num-assistant-tokens N` (default 5), `--ass
 
 A sampled turn (temperature > 0) on a draft slot runs greedy, because genai 2026.4.1 crashed under draft + sampling. The check script tests your pair; pass `--draft-sampling` if it passes. VLM slots, which include gemma-4 and Qwen3.5 here, get no speculation, and neither does prompt lookup on the NPU. A draft on the NPU is attempted but unverified. `/health` shows each slot's `speculative` state, and every log line and `/v1/metrics` entry carries the draft acceptance and tokens per step (1.00 means it is not helping).
 
+### Tool calls
+
+Send `tools` in the OpenAI, Anthropic or Ollama shape and the reply streams like any other: text goes out as it is generated, and a tool call arrives whole as a structured `tool_calls` delta (`tool_use` block, Ollama `tool_calls` message) once the model finishes writing it. A reply that begins with `{` on a tool turn is held to the end, because it may be a bare-JSON call.
+
+Once the model starts a call (`<tool_call>`), decoding is constrained: it can only name a tool you declared, with arguments matching that tool's `parameters` schema. Text before the call is never constrained. `tool_choice: "required"` (Anthropic `{"type": "any"}`) forces a call, a named function forces that one, and `"none"` turns the constraint off for the turn. A schema the constraint compiler rejects degrades to a looser constraint rather than an error. `--no-constrain-tools` disables it. Gemma's native tool dialect is not constrained.
+
 For a client in a Docker container on this Windows computer, start the API with `--host 0.0.0.0` and use `http://host.docker.internal:8000/v1` inside the container.
 
 ### Who can reach the server
