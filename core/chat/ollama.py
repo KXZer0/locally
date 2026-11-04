@@ -233,6 +233,8 @@ def ollama_chat():
                     frequency=_opts.get("frequency_penalty"),
                     presence=_opts.get("presence_penalty"))
     structured.apply(gen, spec)
+    from core.genai.speculative import request_overrides
+    request_overrides(gen, _opts)
 
     print(f"\n{datetime.now():%H:%M:%S} <- [{slot.device_name}] [Ollama] "
           f"{'image, ' if has_images else ''}{len(text_prompt)} chars"

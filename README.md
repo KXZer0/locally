@@ -195,6 +195,20 @@ Ask for JSON and it is enforced while decoding, not requested in the prompt: tok
 
 OpenAI and Anthropic replies carry `X-Structured-Output`: `constrained` (the answer parses), `truncated` (`max_tokens` ended it mid-document — raise the budget), `skipped-tools` (tools were active, so the format was not applied: a constrained answer cannot also be a tool call), or `violated` (the device ignored the constraint; later requests to that model and device are refused). An invalid schema is a `400` naming what is wrong. A device that cannot constrain output gets a `400` too, never an unconstrained retry — load the model on GPU or CPU instead. Streams carry `constrained` only, since the header leaves before the answer exists.
 
+### Faster decoding with a draft model (optional, unmeasured on real models)
+
+`--draft-model DIR` gives a text (LLM) slot a small model from the same family that proposes a few tokens for the main model to check, for example Qwen3-0.6B for Qwen3-8B. With greedy decoding the answer is exactly the one the main model would have given alone. Only the speed changes, and it can go either way. You can pass the flag more than once. Each model load uses the first draft whose tokenizer matches, and loads without a draft when none does. A draft from another family is refused with the reason.
+
+`--prompt-lookup` needs no extra model. It proposes tokens copied from the prompt, which helps code edits, RAG and tool output. Both run on genai's continuous-batching backend, also on GPU. That backend prefilled about 10x slower on the B390 (prefix caching stays off on GPU anyway), and nothing here has measured either feature on real weights yet. Both are off by default. Measure before you keep one on. Stop the server first.
+
+```powershell
+venv\Scripts\python.exe scripts\speculative-check.py $env:USERPROFILE\models\Qwen3-8B-int4-cw-ov --draft $env:USERPROFILE\models\Qwen3-0.6B-int8-ov --prompt-lookup --device GPU
+```
+
+Other flags are `--draft-device`, `--num-assistant-tokens N` (default 5), `--assistant-confidence X` and `--max-ngram-size N`. A request may send its own `num_assistant_tokens`, `assistant_confidence_threshold` or `max_ngram_size` (top level for OpenAI, in `options` for Ollama). A slot without speculation ignores them.
+
+A sampled turn (temperature > 0) on a draft slot runs greedy, because genai 2026.4.1 crashed under draft + sampling. The check script tests your pair; pass `--draft-sampling` if it passes. VLM slots, which include gemma-4 and Qwen3.5 here, get no speculation, and neither does prompt lookup on the NPU. A draft on the NPU is attempted but unverified. `/health` shows each slot's `speculative` state, and every log line and `/v1/metrics` entry carries the draft acceptance and tokens per step (1.00 means it is not helping).
+
 For a client in a Docker container on this Windows computer, start the API with `--host 0.0.0.0` and use `http://host.docker.internal:8000/v1` inside the container.
 
 ### Who can reach the server

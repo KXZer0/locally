@@ -15,7 +15,8 @@ def _rounded(value):
 
 def record_turn(*, device, model, prompt_tokens, completion_tokens,
                 ttft_ms, total_ms, finish_reason="stop", source="openvino",
-                native_decode_tps=None, token_count_source="tokenizer"):
+                native_decode_tps=None, token_count_source="tokenizer",
+                speculative=None):
     """Append one completed inference without ever growing process memory."""
     prompt_tokens = (int(prompt_tokens) if prompt_tokens is not None else None)
     completion_tokens = (int(completion_tokens)
@@ -51,6 +52,10 @@ def record_turn(*, device, model, prompt_tokens, completion_tokens,
         "finish_reason": finish_reason,
         "source": source,
     }
+    if speculative:
+        # Draft acceptance and tokens per main-model step: the only numbers
+        # that say whether --draft-model / --prompt-lookup is earning its keep.
+        item["speculative"] = dict(speculative)
     with _lock:
         _turns.append(item)
     return item

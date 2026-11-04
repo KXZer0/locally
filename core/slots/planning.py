@@ -125,7 +125,9 @@ class MemoryPlanning:
         if not budget or not weights:
             return 0, ""
         gib = 2 ** 30
-        need = weights * 1.05 + self.kv_pool_gb * gib + gib   # +1 GB runtime
+        # A draft model is resident too, and none of it is offloadable.
+        draft = (getattr(self, "speculative", None) or {}).get("draft_bytes", 0)
+        need = weights * 1.05 + draft + self.kv_pool_gb * gib + gib   # +1 GB runtime
         if need <= budget:
             return 0, ""
         overflow = need - budget
