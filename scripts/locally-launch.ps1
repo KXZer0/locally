@@ -56,8 +56,9 @@ param(
     # Optional models stay off unless named. API startup should not compile
     # audio engines merely because conventional folders happen to exist.
     [string] $Whisper   = '',
-    # Speech-to-text by folder: a Parakeet TDT export (FluidInference/
-    # parakeet-tdt-0.6b-v3-ov) or a Whisper one; the server reads which. Takes
+    # Speech-to-text by folder: parakeet-unified-en-0.6b (English, streams;
+    # its streaming\fp16 folder), Parakeet TDT v3 (multilingual) or Whisper;
+    # the server reads which. Takes
     # precedence over -Whisper, since one ASR model is served at a time.
     [string] $Asr       = '',
     [string] $Tts       = '',

@@ -127,23 +127,29 @@ Audio models stay off unless named, because they compile eagerly and sit in the 
 
 ### Speech-to-text: Parakeet or Whisper
 
-`--asr-dir DIR` takes either engine and works out which from the folder's contents. The recommended model is NVIDIA's Parakeet TDT 0.6B v3 in FluidInference's OpenVINO export, [`FluidInference/parakeet-tdt-0.6b-v3-ov`](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-ov). It handles 25 European languages and is much faster than Whisper. The folder holds `parakeet_melspectogram`, `parakeet_encoder`, `parakeet_decoder` and `parakeet_joint` (each as `.xml` and `.bin`) plus `parakeet_vocab.json`.
+`--asr-dir DIR` takes any of the supported engines and works out which from the folder's contents. Which model to use:
+
+- **English (recommended): Parakeet Unified EN 0.6B**, NVIDIA's newest Parakeet (April 2026), in FluidInference's OpenVINO export [`FluidInference/parakeet-unified-en-0.6b-ov`](https://huggingface.co/FluidInference/parakeet-unified-en-0.6b-ov). It averages 5.91% WER on the Open ASR Leaderboard English sets, against about 6.3% for TDT v3, and writes punctuation and capitals. It streams: in voice mode the turn is transcribed while you speak, so the transcript is ready a moment after you stop. Point `--asr-dir` at the repo's `streaming\fp16` folder, not the offline `fp16` build next to it.
+- **Multilingual: Parakeet TDT 0.6B v3**, [`FluidInference/parakeet-tdt-0.6b-v3-ov`](https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-ov). It covers 25 European languages. It does not stream, so a voice turn is transcribed after the pause.
+- The **Nemotron streaming** exports in [`FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-ov`](https://huggingface.co/FluidInference/Nemotron-3.5-ASR-Streaming-Multilingual-0.6b-ov) load too. That repo holds the June 2026 multilingual model (40 locales, CJK included, and it takes `language`) and the English `en/` build. Both are less accurate in English than Parakeet Unified, so they are only worth it for a language v3 lacks.
+
+This project prefers the newest model. When NVIDIA ships a newer Parakeet, that one should replace the English default here.
 
 ```powershell
-.\api.ps1 --asr-dir $env:USERPROFILE\models\parakeet-tdt-0.6b-v3-ov --asr-device CPU
+.\api.ps1 --asr-dir $env:USERPROFILE\models\parakeet-unified-en-0.6b-ov\streaming\fp16 --asr-device CPU
 ```
 
-`--asr-device` takes `CPU`, `GPU` or `NPU`, and the default is CPU. Use NPU only after the check script below passes on your machine. On the NPU the encoder is compiled for a fixed 10 s window (`--asr-npu-window-seconds`), and longer audio is cut into overlapping windows. On CPU and GPU the window is 30 s (`--asr-chunk-seconds`). `/v1/audio/transcriptions` accepts `response_format` set to `json`, `text` or `verbose_json`. `/health` reports the engine under `asr.engine`.
+`--asr-device` takes `CPU`, `GPU` or `NPU`, and the default is CPU. Use NPU only after the check script below passes on your machine. The streaming models already use fixed-size chunks, which is the shape the NPU needs. Parakeet TDT on the NPU is compiled for a fixed 10 s window (`--asr-npu-window-seconds`), and longer audio is cut into overlapping windows. On CPU and GPU its window is 30 s (`--asr-chunk-seconds`). `/v1/audio/transcriptions` accepts `response_format` set to `json`, `text` or `verbose_json`. `/health` reports the engine under `asr.engine`, and for a streaming model its chunk size under `asr.unit_s`.
 
-Parakeet has no language setting: it detects the language itself. A `language` field is accepted and echoed back in `verbose_json` as `"language_applied": false`, but it does not change the result. The multilingual v3 sometimes picks the wrong language on short or unclear English clips (English transcribed as another language has been seen). If that happens often, Whisper with `language=en` is the engine that can be told.
+Parakeet (TDT and Unified) has no language setting. TDT v3 detects the language itself, and Unified is English-only. A `language` field is accepted and echoed back in `verbose_json` as `"language_applied": false`, but it does not change the result. The multilingual v3 sometimes picks the wrong language on short or unclear English clips (English transcribed as another language has been seen). English speakers should use Unified. The multilingual Nemotron model does use `language` and reports `"language_applied": true`.
 
 Before you rely on a device, check it on your own machine. Stop the server first.
 
 ```powershell
-venv\Scripts\python.exe scripts\parakeet-check.py $env:USERPROFILE\models\parakeet-tdt-0.6b-v3-ov speech.wav --reference "what you said" --whisper-dir $env:USERPROFILE\models\whisper-model
+venv\Scripts\python.exe scripts\parakeet-check.py $env:USERPROFILE\models\parakeet-unified-en-0.6b-ov\streaming\fp16 speech.wav --reference "what you said" --compare $env:USERPROFILE\models\parakeet-tdt-0.6b-v3-ov --whisper-dir $env:USERPROFILE\models\whisper-model
 ```
 
-For each device it prints the load time, the transcription, the word error rate and the real-time factor. A device that fails says why.
+For each device it prints the load time, the transcription, the word error rate and the real-time factor. A device that fails says why. For a streaming model it also feeds the clip in microphone-sized frames and reports how soon after the last frame the transcript was ready.
 
 ## Shortcut and Copilot key
 

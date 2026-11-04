@@ -392,8 +392,50 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   path has never compiled. The "~25x realtime on NPU" figure is FluidInference's
   (155H), not ours. `scripts/parakeet-check.py` is how it becomes ours. Parakeet
   has no language token; `language` is accepted and reported as not applied.
-  Newer but not supported here: `FluidInference/parakeet-unified-en-0.6b-ov`
-  (English-only streaming RNN-T, different `nemotron_*` + `metadata.json` layout).
+- **The English default is now parakeet-unified-en-0.6b, and it streams**
+  (2026-11-04, `core/slots/nemotron.py`, `core/asr/{geometry,stream,
+  nemotron_io}.py`, `core/voice/asr_runs.py`). The user always wants the
+  NEWEST Parakeet and is mostly English-only: as of Nov 2026 that is
+  `nvidia/parakeet-unified-en-0.6b` (April 2026, English, RNN-T, punctuation
+  + capitals, 5.91% average on the Open ASR English sets vs ~6.3% for TDT v3),
+  exported as `FluidInference/parakeet-unified-en-0.6b-ov` -- use its
+  `streaming/fp16` folder. v3 stays the multilingual answer. NVIDIA's newest
+  ASR overall is Nemotron-3.5-ASR-Streaming-0.6B (June 2026, 40 locales,
+  cache-aware, `prompt_id` language input), but it is not a Parakeet and is
+  weaker in English (FLEURS en 11.8% in eddy's own table); it and its English
+  sibling load through the same engine. **Correction to the earlier note:
+  parakeet-unified is NOT cache-aware.** Its encoder is stateless and runs
+  over a sliding [left | chunk | right] window, with only the chunk's frames
+  decoded. The Nemotron models are the cache-aware ones. One engine serves
+  both because eddy-audio's `eddy::nemotron` does. **What was read** (eddy
+  `src/models/nemotron/*.cpp`, `model_configs.hpp`): the file set, every port
+  name, every metadata.json field and its default, the per-chunk mel
+  assembly (pre_encode_cache lead frames, full-length valid on cache chunks,
+  real-sample count on windows), the featurizer (no normalisation unless
+  `feature_normalize`, 6e-8 log guard, frames past valid zeroed), plain RNN-T
+  greedy with LSTM state carried across chunks, the language-tag stripping,
+  and the NPU fix -- the plugin compiles a boolean BitwiseNot as an integer
+  complement, so the attention mask goes all-true and every transcript is
+  empty; `npu_safe` rewrites it to LogicalNot before every compile, as eddy
+  does. **What is assumed** and checked at load with a plain-English error:
+  that an encoder with neither window metadata nor cache inputs is the
+  offline build (refused, naming `streaming/fp16`), and that the window
+  geometry obeys 25 ms / 10 ms framing. **Streaming == offline by
+  construction**: an upload is a StreamingTranscriber fed all at once with no
+  worker, and `Geometry.ready()` decides when a unit can run in both cases.
+  In the voice session the turn's frames feed the transcriber as they arrive
+  and speculation is skipped; speech_end waits only for the last unit. A
+  batch engine, or a streaming one that is idle-unloaded (a reload must not
+  run on the socket thread), takes the old path unchanged. `asr_want` is now
+  recorded BEFORE a run's thread starts: a streamed tail finishes in a few ms,
+  and a result that lands before anyone waits for it is dropped. **Verified:**
+  a tiny real export per mode with eddy's exact ports, whose encoder answers
+  tones, so the text depends on the audio and on where units cut it --
+  transcript, stream == offline, predictor carry (reset it per unit and a held
+  tone repeats), cache_len counts chunks, prompt fed, NPU static reshape,
+  session decoding during the turn. **Not verified:** real weights, accuracy,
+  speed, or any NPU compile. HF was unreachable again. `scripts/parakeet-check.py`
+  runs both engines (`--compare` for v3) and times the streamed tail.
 - VAD: `VadSlot` + Silero on plain OpenVINO (`--vad-dir`, `--vad-device`, default CPU —
   it is ~1M parameters and has no business on the NPU). Not a genai pipeline; there
   isn't one. Drives auto turn-taking over the `/v1/audio/stream` WebSocket
