@@ -15,6 +15,7 @@ from core.chat import structured
 from core.chat.common import (apply_penalties, _maybe_capture_prewarm,
                               overall_status, parse_messages)
 from core.chat.openai import chat_completions
+from core.chat.tool_stream import gated_stream, log_calls, ollama_frames
 from core.errors import _TurnError, openai_error
 from core.genai.results import extract_perf, explain_genai_error, extract_finish_reason
 from core.media.images import load_image, pil_to_tensor
@@ -261,12 +262,20 @@ def ollama_chat():
             "total_duration": int(elapsed * 1e9),
         })
 
-    # LLM path. Tool turns are buffered (see chat_completions for why).
+    # LLM path.
     if stream and not tools_active:
         return Response(
             _ollama_stream_chat(slot, raw_messages, gen, t0),
             mimetype="application/x-ndjson",
         )
+    if stream:
+        # A tool turn streams its text live too; the call arrives as one
+        # message carrying tool_calls, before the done line (as Ollama sends
+        # it). Same gated frames as the OpenAI path, re-dressed as ndjson.
+        frames = gated_stream(slot.stream_llm(raw_messages, gen, "ollama", 0, t0),
+                              tools, "ollama", 0, slot.model_name, log=log_calls(slot))
+        return Response(ollama_frames(frames, slot.model_name, t0),
+                        mimetype="application/x-ndjson")
 
     try:
         text = slot.generate_llm(raw_messages, gen)
@@ -305,9 +314,6 @@ def ollama_chat():
         "done_reason": generation_finish,
         "total_duration": int(elapsed * 1e9),
     }
-    if stream:
-        # tools + stream: emit the buffered result as a single ndjson line.
-        return Response(json.dumps(final) + "\n", mimetype="application/x-ndjson")
     return jsonify(final)
 
 

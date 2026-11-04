@@ -28,16 +28,14 @@ def test_queued_native_request_rechecks_its_own_cancel_before_clearing_global():
 
 def test_closing_native_stream_signals_only_that_request():
     captured = {}
-    def generate(prompt, gen, cancel_event=None):
+    def fake_native(slot, prompt, gen, cid, created, t0, cancel_event):
         captured['event'] = cancel_event
-        return 'ok'
-    slot = SimpleNamespace(generate_native=generate, cancel=Mock())
-    def frames(*args, generate=None, **kwargs):
-        generate()
-        yield 'data: heartbeat\n\n'
-        yield 'data: done\n\n'
+        yield 'data: {"choices": [{"delta": {"role": "assistant"}}]}\n\n'
+        yield 'data: {"choices": [{"delta": {"content": "hi"}}]}\n\n'
+        yield 'data: {"choices": [{"delta": {"content": " there"}}]}\n\n'
+    slot = SimpleNamespace(cancel=Mock(), model_name='m', device_name='GPU')
     turn = {'slot':slot, 'gen':SimpleNamespace(), 'tools':[], 'native_prompt':'prompt', 'stream':True}
-    with patch('core.chat.openai._sse_tool_stream', frames), patch('core.chat.openai._turn_headers', return_value={}):
+    with patch('core.chat.openai.stream_native', fake_native), patch('core.chat.openai._turn_headers', return_value={}):
         response = _native_response(turn, 'test', 0, 0)
         iterator = iter(response.response)
         next(iterator)

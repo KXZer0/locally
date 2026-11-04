@@ -8,7 +8,8 @@ from flask import Response, jsonify, request
 
 from core import config, runtime
 from core.chat import structured
-from core.chat.common import (_maybe_capture_prewarm, _sse_tool_stream,
+from core.chat.tool_stream import gated_stream, log_calls
+from core.chat.common import (_maybe_capture_prewarm,
                               _turn_headers, make_id, parse_messages)
 from core.chat.turn import _builtin_tool_turn, _prepare_turn
 from core.errors import _TurnError, openai_error
@@ -191,8 +192,9 @@ def _anthropic_stream(openai_frames, model, msg_id, input_tokens):
     Anthropic's protocol is block-structured where OpenAI's is a flat delta
     list: text arrives inside an explicit content block that has to be opened
     and closed, and a tool call is its own block whose arguments stream as
-    partial JSON. We buffer tool calls anyway (see _sse_tool_stream), so each
-    tool block is emitted whole.
+    partial JSON. Text streams live; a tool call arrives whole at the end
+    (core/chat/tool_stream.py holds its markup back), so the text block is
+    closed and each tool block is emitted whole after it.
     """
     yield _sse("message_start", {
         "type": "message_start",
@@ -242,6 +244,16 @@ def _anthropic_stream(openai_frames, model, msg_id, input_tokens):
 
             for tc in delta.get("tool_calls") or []:
                 if text_open:
+                    # The think filter holds the last few characters; once the
+                    # text block closes they have nowhere to go, so the final
+                    # words before a tool call ("I'll check.") were dropped.
+                    held = think.flush()
+                    if held:
+                        emitted += len(held)
+                        yield _sse("content_block_delta", {
+                            "type": "content_block_delta", "index": index,
+                            "delta": {"type": "text_delta", "text": held},
+                        })
                     yield _sse("content_block_stop",
                                {"type": "content_block_stop", "index": index})
                     text_open = False
@@ -323,17 +335,17 @@ def anthropic_messages():
                                      turn["builtin_specs"], turn, msg_id,
                                      created, t0)
         elif slot.model_type == "vlm" and turn["tools_active"]:
-            frames = _sse_tool_stream(
-                slot, turn["raw_messages"], gen, turn["tools"], msg_id,
-                created, t0,
-                generate=lambda: slot.generate_vlm(turn["text_prompt"],
-                                                   turn["images"], gen))
+            frames = gated_stream(
+                slot.stream_vlm(turn["text_prompt"], turn["images"], gen,
+                                msg_id, created, t0),
+                turn["tools"], msg_id, created, slot.model_name, log=log_calls(slot))
         elif slot.model_type == "vlm":
             frames = slot.stream_vlm(turn["text_prompt"], turn["images"], gen,
                                      msg_id, created, t0)
         elif turn["tools_active"]:
-            frames = _sse_tool_stream(slot, turn["raw_messages"], gen,
-                                      turn["tools"], msg_id, created, t0)
+            frames = gated_stream(
+                slot.stream_llm(turn["raw_messages"], gen, msg_id, created, t0),
+                turn["tools"], msg_id, created, slot.model_name, log=log_calls(slot))
         else:
             frames = slot.stream_llm(turn["raw_messages"], gen, msg_id, created, t0)
         return Response(

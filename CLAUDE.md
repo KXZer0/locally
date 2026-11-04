@@ -358,6 +358,31 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
   constrained turn. Schema errors from xgrammar all come from `json_schema_converter.cc`
   and are 400s; `_check_schema` catches typo'd types and remote `$ref`s first.
   Constraining tool calls themselves is the follow-up (structural tags), not done.
+- **Tool turns stream live; only a call's own markup is held** (2026-11-04,
+  `core/tools/stream_gate.py` + `core/chat/tool_stream.py`). Every streaming request with
+  `tools` used to generate the whole turn before sending a byte, so the many tool turns
+  that call nothing arrived in one lump at the end. `ToolStreamGate` forwards text as it
+  arrives and holds back (1) the tail while it is a prefix of any opener `parse_tool_calls`
+  acts on, (2) everything after a whole opener, and (3) a reply whose answer starts with
+  `{`/`[` -- the bare-JSON fallback only fires on a WHOLE answer that is JSON naming
+  declared tools, so it cannot be decided early; that costs streaming for JSON answers on
+  tool turns only. "Starts" is after a leading `<think>` block, which streams, and
+  `parse_tool_calls` now reads bare JSON after a leading think block too (it used to miss
+  it). ```` ```json ```` fences are not held: the fallback never reads one. At the end the
+  turn is parsed by the same `parse_tool_calls`, and only what the parser keeps beyond what
+  was already sent goes out. It is a filter over the pipelines' own streams, not a second
+  generation path, so heartbeat, cancel-on-disconnect, `finish_reason` and metrics are the
+  ones `stream_llm`/`stream_vlm` already had; the Anthropic adapter and the Ollama
+  `/api/chat` tool stream (`ollama_frames`, which used to send one buffered ndjson line)
+  consume the same frames. Gemma's native turns stream too (`generate_native(on_text=)`
+  drives a `TextStreamer` with `skip_special_tokens=False` from the same ids -- verified
+  identical to the whole decode); the thought channel goes out as `reasoning_content`
+  deltas and end-of-turn tokens are dropped. `stream_vlm` gained the prefill heartbeat it
+  lacked (it ended a stream at 180 s of silence). Built-in tool loops keep their own
+  `_builtin_stream`, which already streamed. Measured with a fake streamer (0.5 s prefill,
+  45 tokens at 50 ms): text-only tool turn, first content byte **2.751 s -> 0.551 s**, end
+  unchanged (2.75 s). Found on the way: the Anthropic adapter dropped the last ~8 characters
+  before a tool call (its think filter's hold-back had no block left to go to).
 - Observability: per-request log lines include TTFT (streaming: wall-clock to first token;
   non-streaming: `perf_metrics` via `extract_perf`) — a prefix-cache hit is sub-second vs a
   cold multi-second/minute prefill, so hits/misses are visible without instrumentation.
@@ -1222,14 +1247,13 @@ Windows entry points are `api.ps1` (installed server settings) and `chat.ps1`
 - Qwen3 thinking models can exhaust token budget on `<think>` before producing an answer
 - Cancel (`/v1/cancel`) relies on OpenVINO invoking the streamer callback. If the native code blocks without yielding, cancel won't take effect — generation completes naturally.
 - Chat history unbounded in web UI — user clears with Ctrl+N when long sessions approach MAX_PROMPT_LEN
-- Tool-enabled turns are buffered, not token-streamed: we must see the whole tool-call block
-  before emitting a structured `tool_calls` delta, so the full generation is collected before
-  the result is sent (no incremental tokens that turn). To stop a slow prefill on a big agent
-  prompt from tripping client idle watchdogs (Copilot/OpenClaw abort with no output after
-  ~120s), the streaming tool path runs generation in a background thread and emits SSE
-  keep-alive pings every `HEARTBEAT_SECS` (`_sse_tool_stream`); the plain stream path
-  (`stream_llm`) pings the same way during a long prefill. True token streaming on tool turns
-  (stream until a tool-call prefix appears) is still TODO.
+- Tool-enabled turns stream their TEXT live but deliver a tool call whole: a structured
+  `tool_calls` delta needs the complete call, so once an opener appears the rest of the turn
+  is held and parsed at the end (`core/chat/tool_stream.py`, see the bullet above). Client
+  idle watchdogs (Copilot/OpenClaw abort with no output after ~120s) are kept fed by the
+  pipeline stream's own prefill heartbeat, plus an empty-content keep-alive every
+  `HEARTBEAT_SECS` while a long call is being written and nothing can be shown. Streaming
+  the call's ARGUMENTS incrementally (OpenAI-style partial JSON) is not done.
 - Big agent prompts (OpenClaw ships ~21k-token system prompts) prefill slowly on weak iGPUs
   (~6 min TTFT on the desktop 285K Xe-LPG). Mitigations: smaller coder model, CPU on strong
   desktops, trimming the client's tool set, and the keep-alive above so turns complete instead

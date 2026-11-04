@@ -195,6 +195,10 @@ Ask for JSON and it is enforced while decoding, not requested in the prompt: tok
 
 OpenAI and Anthropic replies carry `X-Structured-Output`: `constrained` (the answer parses), `truncated` (`max_tokens` ended it mid-document — raise the budget), `skipped-tools` (tools were active, so the format was not applied: a constrained answer cannot also be a tool call), or `violated` (the device ignored the constraint; later requests to that model and device are refused). An invalid schema is a `400` naming what is wrong. A device that cannot constrain output gets a `400` too, never an unconstrained retry — load the model on GPU or CPU instead. Streams carry `constrained` only, since the header leaves before the answer exists.
 
+### Tool calls
+
+Send `tools` in the OpenAI, Anthropic or Ollama shape and the reply streams like any other: text goes out as it is generated, and a tool call arrives whole as a structured `tool_calls` delta (`tool_use` block, Ollama `tool_calls` message) once the model finishes writing it. A reply that begins with `{` on a tool turn is held to the end, because it may be a bare-JSON call.
+
 For a client in a Docker container on this Windows computer, start the API with `--host 0.0.0.0` and use `http://host.docker.internal:8000/v1` inside the container.
 
 ### Who can reach the server

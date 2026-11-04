@@ -7,9 +7,9 @@ from datetime import datetime
 from flask import Response, jsonify, request
 
 from core.chat import structured
-from core.chat.common import (_debug_raw, _maybe_capture_prewarm, _sse_tool_stream,
-                              _tool_message,
+from core.chat.common import (_debug_raw, _maybe_capture_prewarm, _tool_message,
                               _turn_headers, make_id)
+from core.chat.tool_stream import gated_stream, log_calls, stream_native
 from core.chat.turn import _builtin_tool_turn, _prepare_turn
 from core.errors import _TurnError, openai_error
 from core.genai.results import GeneratedText, explain_genai_error, usage_block
@@ -78,11 +78,12 @@ def chat_completions():
     # --- VLM path ---
     if slot.model_type == "vlm":
         if stream and tools_active:
-            # A tool turn has to be whole before tool_calls can be emitted.
+            # Live text; only a tool call's own markup is held (tool_stream.py).
             return Response(
-                _sse_tool_stream(slot, raw_messages, gen, tools, completion_id,
-                                 created, t0,
-                                 generate=lambda: slot.generate_vlm(text_prompt, images, gen)),
+                gated_stream(slot.stream_vlm(text_prompt, images, gen, completion_id,
+                                             created, t0),
+                             tools, completion_id, created, slot.model_name,
+                             log=log_calls(slot)),
                 mimetype="text/event-stream",
                 headers=_turn_headers(turn, slot),
             )
@@ -133,13 +134,16 @@ def chat_completions():
     _maybe_capture_prewarm(raw_messages)
 
     # --- LLM path ---
-    # Tool turns must be buffered (we need the whole generation before emitting a
-    # structured tool_calls delta). When streaming, buffer in a background thread
-    # and emit SSE keep-alive frames so a long prefill on a big agent prompt
-    # doesn't trip the client's idle watchdog (see _sse_tool_stream).
+    # Tool turns stream their text live; the gate holds back only what could
+    # still be a tool call, and the parsed calls follow as structured
+    # tool_calls deltas (core/chat/tool_stream.py). stream_llm's own heartbeat
+    # keeps a long prefill on a big agent prompt from tripping a client's
+    # idle watchdog.
     if stream and tools_active:
         return Response(
-            _sse_tool_stream(slot, raw_messages, gen, tools, completion_id, created, t0),
+            gated_stream(slot.stream_llm(raw_messages, gen, completion_id, created, t0),
+                         tools, completion_id, created, slot.model_name,
+                         log=log_calls(slot)),
             mimetype="text/event-stream",
             headers=_turn_headers(turn, slot),
         )
@@ -192,7 +196,7 @@ def chat_completions():
 def _native_response(turn, completion_id, created, t0):
     """A Gemma 4 turn answered from its own chat template (core/tools/gemma.py):
     tool calls in the model's dialect, the thought channel as reasoning_content.
-    Buffered, because a structured tool_calls delta needs the whole generation."""
+    Streams live through the same gate as every other tool turn."""
     slot, gen, tools = turn["slot"], turn["gen"], turn["tools"]
     prompt = turn["native_prompt"]
 
@@ -204,8 +208,10 @@ def _native_response(turn, completion_id, created, t0):
     if turn["stream"]:
         def frames():
             try:
-                yield from _sse_tool_stream(slot, None, gen, tools, completion_id, created, t0,
-                                           generate=generate)
+                yield from gated_stream(
+                    stream_native(slot, prompt, gen, completion_id, created, t0, cancelled),
+                    tools, completion_id, created, slot.model_name, native=True,
+                    log=log_calls(slot))
             finally:
                 # Closing the HTTP stream cancels THIS request, not another
                 # request currently using the shared model.
