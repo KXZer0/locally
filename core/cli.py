@@ -25,7 +25,7 @@ Usage:
     python locally.py --gpu-model-dir gpu-model              # dual: NPU chat + GPU vision
     python locally.py --model-dir ~/models/qwen3-14b-int4-ov --device GPU  # big LLM on GPU
     python locally.py --whisper-dir whisper-model             # add speech-to-text
-    python locally.py --asr-dir parakeet-tdt-0.6b-v3-ov       # ...or Parakeet instead
+    python locally.py --asr-dir parakeet-unified-en-0.6b-ov/streaming/fp16  # ...or Parakeet
     python locally.py --scan                                 # what models do I have?
 """
 
@@ -104,20 +104,23 @@ def parse_args(argv=None):
     p.add_argument("--max-dim", type=int, default=768,
                    help="Max image dimension before resize (default: 768)")
     p.add_argument("--asr-dir", default=None,
-                   help="Speech-to-text model directory: a Parakeet TDT OpenVINO "
-                        "export (FluidInference/parakeet-tdt-0.6b-v3-ov) or a "
-                        "Whisper export -- which one is read from the folder. "
+                   help="Speech-to-text model directory, engine read from the "
+                        "folder: parakeet-unified-en-0.6b (newest, English, "
+                        "streams during the turn; the streaming/fp16 folder of "
+                        "FluidInference/parakeet-unified-en-0.6b-ov), a Nemotron "
+                        "streaming export, Parakeet TDT v3 (multilingual, "
+                        "FluidInference/parakeet-tdt-0.6b-v3-ov) or Whisper. "
                         "Enables /v1/audio/transcriptions and voice.")
     p.add_argument("--asr-device", default=None,
                    help="Device for speech-to-text: CPU, GPU or NPU (default: "
-                        "--whisper-device, i.e. CPU). NPU is Parakeet-only, "
+                        "--whisper-device, i.e. CPU). NPU is Parakeet/Nemotron-only, "
                         "static-shape, and not yet verified by this project.")
     p.add_argument("--asr-chunk-seconds", type=float, default=30.0,
-                   help="Longest audio one Parakeet encoder pass sees on CPU/GPU; "
+                   help="Longest audio one Parakeet TDT encoder pass sees on CPU/GPU; "
                         "longer uploads are split into overlapping windows "
                         "(default 30).")
     p.add_argument("--asr-npu-window-seconds", type=float, default=10.0,
-                   help="Static encoder window for Parakeet on the NPU "
+                   help="Static encoder window for Parakeet TDT on the NPU "
                         "(default 10, the shape FluidInference's NPU figures "
                         "were measured on).")
     p.add_argument("--whisper-dir", default=None,

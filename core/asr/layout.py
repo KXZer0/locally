@@ -15,6 +15,20 @@ rather than learning which flag goes with which model family:
     Other exporters name the parts differently, so the match is by role
     (`*encoder*.xml`, `*decoder*.xml`, `*joint*.xml`) and the exact names are
     only a preference. The preprocessor is optional (core/asr/mel.py).
+  * Nemotron family: parakeet-unified-en-0.6b and the Nemotron streaming
+    models, in FluidInference's export, read from eddy-audio
+    (`NEMOTRON_FILES`):
+
+        nemotron_encoder.xml/.bin    streaming FastConformer encoder
+        nemotron_decoder.xml/.bin    LSTM predictor
+        nemotron_joint.xml/.bin      joint: token scores only (plain RNN-T)
+        nemotron_vocab.json          SentencePiece pieces
+        metadata.json                geometry (core/asr/geometry.py)
+
+    `nemotron_preprocessor.xml` may be present and is deliberately unused:
+    it is dynamic-shaped (no NPU) and eddy replaces it with a native
+    featurizer, as core/asr/mel.py does here. Checked BEFORE Parakeet, whose
+    role-based match (`*encoder*.xml`) would otherwise claim these folders.
   * Whisper: an optimum-intel export, recognised by config.json or by the
     openvino_encoder_model + openvino_decoder_model pair.
 
@@ -64,6 +78,39 @@ def parakeet_files(path):
     return parts
 
 
+NEMOTRON_PARTS = {"encoder": "nemotron_encoder.xml",
+                  "decoder": "nemotron_decoder.xml",
+                  "joint": "nemotron_joint.xml",
+                  "vocab": "nemotron_vocab.json",
+                  "metadata": "metadata.json"}
+
+
+def nemotron_files(path):
+    """Role -> Path for a Nemotron-family export, or None when it is not one.
+
+    The encoder and metadata.json are what make it one; a folder holding
+    those but missing a part is still returned (with None for that part) so
+    the slot can name what is missing instead of calling it "unknown"."""
+    d = Path(path)
+    if not d.is_dir():
+        return None
+    if not ((d / NEMOTRON_PARTS["encoder"]).is_file()
+            and (d / NEMOTRON_PARTS["metadata"]).is_file()):
+        return None
+    return {role: (d / name if (d / name).is_file() else None)
+            for role, name in NEMOTRON_PARTS.items()}
+
+
+def nested_nemotron(path):
+    """Subfolders (two levels down) holding a Nemotron-family export: the HF
+    repos keep several builds side by side (streaming/fp16, fp16, en/int8)."""
+    d = Path(path)
+    if not d.is_dir():
+        return []
+    hits = [*d.glob("*/nemotron_encoder.xml"), *d.glob("*/*/nemotron_encoder.xml")]
+    return sorted(str(p.parent.relative_to(d)) for p in hits)
+
+
 def is_fused_transducer(path):
     d = Path(path)
     return d.is_dir() and any(d.glob("decoder_joint*.onnx"))
@@ -86,9 +133,14 @@ def is_whisper_dir(path):
 
 
 def asr_engine(path):
-    """'parakeet', 'whisper', or None (not a speech-to-text model we know)."""
+    """'nemotron', 'parakeet', 'whisper', or None (not one we know).
+
+    'nemotron' names the engine (eddy-audio's name for the backend); the
+    model in it may well be called Parakeet -- parakeet-unified is."""
     if not path or not os.path.isdir(path):
         return None
+    if nemotron_files(path):
+        return "nemotron"
     if parakeet_files(path):
         return "parakeet"
     if is_whisper_dir(path):
@@ -102,6 +154,12 @@ def describe_unknown(path):
         return (f"{path} holds a fused decoder_joint ONNX export (onnx-asr/"
                 "sherpa layout). locally's Parakeet engine reads the split "
                 "OpenVINO export: FluidInference/parakeet-tdt-0.6b-v3-ov.")
-    return (f"{path} is neither a Whisper export nor a Parakeet export "
-            "(expected parakeet_encoder.xml, parakeet_decoder.xml, "
-            "parakeet_joint.xml and parakeet_vocab.json).")
+    nested = nested_nemotron(path)
+    if nested:
+        return (f"{path} holds Nemotron-family builds in subfolders; point "
+                "--asr-dir at one of them: " + ", ".join(nested) + ".")
+    return (f"{path} is not a speech-to-text export locally knows. Expected "
+            "parakeet-unified / Nemotron streaming (nemotron_encoder.xml + "
+            "metadata.json), Parakeet TDT (parakeet_encoder.xml, "
+            "parakeet_decoder.xml, parakeet_joint.xml, parakeet_vocab.json) "
+            "or Whisper (config.json).")

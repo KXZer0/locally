@@ -68,6 +68,13 @@ def register_socket(app):
             return
 
         session = VoiceStreamSession()
+        try:
+            _serve_stream(ws, session)
+        finally:
+            session.close()     # a half-fed streaming turn must not leak its worker
+        return ""
+
+    def _serve_stream(ws, session):
         while True:
             msg = ws.receive()
             if msg is None:
@@ -96,7 +103,6 @@ def register_socket(app):
                 # Leaving the answer behind clears any half-built interruption.
                 if session.voice_state != "speaking":
                     session.speech_ms = 0.0
-        return ""
 
     return True
 
@@ -231,9 +237,10 @@ def audio_transcriptions():
 
     Served by whichever ASR engine --asr-dir loaded (Whisper or Parakeet);
     runtime.whisper_slot is the ASR slot whatever it holds. `language` is
-    passed through: Whisper forces it, Parakeet has no language token and
-    detects the language itself, so there it is accepted and reported back
-    in verbose_json as a hint rather than silently pretended to apply.
+    passed through: Whisper forces it, the multilingual Nemotron model takes
+    it as a language prompt, and Parakeet TDT / parakeet-unified have no
+    language input at all, so there it is accepted and reported back in
+    verbose_json as a hint rather than silently pretended to apply.
     """
     slot = runtime.whisper_slot
     if not slot or not _slot_serviceable(slot):
@@ -295,7 +302,9 @@ def audio_transcriptions():
             # Whisper applied it; Parakeet only heard it. Saying which is the
             # difference between "it ignored me" and "it cannot be told".
             "language": language,
-            "language_applied": bool(language) and engine == "whisper",
+            "language_applied": bool(language) and bool(
+                getattr(slot, "applies_language", engine == "whisper")),
+            "detected_language": getattr(slot, "last_detected_language", None),
             "engine": engine,
             "model": getattr(slot, "model_name", ""),
             "processing_s": round(elapsed, 3),

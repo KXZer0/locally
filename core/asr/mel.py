@@ -57,8 +57,19 @@ def mel_filters(n_mels, sr=SR, n_fft=N_FFT, fmin=0.0, fmax=None):
 _FILTER_CACHE = {}
 
 
-def log_mel(audio, n_mels=128):
-    """float32 16 kHz mono -> (features [n_mels, frames], valid_frames)."""
+def log_mel(audio, n_mels=128, normalize=True, valid_samples=None,
+            guard=LOG_GUARD):
+    """float32 16 kHz mono -> (features [n_mels, frames], valid_frames).
+
+    The defaults are the TDT front end. The Nemotron-family exports
+    (parakeet-unified, Nemotron streaming) call it the way eddy-audio's
+    MelFeaturizer runs: `valid_samples` says how much of a zero-padded chunk
+    is audio -- frames at or past valid_samples // HOP are zero, and are
+    excluded from normalisation, which needs at least two frames -- and
+    `normalize` is metadata.json's `feature_normalize` (Nemotron exports raw
+    log-mel, parakeet-unified normalised). eddy's guard is 6e-8, the value
+    stored in the exported IR; NeMo's 2^-24 rounds to it at fp16.
+    """
     audio = np.asarray(audio, dtype=np.float32).reshape(-1)
     n = len(audio)
     if n == 0:
@@ -73,12 +84,18 @@ def log_mel(audio, n_mels=128):
     side = (N_FFT - WIN) // 2
     window = np.pad(np.hanning(WIN), (side, side)).astype(np.float32)
     spec = np.abs(np.fft.rfft(frames * window, N_FFT)).astype(np.float32) ** 2
-    feats = np.log(spec @ fb + LOG_GUARD)                    # [frames, n_mels]
+    feats = np.log(spec @ fb + guard)                        # [frames, n_mels]
 
-    valid = max(1, n // HOP)
-    v = feats[:valid]
-    mean = v.mean(axis=0, keepdims=True)
-    var = ((v - mean) ** 2).sum(axis=0, keepdims=True) / max(valid - 1, 1)
-    feats = (feats - mean) / (np.sqrt(var) + 1e-5)
+    if valid_samples is None:
+        valid = max(1, n // HOP)
+        min_norm = 1
+    else:
+        valid = min(feats.shape[0], max(0, int(valid_samples)) // HOP)
+        min_norm = 2
+    if normalize and valid >= min_norm:
+        v = feats[:valid]
+        mean = v.mean(axis=0, keepdims=True)
+        var = ((v - mean) ** 2).sum(axis=0, keepdims=True) / max(valid - 1, 1)
+        feats[:valid] = (v - mean) / (np.sqrt(var) + 1e-5)
     feats[valid:] = 0.0
     return feats.T.astype(np.float32), valid

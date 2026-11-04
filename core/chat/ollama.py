@@ -81,7 +81,7 @@ def ollama_tags():
     for entry in _models_data()["data"]:
         name = canonical_model_name(entry["id"])
         if (not name or name in seen
-                or entry["id"].partition("@")[0] in ("whisper", "parakeet")):
+                or entry["id"].partition("@")[0] in ("whisper", "parakeet", "nemotron")):
             continue
         seen.add(name)
         models.append(_tag_entry(entry["id"].partition("@")[0]))

@@ -14,7 +14,7 @@ from .integrity import _dir_size_bytes, _verify_weights_integrity
 from .irinfo import read_ir_rt_info, weight_precision
 
 from core import config
-from core.asr.layout import parakeet_files
+from core.asr.layout import nemotron_files, parakeet_files
 
 
 def describe_model(model_dir):
@@ -42,6 +42,8 @@ def describe_model(model_dir):
 
     if cfg.get("model_type") == "whisper":
         kind = "Whisper (speech-to-text)"
+    elif nemotron_files(model_dir):
+        kind = "Parakeet-unified / Nemotron streaming RNN-T (speech-to-text)"
     elif parakeet_files(model_dir):
         kind = "Parakeet TDT (speech-to-text)"
     elif is_vlm(model_dir):

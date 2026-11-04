@@ -11,6 +11,7 @@ from core.slots.speaker import SpeakerSlot
 from core.slots.tts import TtsSlot
 from core.slots.util import UtilSlot
 from core.slots.vad import VadSlot
+from core.slots.nemotron import NemotronSlot
 from core.slots.parakeet import ParakeetSlot
 from core.slots.whisper import WhisperSlot
 from core.asr.layout import asr_engine, describe_unknown
@@ -93,14 +94,14 @@ def _asr_slot(args, devices, _id_of):
     device = (args.asr_device or args.whisper_device or "CPU").upper()
     if device == "NPU" and engine == "whisper":
         print("WARNING: Whisper is not run on the NPU here; using CPU. "
-              "Parakeet can take --asr-device NPU.")
+              "Parakeet (TDT or unified) can take --asr-device NPU.")
         device = "CPU"
     if device not in devices and device != "CPU":
         print(f"WARNING: speech-to-text device {device} not available, "
               f"falling back to CPU.")
         device = "CPU"
     args.asr_dir = model_dir     # serve.py loads from here
-    cls = ParakeetSlot if engine == "parakeet" else WhisperSlot
+    cls = {"parakeet": ParakeetSlot, "nemotron": NemotronSlot}.get(engine, WhisperSlot)
     print(f"  Speech-to-text: {engine} on {device} ({model_dir})", flush=True)
     return cls(device, _id_of(device))
 

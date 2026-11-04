@@ -35,7 +35,7 @@ MAX_SYMBOLS_PER_STEP = 10   # NeMo/onnx-asr default; stops a frame emitting fore
 
 def greedy_decode(encoder_frames, n_frames, predict, joint, blank_id,
                   durations=(), max_symbols=MAX_SYMBOLS_PER_STEP,
-                  start_state=None):
+                  start_state=None, carry=None):
     """Decode one utterance.
 
     encoder_frames  sequence indexable by frame -> that frame's encoder vector
@@ -43,6 +43,11 @@ def greedy_decode(encoder_frames, n_frames, predict, joint, blank_id,
     predict(token, state) -> (predictor_output, new_state)
     joint(encoder_vector, predictor_output) -> 1-D logits:
                     [blank_id + 1 token scores][len(durations) duration scores]
+    carry           optional dict {"state", "last"}: read as the starting
+                    predictor context and written back at the end, so a
+                    streaming caller can decode chunk after chunk as if the
+                    frames had arrived as one sequence (the predictor state
+                    and last emitted token are all that crosses a boundary).
     Returns [(token_id, frame_index), ...] in emission order.
     """
     n_tokens = blank_id + 1
@@ -50,6 +55,9 @@ def greedy_decode(encoder_frames, n_frames, predict, joint, blank_id,
     out = []
     state = start_state
     last = blank_id
+    if carry is not None:
+        state = carry.get("state", state)
+        last = carry.get("last", blank_id)
     pred = None                  # cached predictor output for (last, state)
     pred_state = None
     t = 0
@@ -77,6 +85,9 @@ def greedy_decode(encoder_frames, n_frames, predict, joint, blank_id,
         elif token == blank_id or emitted >= max_symbols:
             t += 1
             emitted = 0
+    if carry is not None:
+        carry["state"] = state
+        carry["last"] = last
     return out
 
 

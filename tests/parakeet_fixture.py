@@ -120,3 +120,145 @@ def build(directory, dynamic_frames=True, joint_shape=(1, 1, OUT),
         {"id_to_token": {str(i): p for i, p in enumerate(PIECES)},
          "vocab_size": len(PIECES)}), encoding="utf-8")
     return d
+
+
+# --- Nemotron family (parakeet-unified, Nemotron streaming) ------------------
+#
+# eddy-audio's port names exactly (mel/mel_length -> encoded; cache_channel,
+# cache_time, cache_len (+ _out); prompt_id; token/token_length/h_in/c_in ->
+# decoder_out/h_out/c_out; encoder/decoder -> logits) and its metadata.json
+# fields. Unlike the TDT fixture the encoder LISTENS: each token answers a
+# tone in its own band of the raw log-mel, so a transcript depends on the
+# audio and on where the units cut it --
+#
+#     500 Hz -> ▁hello     2 kHz -> ▁world     5 kHz -> !
+#
+# -- and the predictor scores -100 on the token it last emitted, so a tone held
+# across many frames (and across unit boundaries, if the predictor state is
+# carried) is spelled once.
+
+NM_MELS = 16
+NM_TOK = BLANK + 1                  # 5: no duration head on these models
+TONES = {1: 500.0, 2: 2000.0, 3: 5000.0}
+WINDOW = {"left": 2, "chunk": 4, "right": 2}       # encoder frames
+CACHE = {"chunk_mel_frames": 16, "pre_encode_cache": 3, "total_mel_frames": 19}
+CACHE_SHAPES = {"cache_channel_shape": [1, 2, 4], "cache_time_shape": [1, 2, 3]}
+PROMPTS = {"en-US": 0, "fr-FR": 7, "auto": 101}
+
+
+def _band_weights():
+    from core.asr.mel import N_FFT, SR, mel_filters
+    fb = mel_filters(NM_MELS)                       # [freqs, mels]
+    w = np.zeros((NM_TOK, NM_MELS), dtype=np.float32)
+    for tok, hz in TONES.items():
+        bins = np.nonzero(fb[int(round(hz * N_FFT / SR))] > 0)[0]
+        w[tok, bins] = 1.0 / len(bins)
+    return w
+
+
+def tone_audio(spec, sr=16000):
+    """[(token or None, seconds), ...] -> float32 audio with 10 ms ramps, so a
+    burst's onset does not splatter into every band."""
+    out = []
+    for tok, sec in spec:
+        n = int(sec * sr)
+        if tok is None:
+            out.append(np.zeros(n, np.float32))
+            continue
+        t = np.arange(n) / sr
+        x = np.sin(2 * np.pi * TONES[tok] * t)
+        ramp = np.minimum(1.0, np.minimum(np.arange(n), np.arange(n)[::-1]) / (0.01 * sr))
+        out.append((x * ramp).astype(np.float32))
+    return np.concatenate(out)
+
+
+def build_nemotron(directory, mode="window", prompt=False, dynamic=True):
+    """mode "window": parakeet-unified's stateless sliding window.
+    mode "cache": a cache-aware Nemotron encoder (+ prompt_id if `prompt`)."""
+    d = Path(directory)
+    d.mkdir(parents=True, exist_ok=True)
+    if mode == "window":
+        width = 1 + (WINDOW["left"] + WINDOW["chunk"] + WINDOW["right"]) * 8
+        first = 0
+    else:
+        width = CACHE["total_mel_frames"]
+        first = CACHE["pre_encode_cache"]   # frames before it are the carried lead
+    mel = op.parameter(ov.PartialShape([1, NM_MELS, -1 if dynamic else width]),
+                       ov.Type.f32, name="mel")
+    mlen = op.parameter([1], ov.Type.i32, name="mel_length")
+    ins = [mel, mlen]
+    sub = op.strided_slice(mel, op.constant(np.array([0, 0, first])),
+                           op.constant(np.array([1, NM_MELS, 2 ** 31 - 1])),
+                           op.constant(np.array([1, 1, 8])), [0, 0, 0], [0, 0, 0])
+    # 6 x the token band's mean raw log-mel: a full-scale tone reads ~+0.5..3.3
+    # there (score >= 2.8), silence -16.6 and a length-masked frame exactly 0.
+    # The blank sits at +1, so it beats <unk> (0), silence and masked padding,
+    # but not a tone.
+    bands = _band_weights()
+    bias = np.zeros(NM_TOK, np.float32)
+    bias[BLANK] = 1.0
+    enc = op.add(op.matmul(op.constant(bands * 6.0), sub, False, False),
+                 op.constant(bias.astype(np.float32).reshape(1, NM_TOK, 1)))
+    zero_i = op.multiply(mlen, op.constant(np.array([0], np.int32)))
+    outs = []
+    if mode == "cache":
+        cc = op.parameter(CACHE_SHAPES["cache_channel_shape"], ov.Type.f32,
+                          name="cache_channel")
+        ct = op.parameter(CACHE_SHAPES["cache_time_shape"], ov.Type.f32,
+                          name="cache_time")
+        cl = op.parameter([1], ov.Type.i32, name="cache_len")
+        ins += [cc, ct, cl]
+        outs += [_named(op.add(cc, op.constant(np.float32(1))), "cache_channel_out"),
+                 _named(op.multiply(ct, op.constant(np.float32(1))), "cache_time_out"),
+                 _named(op.add(op.add(cl, op.constant(np.array([1], np.int32))), zero_i),
+                        "cache_len_out")]
+        if prompt:
+            pid = op.parameter([1], ov.Type.i32, name="prompt_id")
+            ins.append(pid)
+            zero_i = op.add(zero_i, op.multiply(pid, op.constant(np.array([0], np.int32))))
+    enc = op.add(enc, op.convert(zero_i, ov.Type.f32))
+    # A boolean BitwiseNot, as in the real attention mask: the slot must turn it
+    # into LogicalNot (eddy's NPU fix) without changing the result.
+    keep = op.convert(op.bitwise_not(op.less(enc, op.constant(np.float32(-1e9)))),
+                      ov.Type.f32)
+    enc = _named(op.multiply(enc, keep), "encoded")
+    ov.save_model(ov.Model([enc.output(0)] + [o.output(0) for o in outs], ins, "enc"),
+                  str(d / "nemotron_encoder.xml"))
+
+    tok = op.parameter([1, 1], ov.Type.i32, name="token")
+    tlen = op.parameter([1], ov.Type.i32, name="token_length")
+    h = op.parameter([1, 1, 2], ov.Type.f32, name="h_in")
+    c = op.parameter([1, 1, 2], ov.Type.f32, name="c_in")
+    table = np.zeros((NM_TOK, NM_TOK), np.float32)
+    for t in range(BLANK):
+        table[t, t] = -100.0
+    g = op.gather(op.constant(table), tok, op.constant(np.int64(0)))
+    dec = _named(op.reshape(g, op.constant(np.array([1, NM_TOK, 1])), False),
+                 "decoder_out")
+    h2 = _named(op.add(h, op.constant(np.float32(1))), "h_out")
+    c2 = _named(op.add(c, op.convert(tlen, ov.Type.f32)), "c_out")
+    ov.save_model(ov.Model([dec.output(0), h2.output(0), c2.output(0)],
+                           [tok, tlen, h, c], "dec"), str(d / "nemotron_decoder.xml"))
+
+    je = op.parameter([1, NM_TOK, 1], ov.Type.f32, name="encoder")
+    jd = op.parameter([1, NM_TOK, 1], ov.Type.f32, name="decoder")
+    lg = _named(op.reshape(op.add(je, jd), op.constant(np.array([1, 1, 1, NM_TOK])),
+                           False), "logits")
+    ov.save_model(ov.Model([lg.output(0)], [je, jd], "joint"),
+                  str(d / "nemotron_joint.xml"))
+
+    (d / "nemotron_vocab.json").write_text(json.dumps(
+        {str(i): p for i, p in enumerate(PIECES)}), encoding="utf-8")
+    meta = {"sample_rate": 16000, "mel_features": NM_MELS, "blank_idx": BLANK,
+            "vocab_size": len(PIECES), "decoder_hidden": 2, "decoder_layers": 1,
+            "subsampling_factor": 8}
+    if mode == "window":
+        meta.update({"streaming": True, "context_encoder_frames": dict(WINDOW),
+                     "window_mel_frames": width, "feature_normalize": False})
+    else:
+        meta.update(CACHE)
+        meta.update(CACHE_SHAPES)
+        if prompt:
+            meta.update({"prompt_dictionary": PROMPTS, "default_prompt_id": 101})
+    (d / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+    return d
